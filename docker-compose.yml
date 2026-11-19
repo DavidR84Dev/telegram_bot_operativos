@@ -8,6 +8,9 @@ services:
     ports:
       # Solo loopback del host: nginx (fuera de este compose) hace el proxy HTTPS.
       - "127.0.0.1:8011:8011"
+    extra_hosts:
+      # Permite al contenedor alcanzar servicios del host (Odoo :8079, bot de abordaje :8010).
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./run:/srv/run
     depends_on:
