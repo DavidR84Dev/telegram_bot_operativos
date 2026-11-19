@@ -9,7 +9,7 @@ NOW = datetime(2026, 11, 7, 14, 0, 0)
 
 
 @pytest.mark.parametrize("payload", [
-    f"http://192.168.1.10:8079/form/accept/{TOKEN}",
+    f"http://192.0.2.10:8079/form/accept/{TOKEN}",
     f"https://abc.trycloudflare.com/form/accept/{TOKEN}",
     f"  https://www.viacotur.com/form/accept/{TOKEN}  ",
 ])

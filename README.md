@@ -90,7 +90,7 @@ Todo se configura por `.env` (no hay modelo de configuración en Odoo para este 
 |---|---|
 | `APP_ENV` | `production` normalmente; `testing` lo fijan los tests (no arranca Telegram ni Odoo) |
 | `LOG_LEVEL` | Nivel de log (`INFO` por defecto) |
-| `ODOO_URL` / `ODOO_DB` / `ODOO_USERNAME` / `ODOO_PASSWORD` | Conexión XML-RPC a Odoo. `ODOO_PASSWORD` es una **API key** (Preferencias → API Keys), no la contraseña |
+| `ODOO_URL` / `ODOO_DB` / `ODOO_USERNAME` / `ODOO_PASSWORD` | Conexión XML-RPC a Odoo. `ODOO_PASSWORD` es una **API key** (Preferencias → API Keys), no la contraseña. Si Odoo corre en el mismo servidor: `http://host.docker.internal:8079` con Docker, `http://127.0.0.1:8079` sin Docker (no usar la IP de la LAN) |
 | `RPC_TIMEOUT_SECONDS` | Timeout de las llamadas XML-RPC (20 s por defecto) |
 | `TELEGRAM_BOT_TOKEN` | Token de @BotFather |
 | `TELEGRAM_MODE` | `polling` (pruebas/localhost) o `webhook` (producción) |
@@ -98,7 +98,7 @@ Todo se configura por `.env` (no hay modelo de configuración en Odoo para este 
 | `BOT_PUBLIC_DOMAIN` | Solo modo `webhook`; dominio público donde se registra `/telegram/webhook` |
 | `WEBAPP_BASE_URL` | URL HTTPS pública donde vive `/form/accept/<token>` (el frontend de Odoo) |
 | `SCANNER_BASE_URL` | URL HTTPS pública que sirve `/scanner` (este mismo servicio) |
-| `BOARDING_BOT_INTERNAL_URL` | URL interna de `telegram_boarding_bot` para avisar al pasajero. Vacío = aviso desactivado |
+| `BOARDING_BOT_INTERNAL_URL` | URL interna de `telegram_boarding_bot` para avisar al pasajero. Vacío = aviso desactivado. Con Docker: `http://host.docker.internal:8010` |
 | `WEBAPP_AUTH_MAX_AGE_SECONDS` | Antigüedad máxima aceptada de `initData` (300 s por defecto) |
 | `LISTEN_HOST` / `LISTEN_PORT` | `127.0.0.1` / `8011` |
 | `POLL_INTERVAL_SECONDS` | Frecuencia del sondeo de vigilancias (15 s por defecto) |
@@ -127,6 +127,26 @@ curl -s http://127.0.0.1:8011/health   # {"status":"ok"}
 - Reiniciar tras cambiar `.env` o el código: `docker compose up -d --build`.
 - Ver logs: `docker compose logs app -f` / `docker compose logs db -f`.
 - Apagar: `docker compose down` (mantiene los volúmenes; usa `down -v` solo si quieres borrar también la base de datos).
+- Tras cambiar solo el `.env`, usa `docker compose up -d` (recrea el contenedor). `docker compose restart app` **no** relee el `.env`.
+
+### Acceso del contenedor a servicios del host
+
+Odoo (`:8079`) y `telegram_boarding_bot` (`:8010`) corren en el host, fuera de Docker. Dentro del contenedor `127.0.0.1` es el propio contenedor, así que:
+
+1. `docker-compose.yml` define `extra_hosts: host.docker.internal:host-gateway`, y el `.env` usa `host.docker.internal` en `ODOO_URL` y `BOARDING_BOT_INTERNAL_URL`. Así no depende de la IP de la LAN del servidor.
+2. El firewall del host (ufw, política `deny incoming`) bloquea por defecto el tráfico de los contenedores. Hay que permitir **solo** las redes de Docker:
+   ```bash
+   sudo ufw allow proto tcp from 172.16.0.0/12 to any port 8079,8010
+   ```
+3. `telegram_boarding_bot` debe escuchar fuera de `127.0.0.1` (override systemd `deploy/telegram-bot.service.d/listen.conf` de ese repositorio, sección 12 de su README).
+
+Comprobación desde el contenedor:
+
+```bash
+docker compose exec app python -c "import socket; [print(p, socket.create_connection(('host.docker.internal', p), 4) and 'abierto') for p in (8079, 8010)]"
+```
+
+Si da `TimeoutError`, falta la regla de ufw; si da `ConnectionRefused` en 8010, el bot de abordaje solo escucha en `127.0.0.1`.
 
 ### Verificado en este servidor de QA
 
@@ -227,7 +247,7 @@ Antes de reiniciar el contenedor `app` en caliente: revisar que no haya vigilanc
 - **Usuario de Odoo**: en QA se usa un usuario admin; en producción debe ser un usuario técnico dedicado (grupo `hr.group_hr_user` o similar, sin permisos de escritura).
 - **Cookies de Odoo en el webview**: la página de abordaje se abre por navegación (no en `iframe`, por ser origen distinto). Confirmar en un móvil real que el botón "Confirmar" funciona dentro de la Mini App.
 - **Dispositivos**: requiere un cliente de Telegram con `showScanQrPopup` (Bot API ≥ 6.4). Clientes antiguos no pueden usar el escáner.
-- **Túneles `cloudflared` en QA**: la URL `*.trycloudflare.com` cambia en cada reinicio del túnel; hay que actualizar `WEBAPP_BASE_URL`/`SCANNER_BASE_URL` y reiniciar el validador (`docker compose restart app`). No aplica una vez en producción con dominio fijo.
+- **Túneles `cloudflared` en QA**: la URL `*.trycloudflare.com` cambia en cada reinicio del túnel; hay que actualizar `WEBAPP_BASE_URL`/`SCANNER_BASE_URL` y recrear el validador con `docker compose up -d` (`restart` no relee el `.env`). `WEBAPP_BASE_URL` es un túnel al puerto de Odoo (`8079`) y `SCANNER_BASE_URL` uno al validador (`8011`). No aplica una vez en producción con dominio fijo.
 - **Cobertura de pruebas**: ~78%, con huecos deliberados en `app/odoo_client.py` (35%, plomería XML-RPC que requeriría un Odoo real o mockear `xmlrpc.client` a bajo nivel) y en el `lifespan` de `app/main.py` (56%, arranque/apagado del bot de Telegram). No son prioritarios porque son plomería delgada ya acotada por `tests/test_odoo_client_readonly.py` y por las pruebas de integración de `app/web.py`/`app/telegram_app.py`.
 - **Prueba manual pendiente**: validar en el móvil real del validador el flujo completo (escáner nativo, ficha, botón de Odoo, recepción del aviso de abordaje).
 

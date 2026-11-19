@@ -52,7 +52,7 @@ def test_unauthorized_user_is_rejected():
 def test_pasted_url_shows_card_webapp_button_and_watch(monkeypatch):
     monkeypatch.setattr(scan_service, "find_ticket_by_token", lambda odoo, t: _ticket())
     svc = _services()
-    upd = _update(text=f"http://192.168.1.10:8079/form/accept/{TOKEN}")
+    upd = _update(text=f"http://192.0.2.10:8079/form/accept/{TOKEN}")
     asyncio.run(tga.on_text(upd, _ctx(svc)))
     button = upd.message.reply_text.await_args.kwargs["reply_markup"].inline_keyboard[0][0]
     assert button.web_app.url == f"https://tun.example.com/form/accept/{TOKEN}"

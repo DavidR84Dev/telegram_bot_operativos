@@ -5,6 +5,14 @@ Versionado: [SemVer](https://semver.org/lang/es/) (`MAJOR.MINOR.PATCH`).
 
 ## [Sin publicar]
 
+### Corregido
+- `docker-compose.yml`: `extra_hosts: host.docker.internal:host-gateway` para que el contenedor alcance Odoo y `telegram_boarding_bot` en el host sin depender de la IP de la LAN (que cambió por DHCP y dejó el validador sin Odoo).
+
+### Documentación
+- README: nueva sección "Acceso del contenedor a servicios del host" (host-gateway, regla de ufw para redes Docker, escucha del bot de abordaje y comprobación). Corregido: tras cambiar el `.env` hay que usar `docker compose up -d`, no `restart`.
+- `.env.example`: valores recomendados de `ODOO_URL` y `BOARDING_BOT_INTERNAL_URL` con y sin Docker; eliminada la IP interna de QA.
+- Pruebas: IP interna de QA sustituida por una de documentación (`192.0.2.10`, RFC 5737).
+
 ## [1.1.0] - 2026-11-19
 
 ### Agregado
