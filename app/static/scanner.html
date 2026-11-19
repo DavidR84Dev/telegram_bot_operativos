@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Escáner de abordaje</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    margin: 0; padding: 16px; font-family: system-ui, sans-serif;
+    background: var(--tg-theme-bg-color, #fff); color: var(--tg-theme-text-color, #111);
+  }
+  h1 { font-size: 20px; margin: 0 0 12px; }
+  p.status { margin: 8px 0 16px; color: var(--tg-theme-hint-color, #666); }
+  button {
+    display: block; width: 100%; padding: 14px; margin: 8px 0; border: 0; border-radius: 10px;
+    font-size: 16px; background: var(--tg-theme-button-color, #2481cc);
+    color: var(--tg-theme-button-text-color, #fff);
+  }
+  button.secondary { background: var(--tg-theme-secondary-bg-color, #eee); color: var(--tg-theme-text-color, #111); }
+  #card { margin-top: 12px; padding: 12px; border-radius: 10px; background: var(--tg-theme-secondary-bg-color, #f2f2f2); }
+  dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 6px 10px; }
+  dt { font-weight: 600; }
+  dd { margin: 0; word-break: break-word; }
+  .reason { margin: 12px 0 0; }
+</style>
+</head>
+<body>
+<h1>🎫 Escáner de abordaje</h1>
+<p id="status" class="status">Pulsa «Escanear QR» y apunta al código del pasajero.</p>
+<button id="scan" type="button">📷 Escanear QR</button>
+
+<section id="card" hidden></section>
+
+<script>
+  const tg = window.Telegram && window.Telegram.WebApp;
+  function diagnostics() {
+    if (!tg) return "sinWebApp";
+    return [
+      "platform=" + (tg.platform || "?"),
+      "version=" + (tg.version || "?"),
+      "initLen=" + (tg.initData ? tg.initData.length : 0),
+      "unsafeUser=" + (tg.initDataUnsafe && tg.initDataUnsafe.user ? "si" : "no"),
+      "ua=" + navigator.userAgent.slice(0, 120),
+    ].join(";");
+  }
+  // Mismo patrón que el path del QR (/form/accept/<token>); el host se ignora.
+  const QR_RE = /\/form\/accept\/[A-Za-z0-9_-]{20,128}(?![A-Za-z0-9_-])/;
+  const $ = (id) => document.getElementById(id);
+
+  function setStatus(text) { $("status").textContent = text; }
+
+  function button(label, className, onClick) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = label;
+    if (className) b.className = className;
+    b.addEventListener("click", onClick);
+    return b;
+  }
+
+  function resetCard() {
+    const card = $("card");
+    card.replaceChildren();
+    card.hidden = true;
+  }
+
+  function render(data) {
+    const card = $("card");
+    card.replaceChildren();
+    card.hidden = false;
+    const t = data.ticket;
+
+    const rows = [
+      ["Ticket", t.ticket_number],
+      ["Pasajero", t.passenger_name],
+      ["Vehículo", t.vehicle],
+      ["Ruta 1", `${t.route_origin || "—"} → ${t.route_destination || "—"}`],
+    ];
+    if (t.route_origin_2 && t.route_destination_2) {
+      rows.push(["Ruta 2", `${t.route_origin_2} → ${t.route_destination_2}`]);
+    }
+    rows.push(["Estado", t.status_label || t.status]);
+
+    const dl = document.createElement("dl");
+    for (const [label, value] of rows) {
+      const dt = document.createElement("dt");
+      dt.textContent = label;
+      const dd = document.createElement("dd");
+      dd.textContent = value || "—";
+      dl.append(dt, dd);
+    }
+    card.append(dl);
+
+    if (data.reason) {
+      const p = document.createElement("p");
+      p.className = "reason";
+      p.textContent = data.reason;
+      card.append(p);
+    }
+    if (data.watching) {
+      const p = document.createElement("p");
+      p.className = "reason";
+      p.textContent = "Te avisaré en este chat cuando se registre el abordaje.";
+      card.append(p);
+    }
+    if (data.odoo_url) {
+      // Navega dentro de la misma vista de Telegram (la página de Odoo confirma el abordaje).
+      card.append(button("🎫 Abrir página de abordaje", "", () => { window.location.href = data.odoo_url; }));
+    }
+    card.append(button("📷 Escanear otro QR", "secondary", startScan));
+  }
+
+  async function handle(text) {
+    setStatus("Validando…");
+    resetCard();
+    try {
+      const res = await fetch("/api/scan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Telegram-Init-Data": (tg && tg.initData) || "" },
+        body: JSON.stringify({ qr_text: text, diag: diagnostics() }),
+      });
+      if (res.status === 401) {
+        setStatus("Sesión de Telegram no válida. Cierra y vuelve a abrir el escáner. [" + diagnostics() + "]");
+        return;
+      }
+      if (res.status === 403) { setStatus("No estás autorizado para validar tickets."); return; }
+      if (!res.ok) { setStatus("Error del servidor. Intenta de nuevo."); return; }
+      const data = await res.json();
+      if (data.status !== "ok") { setStatus(data.reason); return; }
+      setStatus("Ticket encontrado.");
+      render(data);
+    } catch (err) {
+      setStatus("Sin conexión con el validador. Intenta de nuevo.");
+    }
+  }
+
+  function startScan() {
+    if (!tg || !tg.showScanQrPopup) {
+      setStatus("Esta versión de Telegram no tiene el escáner. Actualiza la aplicación.");
+      return;
+    }
+    tg.showScanQrPopup({ text: "Apunta al QR del pasajero" }, (text) => {
+      if (!QR_RE.test(text || "")) {
+        setStatus("Ese código no es de un ticket. Sigue escaneando…");
+        return false; // false: el escáner sigue abierto
+      }
+      handle(text);
+      return true; // true: cierra el escáner
+    });
+  }
+
+  if (tg) { tg.ready(); tg.expand(); }
+  $("scan").addEventListener("click", startScan);
+</script>
+</body>
+</html>

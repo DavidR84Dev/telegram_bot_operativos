@@ -1,0 +1,24 @@
+[tool.ruff]
+line-length = 115
+target-version = "py312"
+
+[tool.ruff.lint]
+# E/F: errores reales (pyflakes) y de estilo pycodestyle. B: patrones de bugs comunes (flake8-bugbear).
+# No se activan I (orden de imports) ni UP (pyupgrade): forzarían reescribir el estilo de import ya
+# existente en todo el proyecto sin corregir ningún bug real.
+select = ["E", "F", "B"]
+ignore = ["E501"]  # el proyecto ya usa líneas largas a propósito (textos HTML, mensajes); no es un bug.
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+plugins = ["pydantic.mypy"]
+
+[tool.pytest.ini_options]
+# Umbral deliberadamente por debajo de la cobertura actual (~78%): deja margen
+# y falla si una contribución nueva baja la cobertura, sin exigir 100% en
+# plumbing difícil de probar sin un Odoo real (odoo_client.py, lifespan de main.py).
+addopts = "--cov=app --cov-report=term-missing --cov-fail-under=70"
+
+[tool.coverage.run]
+omit = ["app/__init__.py"]
