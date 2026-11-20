@@ -5,6 +5,24 @@ Versionado: [SemVer](https://semver.org/lang/es/) (`MAJOR.MINOR.PATCH`).
 
 ## [Sin publicar]
 
+### Agregado
+- **Preoperacional vehicular** (`app/preop/`, documentación en `docs/PREOPERACIONAL.md`):
+  - Mini App `/preoperacional` (botón 📝 y comando `/preoperacional`) con autocompletado de vehículo, extracto y contrato desde tablas locales.
+  - Tablas `empleados`, `flota`, `extractos` sincronizadas desde la API REST de Odoo (`viacotur_api`, JWT) con UPSERT por `odoo_id`, desactivación de los que desaparecen y bitácora `sync_runs`.
+  - Tabla `preoperacional` (JSONB para checklist/llantas/atributos dinámicos) con auditoría de sincronización (`pendiente/enviando/enviado/error/fallido`, `odoo_id`, `error_log`, reintentos con backoff).
+  - Worker asyncio que crea el registro en Odoo por XML-RPC sin bloquear al usuario; idempotente (external id + llave natural) y con aviso al conductor del resultado.
+  - Validación HMAC-SHA256 de `initData` y payload estricto con Pydantic (`extra="forbid"`, catálogo de ítems verificado contra los campos de Odoo).
+  - `scripts/introspect_endpoint.py`: genera modelos SQLAlchemy/Pydantic a partir de un endpoint.
+  - CLI de operación: `python -m app.preop.etl`, `python -m app.preop.worker --once | --requeue ID… | --requeue-all`.
+  - Token JWT de la API renovado antes de su vencimiento de 24 h (claim `exp`), con respaldo ante 401.
+  - 30 pruebas nuevas (96 en total); verificadas también contra PostgreSQL 16 real (`PREOP_TEST_DATABASE_URL`).
+- Dependencia `tenacity`.
+
+### Cambiado
+- Menú principal de @QRLectorBot como registro ordenado (`MENU`): **📝 Preoperacional** primero y **📷 Escanear QR** después, una opción por fila; `/start` muestra los botones inline en el mismo orden. Nuevo comando `/escanear`.
+- `webapp_auth.validate_init_data_user()` devuelve el usuario completo de Telegram (`validate_init_data()` se mantiene igual).
+- El servicio deja de ser estrictamente de solo lectura en Odoo: la única escritura es `create` de `preoperacional` (`OdooWriter`); `OdooClient` sigue siendo solo lectura.
+
 ### Corregido
 - `docker-compose.yml`: `extra_hosts: host.docker.internal:host-gateway` para que el contenedor alcance Odoo y `telegram_boarding_bot` en el host sin depender de la IP de la LAN (que cambió por DHCP y dejó el validador sin Odoo).
 

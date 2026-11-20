@@ -2,8 +2,12 @@
 from __future__ import annotations
 
 from html import escape
+from typing import TYPE_CHECKING
 
 from . import ticket_state
+
+if TYPE_CHECKING:
+    from .preop.service import SendOutcome
 
 
 def _route(origin: str | None, destination: str | None) -> str:
@@ -33,4 +37,20 @@ def boarding_confirmed(ticket: dict) -> str:
     return (
         f"✅ <b>Abordaje confirmado ({leg})</b>\n\n"
         f"{ticket_card(ticket)}{tail}"
+    )
+
+
+def preop_result(outcome: SendOutcome) -> str:
+    """Aviso al conductor cuando su preoperacional llega a Odoo (o falla definitivamente)."""
+    if outcome.status.value == "enviado":
+        name = escape(outcome.odoo_name or f"#{outcome.preop_id}")
+        text = f"✅ <b>Preoperacional registrado en Odoo</b>\n\n📄 {name}"
+        if outcome.no_conformes:
+            text += (f"\n⚠️ {outcome.no_conformes} ítem(s) no conforme(s): Odoo abrió "
+                     "un plan de acción.")
+        return text
+    return (
+        "❌ <b>Tu preoperacional no pudo registrarse en Odoo</b>\n\n"
+        f"Referencia local: #{outcome.preop_id}. El área de sistemas ya tiene el detalle; "
+        "no es necesario diligenciarlo de nuevo."
     )

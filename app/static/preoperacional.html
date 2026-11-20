@@ -1,0 +1,354 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Preoperacional</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: var(--tg-theme-bg-color, #fff);
+    --fg: var(--tg-theme-text-color, #111);
+    --hint: var(--tg-theme-hint-color, #777);
+    --card: var(--tg-theme-secondary-bg-color, #f2f2f4);
+    --accent: var(--tg-theme-button-color, #2481cc);
+    --accent-fg: var(--tg-theme-button-text-color, #fff);
+    --ok: #2e9d57; --bad: #d64545; --na: #8a8a8a;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 16px 16px 96px; font: 15px/1.4 system-ui, sans-serif; background: var(--bg); color: var(--fg); }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  h2 { font-size: 16px; margin: 0; }
+  .hint { color: var(--hint); font-size: 13px; }
+  .card { background: var(--card); border-radius: 12px; padding: 12px; margin: 12px 0; }
+  label.field { display: block; margin: 10px 0 4px; font-weight: 600; }
+  select, input, textarea {
+    width: 100%; padding: 10px; border-radius: 8px; border: 1px solid color-mix(in srgb, var(--hint) 40%, transparent);
+    background: var(--bg); color: var(--fg); font: inherit;
+  }
+  textarea { min-height: 80px; resize: vertical; }
+  .section-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; cursor: pointer; }
+  .section-head .count { font-size: 12px; color: var(--hint); }
+  .section-body { margin-top: 8px; }
+  .item { padding: 8px 0; border-top: 1px solid color-mix(in srgb, var(--hint) 20%, transparent); }
+  .item:first-child { border-top: 0; }
+  .item .name { margin-bottom: 6px; }
+  .opts { display: flex; gap: 6px; flex-wrap: wrap; }
+  .opts button {
+    flex: 1 1 0; min-width: 70px; padding: 8px 6px; border-radius: 8px; border: 1px solid color-mix(in srgb, var(--hint) 40%, transparent);
+    background: var(--bg); color: var(--fg); font: inherit; font-size: 13px;
+  }
+  .opts button[aria-pressed="true"][data-v="conforme"], .opts button[aria-pressed="true"][data-v="si"], .opts button[aria-pressed="true"][data-v="s"] { background: var(--ok); color: #fff; border-color: var(--ok); }
+  .opts button[aria-pressed="true"][data-v="no conforme"], .opts button[aria-pressed="true"][data-v="no"], .opts button[aria-pressed="true"][data-v="n"] { background: var(--bad); color: #fff; border-color: var(--bad); }
+  .opts button[aria-pressed="true"][data-v="no aplica"] { background: var(--na); color: #fff; border-color: var(--na); }
+  .item.missing .name { color: var(--bad); }
+  .link { background: none; border: 0; color: var(--accent); font: inherit; font-size: 13px; padding: 0; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .grid2 label { font-size: 13px; color: var(--hint); }
+  .primary { display: block; width: 100%; padding: 14px; border: 0; border-radius: 10px; font-size: 16px; background: var(--accent); color: var(--accent-fg); }
+  #msg { white-space: pre-line; }
+  #msg.error { color: var(--bad); }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<h1>📝 Inspección preoperacional</h1>
+<p id="msg" class="hint">Cargando…</p>
+
+<form id="form" hidden novalidate>
+  <section class="card" id="header-card">
+    <div id="empleado" class="hint"></div>
+    <label class="field" for="vehiculo">Vehículo</label>
+    <input id="vehiculo-buscar" type="search" placeholder="Buscar por número interno, placa o nombre" autocomplete="off">
+    <select id="vehiculo" required></select>
+    <div id="odometro-hint" class="hint"></div>
+
+    <label class="field" for="extracto">Extracto (opcional)</label>
+    <select id="extracto"></select>
+
+    <label class="field" for="contrato">Contrato (opcional)</label>
+    <select id="contrato"></select>
+
+    <label class="field" for="km">Kilometraje actual</label>
+    <input id="km" type="number" inputmode="decimal" min="0" step="0.1" required>
+  </section>
+
+  <div id="sections"></div>
+
+  <section class="card">
+    <div class="section-head" data-toggle="medidas"><h2>Labrado y presión de llantas</h2><span class="count">opcional</span></div>
+    <div class="section-body" id="medidas" hidden><div class="grid2" id="measures"></div></div>
+  </section>
+
+  <section class="card">
+    <label class="field" for="observaciones">Observaciones</label>
+    <textarea id="observaciones" maxlength="2000"></textarea>
+  </section>
+
+  <button class="primary" id="enviar" type="submit">Enviar preoperacional</button>
+</form>
+
+<section id="done" class="card" hidden>
+  <h2 id="done-title"></h2>
+  <p id="done-text" class="hint"></p>
+  <button class="primary" id="cerrar" type="button">Cerrar</button>
+</section>
+
+<script>
+(() => {
+  "use strict";
+  const tg = window.Telegram && window.Telegram.WebApp;
+  const $ = (id) => document.getElementById(id);
+  const el = (tag, props = {}, children = []) => {
+    const n = document.createElement(tag);
+    for (const [k, v] of Object.entries(props)) {
+      if (k === "text") n.textContent = v;
+      else if (k === "dataset") Object.assign(n.dataset, v);
+      else n.setAttribute(k, v);
+    }
+    for (const c of children) n.append(c);
+    return n;
+  };
+
+  const state = { form: null, ctx: null, answers: {}, uuid: null, sending: false };
+
+  function setMsg(text, isError = false) {
+    $("msg").textContent = text;
+    $("msg").className = isError ? "error" : "hint";
+  }
+
+  function newUuid() {
+    if (crypto.randomUUID) return crypto.randomUUID();
+    const b = crypto.getRandomValues(new Uint8Array(16));
+    b[6] = (b[6] & 0x0f) | 0x40; b[8] = (b[8] & 0x3f) | 0x80;
+    const h = [...b].map((x) => x.toString(16).padStart(2, "0")).join("");
+    return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+  }
+
+  async function api(path, options = {}) {
+    const res = await fetch(path, {
+      ...options,
+      headers: { "Content-Type": "application/json", "X-Telegram-Init-Data": tg ? tg.initData : "", ...(options.headers || {}) },
+    });
+    let body = null;
+    try { body = await res.json(); } catch (_) { /* respuesta sin JSON */ }
+    if (!res.ok) {
+      let detail = body && body.detail;
+      if (Array.isArray(detail)) detail = detail.map((d) => d.msg).join("\n");
+      throw new Error(detail || `Error ${res.status}`);
+    }
+    return body;
+  }
+
+  // ── encabezado ───────────────────────────────────────────────────────────
+  function fillVehiculos(filter = "") {
+    const sel = $("vehiculo");
+    const current = sel.value;
+    const f = filter.trim().toLowerCase();
+    sel.replaceChildren(el("option", { value: "", text: "— Selecciona —" }));
+    for (const v of state.ctx.vehiculos) {
+      const label = [v.numero_interno, v.matricula, v.nombre].filter(Boolean).join(" · ");
+      if (f && !label.toLowerCase().includes(f)) continue;
+      sel.append(el("option", { value: String(v.id), text: label }));
+    }
+    sel.value = current;
+  }
+
+  function selectedVehiculo() {
+    return state.ctx.vehiculos.find((v) => String(v.id) === $("vehiculo").value) || null;
+  }
+
+  function fillExtractos() {
+    const v = selectedVehiculo();
+    const sel = $("extracto");
+    sel.replaceChildren(el("option", { value: "", text: "— Sin extracto —" }));
+    if (!v) return fillContratos();
+    const items = state.ctx.extractos.filter((e) => e.vehiculo_odoo_id === v.odoo_id);
+    for (const e of items) {
+      const fecha = e.fecha_hora_inicio ? new Date(e.fecha_hora_inicio).toLocaleString() : "";
+      sel.append(el("option", { value: String(e.id), text: [e.codigo, fecha, e.conductor].filter(Boolean).join(" · ") }));
+    }
+    if (items.length === 1) sel.value = String(items[0].id);
+    $("odometro-hint").textContent = v.odometer_post ? `Último odómetro registrado: ${v.odometer_post}` : "";
+    fillContratos();
+  }
+
+  function fillContratos() {
+    const sel = $("contrato");
+    sel.replaceChildren(el("option", { value: "", text: "— Automático —" }));
+    const ext = state.ctx.extractos.find((e) => String(e.id) === $("extracto").value);
+    const seen = new Set();
+    for (const c of [...(ext ? ext.contratos : []), ...state.ctx.empleado.contratos]) {
+      if (seen.has(c.id_contrato)) continue;
+      seen.add(c.id_contrato);
+      sel.append(el("option", { value: String(c.id_contrato), text: c.nombre || `Contrato ${c.id_contrato}` }));
+    }
+  }
+
+  // ── checklist ────────────────────────────────────────────────────────────
+  const OPTION_LABEL = { "conforme": "Conforme", "no conforme": "No conforme", "no aplica": "N/A", "si": "Sí", "no": "No", "s": "Sí", "n": "No" };
+
+  function setAnswer(key, value) {
+    state.answers[key] = value;
+    document.querySelectorAll(`[data-item="${CSS.escape(key)}"] button`).forEach((b) => {
+      b.setAttribute("aria-pressed", String(b.dataset.v === value));
+    });
+    const row = document.querySelector(`.item[data-row="${CSS.escape(key)}"]`);
+    if (row) row.classList.remove("missing");
+    updateCounts();
+  }
+
+  function updateCounts() {
+    for (const s of state.form.sections) {
+      const done = s.items.filter((i) => state.answers[i.key]).length;
+      const node = document.querySelector(`[data-count="${CSS.escape(s.title)}"]`);
+      if (node) node.textContent = `${done}/${s.items.length}`;
+    }
+  }
+
+  function renderSections() {
+    const root = $("sections");
+    root.replaceChildren();
+    state.form.sections.forEach((s, idx) => {
+      const bodyId = `sec-${idx}`;
+      const allOk = el("button", { type: "button", class: "link", text: "Marcar todo conforme" });
+      allOk.addEventListener("click", () => s.items.forEach((i) => i.options.includes("conforme") && setAnswer(i.key, "conforme")));
+      const body = el("div", { class: "section-body", id: bodyId }, [allOk]);
+      for (const item of s.items) {
+        const opts = el("div", { class: "opts", dataset: { item: item.key } });
+        for (const o of item.options) {
+          const b = el("button", { type: "button", "aria-pressed": "false", text: OPTION_LABEL[o] || o, dataset: { v: o } });
+          b.addEventListener("click", () => setAnswer(item.key, o));
+          opts.append(b);
+        }
+        body.append(el("div", { class: "item", dataset: { row: item.key } }, [el("div", { class: "name", text: item.label }), opts]));
+      }
+      const head = el("div", { class: "section-head", dataset: { toggle: bodyId } }, [
+        el("h2", { text: s.title }), el("span", { class: "count", dataset: { count: s.title } }),
+      ]);
+      root.append(el("section", { class: "card" }, [head, body]));
+    });
+    updateCounts();
+  }
+
+  function renderMeasures() {
+    const root = $("measures");
+    root.replaceChildren();
+    for (const m of state.form.measures) {
+      const id = `m-${m.key}`;
+      root.append(el("div", {}, [
+        el("label", { for: id, text: `${m.label} (${m.unit})` }),
+        el("input", { id, type: "number", inputmode: "decimal", min: "0", max: String(m.max), step: "0.1", dataset: { measure: m.key } }),
+      ]));
+    }
+  }
+
+  document.addEventListener("click", (ev) => {
+    const head = ev.target.closest("[data-toggle]");
+    if (!head || ev.target.closest("button")) return;
+    const body = document.getElementById(head.dataset.toggle);
+    if (body) body.hidden = !body.hidden;
+  });
+
+  // ── envío ────────────────────────────────────────────────────────────────
+  function collect() {
+    const errors = [];
+    const vehiculo = selectedVehiculo();
+    if (!vehiculo) errors.push("Selecciona el vehículo.");
+    const km = parseFloat($("km").value);
+    if (!Number.isFinite(km) || km < 0) errors.push("Ingresa el kilometraje actual.");
+    const missing = [];
+    for (const s of state.form.sections) for (const i of s.items) if (!state.answers[i.key]) missing.push(i);
+    document.querySelectorAll(".item.missing").forEach((n) => n.classList.remove("missing"));
+    for (const i of missing) {
+      const row = document.querySelector(`.item[data-row="${CSS.escape(i.key)}"]`);
+      if (row) { row.classList.add("missing"); row.parentElement.hidden = false; }
+    }
+    if (missing.length) errors.push(`Faltan ${missing.length} ítem(s) por responder (marcados en rojo).`);
+    const llantas = {};
+    document.querySelectorAll("[data-measure]").forEach((input) => {
+      if (input.value === "") return;
+      const n = parseFloat(input.value);
+      if (Number.isFinite(n)) llantas[input.dataset.measure] = n;
+    });
+    if (errors.length) return { errors };
+    const extracto = $("extracto").value ? Number($("extracto").value) : null;
+    const contrato = $("contrato").value ? Number($("contrato").value) : null;
+    return {
+      payload: {
+        uuid: state.uuid, vehiculo_id: vehiculo.id, extracto_id: extracto, contrato_odoo_id: contrato,
+        kilometraje: km, observaciones: $("observaciones").value.trim() || null,
+        checklist: { ...state.answers }, llantas, extra: {},
+      },
+    };
+  }
+
+  async function submit(ev) {
+    ev.preventDefault();
+    if (state.sending) return;
+    const { errors, payload } = collect();
+    if (errors) { setMsg(errors.join("\n"), true); window.scrollTo({ top: 0, behavior: "smooth" }); return; }
+    state.sending = true;
+    $("enviar").disabled = true;
+    setMsg("Enviando…");
+    try {
+      // El mismo uuid en un reintento evita duplicados (idempotencia del servidor).
+      const out = await api("/api/preop", { method: "POST", body: JSON.stringify(payload) });
+      showDone(out);
+    } catch (err) {
+      setMsg(`No se pudo enviar: ${err.message}\nPuedes reintentar: no se duplicará.`, true);
+      $("enviar").disabled = false;
+    } finally {
+      state.sending = false;
+    }
+  }
+
+  function showDone(out) {
+    $("form").hidden = true;
+    $("done").hidden = false;
+    setMsg("");
+    $("done-title").textContent = out.duplicado ? "Este formulario ya había sido recibido" : "✅ Preoperacional recibido";
+    const nc = out.no_conformes ? `\n⚠️ ${out.no_conformes} ítem(s) no conforme(s).` : "";
+    $("done-text").textContent =
+      `Se está registrando en Odoo. Te llegará la confirmación en el chat del bot.${nc}`;
+    if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+  }
+
+  // ── arranque ─────────────────────────────────────────────────────────────
+  async function init() {
+    if (!tg || !tg.initData) {
+      setMsg("Abre este formulario desde el botón «📝 Preoperacional» del bot en Telegram.", true);
+      return;
+    }
+    tg.ready();
+    tg.expand();
+    try {
+      const [form, ctx] = await Promise.all([api("/api/preop/form"), api("/api/preop/context")]);
+      state.form = form;
+      state.ctx = ctx;
+    } catch (err) {
+      setMsg(err.message, true);
+      return;
+    }
+    state.uuid = newUuid();
+    const e = state.ctx.empleado;
+    $("empleado").textContent = `👤 ${e.nombre}${e.puesto_trabajo ? " · " + e.puesto_trabajo : ""}`;
+    fillVehiculos();
+    fillExtractos();
+    renderSections();
+    renderMeasures();
+    $("vehiculo-buscar").addEventListener("input", (ev) => fillVehiculos(ev.target.value));
+    $("vehiculo").addEventListener("change", fillExtractos);
+    $("extracto").addEventListener("change", fillContratos);
+    $("form").addEventListener("submit", submit);
+    $("cerrar").addEventListener("click", () => tg.close());
+    $("form").hidden = false;
+    setMsg(state.ctx.vehiculos.length ? "Responde todos los ítems y envía." : "No hay vehículos sincronizados para tu compañía.", !state.ctx.vehiculos.length);
+  }
+
+  init();
+})();
+</script>
+</body>
+</html>

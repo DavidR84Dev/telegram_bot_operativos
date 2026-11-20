@@ -66,10 +66,34 @@ def test_non_qr_text_points_to_scanner_button():
     assert "Escanear QR" in upd.message.reply_text.await_args.args[0]
 
 
-def test_scanner_keyboard_is_plain_text_button():
-    kb = tga.scanner_keyboard()
-    assert kb.keyboard[0][0].text == tga.BTN_ESCANEAR
-    assert kb.keyboard[0][0].web_app is None
+def test_main_keyboard_order_preoperacional_then_scanner():
+    kb = tga.main_keyboard()
+    assert [[b.text for b in row] for row in kb.keyboard] == [[tga.BTN_PREOP], [tga.BTN_ESCANEAR]]
+    # Botones de texto: las Mini Apps se abren con botones inline (initData).
+    assert all(b.web_app is None for row in kb.keyboard for b in row)
+
+
+def test_start_shows_menu_and_inline_buttons_in_order():
+    upd = _update(text="/start")
+    asyncio.run(tga.cmd_start(upd, _ctx(_services())))
+    first, second = upd.message.reply_text.await_args_list
+    assert first.args[0].index("Preoperacional") < first.args[0].index("Escanear QR")
+    urls = [row[0].web_app.url for row in second.kwargs["reply_markup"].inline_keyboard]
+    assert urls == ["https://scan.example.com/preoperacional", "https://scan.example.com/scanner"]
+
+
+def test_menu_buttons_open_their_mini_app():
+    for label, url in ((tga.BTN_PREOP, "https://scan.example.com/preoperacional"),
+                       (tga.BTN_ESCANEAR, "https://scan.example.com/scanner")):
+        upd = _update(text=label)
+        asyncio.run(tga.on_text(upd, _ctx(_services())))
+        assert upd.message.reply_text.await_args.kwargs["reply_markup"].inline_keyboard[0][0].web_app.url == url
+
+
+def test_menu_button_requires_authorization():
+    upd = _update(user_id=111, text=tga.BTN_PREOP)
+    asyncio.run(tga.on_text(upd, _ctx(_services(pin_ok=False))))
+    assert "no autorizado" in upd.message.reply_text.await_args.args[0].lower()
 
 
 def test_scanner_inline_button_is_web_app():
