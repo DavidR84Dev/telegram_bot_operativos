@@ -181,7 +181,7 @@ tests/test_preop.py              29 pruebas (SQLite; opcional PostgreSQL real)
 
 ### Registrar la Mini App en @BotFather
 
-La Mini App se abre desde un **botón inline `web_app`** que envía el bot (`/preoperacional` o el botón 📝, primera opción del menú de @QRLectorBot), así que no hace falta registrar nada para que funcione. Opcionalmente:
+La Mini App se abre desde un **botón inline `web_app`** que envía el bot (`/preoperacional` o el botón 📝, primera opción del menú de @OperativosViacoturBot), así que no hace falta registrar nada para que funcione. Opcionalmente:
 
 1. `@BotFather → /mybots → <bot> → Bot Settings → Menu Button → Configure menu button`: URL `https://<PREOP_BASE_URL>/preoperacional` y texto `Preoperacional`. Así se abre desde el botón de menú del chat.
 2. Para un enlace directo `t.me/<bot>/preop`: `/newapp`, elegir el bot, título, descripción, imagen 640×360, URL `https://<PREOP_BASE_URL>/preoperacional` y nombre corto `preop`.

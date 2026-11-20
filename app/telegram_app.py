@@ -1,4 +1,4 @@
-"""Handlers de @QRLectorBot: menú principal, formularios (Mini Apps), ubicación y aviso de abordaje.
+"""Handlers de @OperativosViacoturBot: menú principal, formularios (Mini Apps), ubicación y aviso de abordaje.
 
 El bot es el punto de entrada de las funcionalidades operativas. Teclado principal:
 

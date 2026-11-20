@@ -1,4 +1,4 @@
-# Plan de continuidad: preoperacional y menú de @QRLectorBot
+# Plan de continuidad: preoperacional y menú de @OperativosViacoturBot
 
 > Documento de traspaso, por si se pierde la sesión de trabajo. Estado al **2026-11-20**.
 > Para retomar con Claude Code: *"Lee `docs/PLAN_CONTINUIDAD.md` y `docs/mapa_viacotur_form.md` y continúa desde la sección 5"*.
@@ -9,7 +9,7 @@
 ## 1. Contexto
 
 - **Repositorio:** `/opt/odoo/custom/telegram_bot_operativos` (GitHub `DavidR84Dev/telegram_bot_operativos`). Se trabaja en la rama `test_bot`. El paso a `main` va **siempre por PR con `gh pr create --base main --head test_bot`**, nunca con merge directo.
-- **Bot:** **@QRLectorBot** es el punto de entrada de todas las funcionalidades operativas. Cada funcionalidad es una Mini App con su botón en el menú.
+- **Bot:** **@OperativosViacoturBot** es el punto de entrada de todas las funcionalidades operativas. Cada funcionalidad es una Mini App con su botón en el menú.
 - **Odoo de pruebas:** `qa2`, en `127.0.0.1:8079` desde el host y `host.docker.internal:8079` desde el contenedor. Es una base de calidad y no afecta producción.
 - **Bot de referencia:** `@viacoturform_bot` ("viacotur-form"), que define cómo deben verse y funcionar los formularios. El mapa completo está en [`docs/mapa_viacotur_form.md`](mapa_viacotur_form.md).
 - **Especificación original:** ETL de maestros, Mini App con `initData` HMAC, persistencia local con `sync_status` y worker a Odoo por XML-RPC. Implementada y documentada en [`docs/PREOPERACIONAL.md`](PREOPERACIONAL.md).
@@ -86,7 +86,7 @@ En Odoo, `preoperacional` solo tiene **un** campo de imagen: `testigos_img` (Bin
 
 Responder, por ejemplo, "1A, 2A, 3A, 4A". La opción **A** es la recomendada en cada caso.
 
-1. **Menú de @QRLectorBot**
+1. **Menú de @OperativosViacoturBot**
    - **A:** como viacotur-form: teclado `📋 Formularios` + `📷 Escanear QR`; Formularios abre la lista inline con ✅ Preoperacional primero.
    - **B:** mantener el actual.
 2. **Formato del preoperacional**

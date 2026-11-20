@@ -71,7 +71,7 @@ Si agregas una variable:
 
 ## Agregar una opción al menú del bot
 
-El teclado principal de @QRLectorBot es fijo: **📋 Formularios**, **📷 Escanear QR** y **📍 Enviar ubicación**. Los formularios salen de la tupla `FORMULARIOS` de `app/telegram_app.py`; el orden de la tupla es el orden de la lista inline (hoy: ✅ Preoperacional).
+El teclado principal de @OperativosViacoturBot es fijo: **📋 Formularios**, **📷 Escanear QR** y **📍 Enviar ubicación**. Los formularios salen de la tupla `FORMULARIOS` de `app/telegram_app.py`; el orden de la tupla es el orden de la lista inline (hoy: ✅ Preoperacional).
 
 1. Servir la Mini App desde este servicio (ruta FastAPI + `app/static/<nombre>.html`) y validar `initData` en su API (`app.webapp_auth.validate_init_data_user`). Seguir la identidad visual del preoperacional (cabecera con `/static/viacotur-logo.png`, paleta azul, pasos con barra de progreso).
 2. Agregar una `MenuOption(label, open_text, prompt, help, url)` a `FORMULARIOS` en la posición deseada. La lista, la ayuda de `/start` y el manejo se generan solos.

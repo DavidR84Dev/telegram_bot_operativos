@@ -1,6 +1,6 @@
 # Telegram Bot Operativos — Validador de QR de abordaje y Preoperacional
 
-Servicio independiente (FastAPI + `python-telegram-bot`) detrás de **@QRLectorBot**, el punto de entrada de las funcionalidades operativas. Su diseño sigue al bot de referencia `@viacoturform_bot` ([docs/mapa_viacotur_form.md](docs/mapa_viacotur_form.md)). Menú principal (teclado persistente, una opción por fila):
+Servicio independiente (FastAPI + `python-telegram-bot`) detrás de **@OperativosViacoturBot**, el punto de entrada de las funcionalidades operativas. Su diseño sigue al bot de referencia `@viacoturform_bot` ([docs/mapa_viacotur_form.md](docs/mapa_viacotur_form.md)). Menú principal (teclado persistente, una opción por fila):
 
 | Botón | Comando | Qué hace |
 |---|---|---|
