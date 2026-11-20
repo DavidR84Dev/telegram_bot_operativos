@@ -5,7 +5,10 @@ Todo es síncrono (SQLAlchemy + XML-RPC); el código async lo llama con
 """
 from __future__ import annotations
 
+import base64
+import hashlib
 import logging
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
@@ -16,14 +19,21 @@ from sqlalchemy.orm import Session
 
 from .checklist import count_no_conformes
 from .db import Database
-from .models import Empleado, Extracto, Flota, Preoperacional, SyncStatus, utc_now
+from .models import Empleado, Extracto, Flota, Preoperacional, PreopFoto, SyncStatus, Ubicacion, utc_now
 from .odoo_writer import OdooPermanentError, OdooTransientError, OdooWriter, build_odoo_values
-from .schemas import PreoperacionalIn
+from .schemas import PreoperacionalIn, decode_photo
 
 logger = logging.getLogger(__name__)
 
 BACKOFF_BASE_SECONDS = 30
 BACKOFF_MAX_SECONDS = 3600
+# Estados de car.extractos que habilitan el preoperacional ("Aprobada" en Odoo).
+ESTADOS_EXTRACTO_APROBADO = frozenset({"approved"})
+# Margen de vigencia del extracto a cada lado de "ahora" (turnos que cruzan medianoche).
+VIGENCIA_MARGEN = timedelta(days=1)
+# Una ubicación enviada desde el chat se asocia al preoperacional de los últimos N minutos.
+UBICACION_VENTANA = timedelta(minutes=10)
+FOTO_TESTIGOS = "testigos"
 
 
 class SubmissionError(Exception):
@@ -55,48 +65,81 @@ def employee_for_telegram(db: Database, telegram_user_id: int) -> Empleado | Non
     return rows[0] if rows else None
 
 
-def form_context(db: Database, empleado: Empleado, now: datetime | None = None) -> dict[str, Any]:
-    """Datos de autocompletado: empleado, vehículos activos de su compañía y extractos vigentes."""
+def normalize_name(value: str | None) -> str:
+    """Nombre comparable: sin tildes, en mayúsculas y con espacios simples."""
+    text = unicodedata.normalize("NFKD", value or "")
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    return " ".join(text.upper().split())
+
+
+def extractos_del_conductor(session: Session, empleado: Empleado, now: datetime | None = None) -> list[Extracto]:
+    """Extractos **aprobados** y vigentes de la compañía del empleado en los que figura como conductor.
+
+    La API entrega el conductor por nombre (conductor, segundo o tercer conductor):
+    se compara normalizado. Cuando ``viacotur_api`` exponga el id del conductor,
+    esta comparación debe pasar a ser por id.
+    """
     now = now or utc_now()
-    with db.session() as session:
-        vehiculos = session.scalars(
-            select(Flota).where(Flota.activo.is_(True), Flota.company_odoo_id == empleado.company_odoo_id)
-            .order_by(Flota.numero_interno, Flota.nombre)
-        ).all()
-        # Vigente: abarca "ahora" con 1 día de margen a cada lado (turnos que cruzan medianoche).
-        margin = timedelta(days=1)
-        extractos = session.scalars(
-            select(Extracto).where(
-                Extracto.activo.is_(True),
-                Extracto.company_odoo_id == empleado.company_odoo_id,
-                Extracto.vehiculo_id.is_not(None),
-                or_(Extracto.fecha_hora_inicio.is_(None), Extracto.fecha_hora_inicio <= now + margin),
-                or_(Extracto.fecha_hora_fin.is_(None), Extracto.fecha_hora_fin >= now - margin),
-            ).order_by(Extracto.fecha_hora_inicio.desc())
-        ).unique().all()
-    contratos_empleado = [
+    candidatos = session.scalars(
+        select(Extracto).where(
+            Extracto.activo.is_(True),
+            Extracto.company_odoo_id == empleado.company_odoo_id,
+            Extracto.estado.in_(ESTADOS_EXTRACTO_APROBADO),
+            Extracto.vehiculo_id.is_not(None),
+            or_(Extracto.fecha_hora_inicio.is_(None), Extracto.fecha_hora_inicio <= now + VIGENCIA_MARGEN),
+            or_(Extracto.fecha_hora_fin.is_(None), Extracto.fecha_hora_fin >= now - VIGENCIA_MARGEN),
+        ).order_by(Extracto.fecha_hora_inicio.desc())
+    ).unique().all()
+    nombre = normalize_name(empleado.nombre)
+    return [
+        e for e in candidatos
+        if nombre and nombre in {normalize_name(c) for c in (e.conductor, e.segundo_conductor, e.tercer_conductor)}
+    ]
+
+
+def _contratos_empleado(empleado: Empleado) -> list[dict[str, Any]]:
+    return [
         {"id_contrato": cid, "nombre": nombre}
         for cid, nombre in ((empleado.id_contract, empleado.contrato),
                             (empleado.contrato_temporal_id, empleado.contrato_temporal))
         if cid
     ]
+
+
+def _contratos_permitidos(extracto: Extracto, empleado: Empleado) -> list[dict[str, Any]]:
+    """Contratos del extracto; si el extracto no trae ninguno, los del empleado."""
+    contratos = [c for c in extracto.contratos_list if c.get("id_contrato")]
+    return contratos or _contratos_empleado(empleado)
+
+
+def form_context(db: Database, empleado: Empleado, now: datetime | None = None) -> dict[str, Any]:
+    """Datos del paso 1 de la Mini App: conductor, responsable y extractos aprobados con su vehículo."""
+    with db.session() as session:
+        extractos = extractos_del_conductor(session, empleado, now)
+        items = []
+        for e in extractos:
+            v = e.flota
+            items.append({
+                "id": e.id, "codigo": e.codigo, "estado": e.estado,
+                "fecha_hora_inicio": e.fecha_hora_inicio.isoformat() if e.fecha_hora_inicio else None,
+                "fecha_hora_fin": e.fecha_hora_fin.isoformat() if e.fecha_hora_fin else None,
+                "contratos": _contratos_permitidos(e, empleado),
+                "vehiculo": {
+                    "id": v.id if v and v.activo else None,
+                    "odoo_id": e.vehiculo_id,
+                    "nombre": v.nombre if v else e.vehiculo,
+                    "matricula": v.matricula if v else None,
+                    "numero_interno": v.numero_interno if v else None,
+                    "odometer_post": v.odometer_post if v else None,
+                },
+            })
     return {
         "empleado": {
             "nombre": empleado.nombre, "puesto_trabajo": empleado.puesto_trabajo,
-            "responsable": empleado.responsable, "contratos": contratos_empleado,
+            "responsable": empleado.responsable,
         },
-        "vehiculos": [
-            {"id": v.id, "odoo_id": v.odoo_id, "nombre": v.nombre, "matricula": v.matricula,
-             "numero_interno": v.numero_interno, "odometer_post": v.odometer_post}
-            for v in vehiculos
-        ],
-        "extractos": [
-            {"id": e.id, "codigo": e.codigo, "vehiculo_odoo_id": e.vehiculo_id, "estado": e.estado,
-             "conductor": e.conductor, "contratos": e.contratos_list,
-             "fecha_hora_inicio": e.fecha_hora_inicio.isoformat() if e.fecha_hora_inicio else None,
-             "fecha_hora_fin": e.fecha_hora_fin.isoformat() if e.fecha_hora_fin else None}
-            for e in extractos
-        ],
+        "validado": bool(items),
+        "extractos": items,
     }
 
 
@@ -121,27 +164,26 @@ def submit(db: Database, identity: TelegramIdentity, data: PreoperacionalIn) -> 
         if empleado is None:
             raise SubmissionError("Tu usuario de Telegram no está asociado a un empleado activo", 403)
 
-        vehiculo = session.get(Flota, data.vehiculo_id)
-        if vehiculo is None or not vehiculo.activo:
-            raise SubmissionError("Vehículo no encontrado o inactivo")
-        if vehiculo.company_odoo_id != empleado.company_odoo_id:
-            raise SubmissionError("El vehículo no pertenece a tu compañía", 403)
+        aprobados = {e.id: e for e in extractos_del_conductor(session, empleado)}
+        extracto = aprobados.get(data.extracto_id)
+        if extracto is None:
+            raise SubmissionError("El extracto no está aprobado y vigente, o no estás registrado como su conductor", 403)
+        vehiculo = session.scalar(select(Flota).where(Flota.odoo_id == extracto.vehiculo_id, Flota.activo.is_(True)))
+        if vehiculo is None:
+            raise SubmissionError("El vehículo del extracto aún no está sincronizado; intenta en unos minutos", 409)
+        if data.vehiculo_id is not None and data.vehiculo_id != vehiculo.id:
+            raise SubmissionError("El vehículo no corresponde al extracto")
 
-        extracto = None
-        if data.extracto_id is not None:
-            extracto = session.get(Extracto, data.extracto_id)
-            if extracto is None or not extracto.activo:
-                raise SubmissionError("Extracto no encontrado o inactivo")
-            if extracto.vehiculo_id is not None and extracto.vehiculo_id != vehiculo.odoo_id:
-                raise SubmissionError("El extracto no corresponde al vehículo seleccionado")
-
+        permitidos = [c["id_contrato"] for c in _contratos_permitidos(extracto, empleado)]
         contrato = data.contrato_odoo_id
-        allowed_contracts = {c["id_contrato"] for c in (extracto.contratos_list if extracto else [])}
-        allowed_contracts |= {cid for cid in (empleado.id_contract, empleado.contrato_temporal_id) if cid}
-        if contrato is not None and contrato not in allowed_contracts:
-            raise SubmissionError("El contrato no corresponde al extracto ni al empleado")
-        if contrato is None and extracto is not None and len(extracto.contratos_list) == 1:
-            contrato = extracto.contratos_list[0]["id_contrato"]
+        if contrato is not None and contrato not in permitidos:
+            raise SubmissionError("El contrato no corresponde al extracto")
+        if contrato is None and len(permitidos) == 1:
+            contrato = permitidos[0]
+        if contrato is None and len(permitidos) > 1:
+            raise SubmissionError("Selecciona el contrato")
+
+        foto, mime = decode_photo(data.testigos_img)
 
         preop = Preoperacional(
             uuid=data.uuid,
@@ -150,7 +192,7 @@ def submit(db: Database, identity: TelegramIdentity, data: PreoperacionalIn) -> 
             firma_nombre=identity.full_name[:255] or empleado.nombre,
             empleado_id=empleado.id,
             vehiculo_id=vehiculo.id,
-            extracto_id=extracto.id if extracto else None,
+            extracto_id=extracto.id,
             contrato_odoo_id=contrato,
             fecha=utc_now(),
             kilometraje=data.kilometraje,
@@ -165,6 +207,11 @@ def submit(db: Database, identity: TelegramIdentity, data: PreoperacionalIn) -> 
         )
         session.add(preop)
         try:
+            session.flush()
+            session.add(PreopFoto(
+                preop_id=preop.id, tipo=FOTO_TESTIGOS, mime=mime, contenido=foto, tamano=len(foto),
+                sha256=hashlib.sha256(foto).hexdigest(),
+            ))
             session.flush()
         except IntegrityError as exc:
             # Carrera: el mismo uuid llegó dos veces en paralelo.
@@ -232,7 +279,10 @@ def send_one(db: Database, writer: OdooWriter, preop_id: int, max_attempts: int)
         preop = session.get(Preoperacional, preop_id)
         if preop is None or preop.sync_status != SyncStatus.ENVIANDO:
             raise LookupError(f"preoperacional {preop_id} no está en estado enviando")
-        vals = build_odoo_values(preop, _boss_odoo_id(session, preop.empleado))
+        foto = session.scalar(select(PreopFoto.contenido).where(
+            PreopFoto.preop_id == preop.id, PreopFoto.tipo == FOTO_TESTIGOS))
+        vals = build_odoo_values(preop, _boss_odoo_id(session, preop.empleado),
+                                 testigos_b64=base64.b64encode(foto).decode("ascii") if foto else None)
         ref, submitted_at, attempts = preop.uuid, preop.fecha, preop.attempts
         user_id, no_conformes = preop.telegram_user_id, preop.no_conformes
 
@@ -283,3 +333,37 @@ def requeue_failed(db: Database, preop_ids: list[int] | None = None) -> int:
             .execution_options(synchronize_session=False)
         )
         return int(result.rowcount or 0)  # type: ignore[attr-defined]  # CursorResult
+
+
+# ──────────────────────────────────── ubicación ───────────────────────────────────────
+
+@dataclass(frozen=True)
+class UbicacionRegistrada:
+    id: int
+    preop_id: int | None
+    preop_nombre: str | None  # PRE-xxxx si ya está en Odoo
+
+
+def registrar_ubicacion(db: Database, telegram_user_id: int, latitud: float, longitud: float,
+                        precision_m: float | None = None, now: datetime | None = None) -> UbicacionRegistrada:
+    """Guarda la ubicación compartida desde el chat y la asocia al preoperacional reciente del usuario."""
+    now = now or utc_now()
+    with db.session() as session:
+        empleado = session.scalar(
+            select(Empleado).where(Empleado.codigo_pin == str(telegram_user_id), Empleado.activo.is_(True))
+            .order_by(Empleado.updated_at.desc()).limit(1)
+        )
+        preop = session.scalar(
+            select(Preoperacional).where(
+                Preoperacional.telegram_user_id == telegram_user_id,
+                Preoperacional.created_at >= now - UBICACION_VENTANA,
+            ).order_by(Preoperacional.created_at.desc()).limit(1)
+        )
+        ubicacion = Ubicacion(
+            telegram_user_id=telegram_user_id, empleado_id=empleado.id if empleado else None,
+            preop_id=preop.id if preop else None, latitud=latitud, longitud=longitud,
+            precision_m=precision_m, recibido_at=now,
+        )
+        session.add(ubicacion)
+        session.flush()
+        return UbicacionRegistrada(ubicacion.id, preop.id if preop else None, preop.odoo_name if preop else None)

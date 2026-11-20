@@ -16,7 +16,7 @@ from .preop.router import PreopServices
 from .preop.router import router as preop_router
 from .preop.service import SendOutcome
 from .preop.worker import MasterSync, PreopSender, build_writer
-from .telegram_app import BOT_COMMANDS, SERVICES_KEY, build_application
+from .telegram_app import BOT_COMMANDS, PREOP_DB_KEY, SERVICES_KEY, build_application
 from .watch_store import WatchStore
 from .web import router as web_router
 
@@ -45,6 +45,8 @@ def _start_preop(app: FastAPI, application) -> list:
     )
     sender.start()
     tasks: list = [sender]
+    # El handler de 📍 Enviar ubicación guarda en esta misma BD.
+    application.bot_data[PREOP_DB_KEY] = db
     app.state.preop = PreopServices(
         db=db, bot_token=settings.telegram_bot_token.get_secret_value(),
         max_age_seconds=settings.preop_auth_max_age_seconds, wake_worker=sender.wake,

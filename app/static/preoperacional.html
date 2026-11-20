@@ -3,97 +3,237 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Preoperacional</title>
+<title>Inspección Preoperacional</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
   :root {
     color-scheme: light dark;
-    --bg: var(--tg-theme-bg-color, #fff);
-    --fg: var(--tg-theme-text-color, #111);
-    --hint: var(--tg-theme-hint-color, #777);
-    --card: var(--tg-theme-secondary-bg-color, #f2f2f4);
-    --accent: var(--tg-theme-button-color, #2481cc);
-    --accent-fg: var(--tg-theme-button-text-color, #fff);
-    --ok: #2e9d57; --bad: #d64545; --na: #8a8a8a;
+    /* Identidad VIACOTUR: azul marino del logo + azul de acción. */
+    --brand: #1b1f5e;
+    --brand-2: #1f6fb8;
+    --brand-soft: color-mix(in srgb, var(--brand-2) 12%, transparent);
+    --bg: var(--tg-theme-secondary-bg-color, #eef2f8);
+    --surface: var(--tg-theme-bg-color, #ffffff);
+    --fg: var(--tg-theme-text-color, #14172f);
+    --hint: var(--tg-theme-hint-color, #6b7085);
+    --line: color-mix(in srgb, var(--hint) 28%, transparent);
+    --ok: #1f9d55; --bad: #d64545; --na: #7d8296; --warn: #b7791f;
+    --radius: 14px;
   }
   * { box-sizing: border-box; }
-  body { margin: 0; padding: 16px 16px 96px; font: 15px/1.4 system-ui, sans-serif; background: var(--bg); color: var(--fg); }
-  h1 { font-size: 20px; margin: 0 0 4px; }
-  h2 { font-size: 16px; margin: 0; }
+  html, body { margin: 0; }
+  body {
+    font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg); color: var(--fg);
+    padding-bottom: calc(84px + env(safe-area-inset-bottom));
+  }
+  header.brand { background: #fff; padding: 14px 16px 10px; text-align: center; border-bottom: 3px solid var(--brand); }
+  header.brand img { height: 64px; width: auto; display: block; margin: 0 auto 6px; }
+  header.brand h1 { margin: 0; font-size: 17px; color: var(--brand); letter-spacing: .2px; }
+
+  /* Barra de progreso */
+  .stepper { display: grid; grid-template-columns: repeat(4, 1fr); padding: 14px 12px 4px; position: relative; }
+  .stepper::before { content: ""; position: absolute; left: 12.5%; right: 12.5%; top: 29px; height: 3px; background: var(--line); }
+  .stepper .bar { position: absolute; left: 12.5%; top: 29px; height: 3px; width: 0; background: var(--brand-2); transition: width .25s; }
+  .step { position: relative; text-align: center; font-size: 12px; color: var(--hint); }
+  .step .dot {
+    width: 32px; height: 32px; margin: 0 auto 4px; border-radius: 50%; display: grid; place-items: center;
+    background: var(--surface); border: 3px solid var(--line); font-weight: 700; color: var(--hint); position: relative; z-index: 1;
+  }
+  .step.active .dot { border-color: var(--brand-2); color: var(--brand-2); }
+  .step.done .dot { background: var(--brand-2); border-color: var(--brand-2); color: #fff; }
+  .step.active, .step.done { color: var(--fg); font-weight: 600; }
+
+  main { padding: 4px 16px 16px; max-width: 640px; margin: 0 auto; }
+  .card { background: var(--surface); border-radius: var(--radius); padding: 14px; margin: 12px 0; box-shadow: 0 1px 2px rgb(0 0 0 / 6%); }
+  .card h2 { font-size: 16px; margin: 0 0 4px; color: var(--brand-2); }
   .hint { color: var(--hint); font-size: 13px; }
-  .card { background: var(--card); border-radius: 12px; padding: 12px; margin: 12px 0; }
-  label.field { display: block; margin: 10px 0 4px; font-weight: 600; }
-  select, input, textarea {
-    width: 100%; padding: 10px; border-radius: 8px; border: 1px solid color-mix(in srgb, var(--hint) 40%, transparent);
-    background: var(--bg); color: var(--fg); font: inherit;
+  label.field { display: block; margin: 12px 0 4px; font-weight: 600; font-size: 14px; }
+  .req { color: var(--bad); }
+  select, input[type=number], input[type=text], textarea {
+    width: 100%; padding: 11px 12px; border-radius: 10px; border: 1px solid var(--line);
+    background: var(--surface); color: var(--fg); font: inherit;
   }
-  textarea { min-height: 80px; resize: vertical; }
-  .section-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; cursor: pointer; }
-  .section-head .count { font-size: 12px; color: var(--hint); }
-  .section-body { margin-top: 8px; }
-  .item { padding: 8px 0; border-top: 1px solid color-mix(in srgb, var(--hint) 20%, transparent); }
-  .item:first-child { border-top: 0; }
-  .item .name { margin-bottom: 6px; }
-  .opts { display: flex; gap: 6px; flex-wrap: wrap; }
+  input[readonly], select:disabled { background: color-mix(in srgb, var(--hint) 10%, var(--surface)); color: var(--fg); opacity: 1; }
+  textarea { min-height: 90px; resize: vertical; }
+  .banner { display: flex; gap: 8px; align-items: flex-start; padding: 10px 12px; border-radius: 10px; font-size: 14px; margin-top: 12px; }
+  .banner.ok { background: color-mix(in srgb, var(--ok) 14%, transparent); color: var(--ok); }
+  .banner.warn { background: color-mix(in srgb, var(--warn) 16%, transparent); color: var(--warn); }
+  .vehiculo { display: flex; gap: 12px; align-items: center; padding: 12px; border-radius: 10px; background: var(--brand-soft); }
+  .vehiculo .ico { font-size: 26px; }
+  .vehiculo .lock { margin-left: auto; font-size: 12px; color: var(--hint); white-space: nowrap; }
+  .vehiculo strong { display: block; }
+
+  /* Checklist */
+  .toolbar { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+  .progress-pill { font-size: 13px; color: var(--hint); }
+  .sec-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; cursor: pointer; }
+  .sec-head h2 { margin: 0; }
+  .sec-head .count { font-size: 12px; padding: 2px 8px; border-radius: 999px; background: color-mix(in srgb, var(--hint) 14%, transparent); color: var(--hint); white-space: nowrap; }
+  .sec-head .count.full { background: color-mix(in srgb, var(--ok) 16%, transparent); color: var(--ok); }
+  .sec-body { margin-top: 10px; }
+  .item { padding: 10px 0; border-top: 1px solid var(--line); }
+  .item .name { margin-bottom: 8px; font-size: 14px; }
+  .item.missing .name { color: var(--bad); font-weight: 600; }
+  .opts { display: flex; gap: 6px; }
   .opts button {
-    flex: 1 1 0; min-width: 70px; padding: 8px 6px; border-radius: 8px; border: 1px solid color-mix(in srgb, var(--hint) 40%, transparent);
-    background: var(--bg); color: var(--fg); font: inherit; font-size: 13px;
+    flex: 1 1 0; padding: 9px 4px; border-radius: 9px; border: 1px solid var(--line);
+    background: var(--surface); color: var(--fg); font: inherit; font-size: 13px;
   }
-  .opts button[aria-pressed="true"][data-v="conforme"], .opts button[aria-pressed="true"][data-v="si"], .opts button[aria-pressed="true"][data-v="s"] { background: var(--ok); color: #fff; border-color: var(--ok); }
-  .opts button[aria-pressed="true"][data-v="no conforme"], .opts button[aria-pressed="true"][data-v="no"], .opts button[aria-pressed="true"][data-v="n"] { background: var(--bad); color: #fff; border-color: var(--bad); }
-  .opts button[aria-pressed="true"][data-v="no aplica"] { background: var(--na); color: #fff; border-color: var(--na); }
-  .item.missing .name { color: var(--bad); }
-  .link { background: none; border: 0; color: var(--accent); font: inherit; font-size: 13px; padding: 0; }
-  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-  .grid2 label { font-size: 13px; color: var(--hint); }
-  .primary { display: block; width: 100%; padding: 14px; border: 0; border-radius: 10px; font-size: 16px; background: var(--accent); color: var(--accent-fg); }
-  #msg { white-space: pre-line; }
-  #msg.error { color: var(--bad); }
+  .opts button[aria-pressed="true"].v-good { background: var(--ok); border-color: var(--ok); color: #fff; }
+  .opts button[aria-pressed="true"].v-bad { background: var(--bad); border-color: var(--bad); color: #fff; }
+  .opts button[aria-pressed="true"].v-na { background: var(--na); border-color: var(--na); color: #fff; }
+  .link { background: none; border: 0; color: var(--brand-2); font: inherit; font-size: 14px; font-weight: 600; padding: 4px 0; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .grid2 label { font-size: 12px; color: var(--hint); display: block; margin-bottom: 3px; }
+
+  /* Foto */
+  .photo-zone {
+    display: grid; place-items: center; gap: 6px; min-height: 180px; border: 2px dashed color-mix(in srgb, var(--brand-2) 55%, transparent);
+    border-radius: var(--radius); background: var(--brand-soft); color: var(--brand-2); text-align: center; padding: 16px; cursor: pointer; margin-top: 10px;
+  }
+  .photo-zone .big { font-size: 38px; }
+  .photo-preview { width: 100%; max-height: 340px; object-fit: contain; border-radius: var(--radius); background: #000; margin-top: 10px; }
+
+  /* Resumen */
+  dl.summary { display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; margin: 8px 0 0; font-size: 14px; }
+  dl.summary dt { color: var(--hint); }
+  dl.summary dd { margin: 0; font-weight: 600; overflow-wrap: anywhere; }
+  .nc-list { margin: 8px 0 0; padding-left: 18px; color: var(--bad); font-size: 14px; }
+  .thumb { width: 96px; height: 96px; object-fit: cover; border-radius: 10px; margin-top: 10px; }
+
+  /* Pie fijo */
+  footer.actions {
+    position: fixed; left: 0; right: 0; bottom: 0; display: flex; gap: 10px;
+    padding: 12px 16px calc(12px + env(safe-area-inset-bottom)); background: var(--surface);
+    box-shadow: 0 -2px 10px rgb(0 0 0 / 8%);
+  }
+  footer.actions button { flex: 1; padding: 14px; border-radius: 12px; font: inherit; font-size: 16px; font-weight: 600; border: 0; }
+  .btn-primary { background: var(--brand-2); color: #fff; }
+  .btn-primary:disabled { opacity: .45; }
+  .btn-secondary { background: color-mix(in srgb, var(--hint) 16%, transparent); color: var(--fg); flex: 0 0 34% !important; }
+
+  #msg { white-space: pre-line; margin: 10px 0 0; }
+  #msg.error { color: var(--bad); font-weight: 600; }
+  .center { text-align: center; }
+  .state-icon { font-size: 52px; text-align: center; margin: 8px 0; }
+  #done-text, #blocked-text { white-space: pre-line; }
   [hidden] { display: none !important; }
 </style>
 </head>
 <body>
-<h1>📝 Inspección preoperacional</h1>
-<p id="msg" class="hint">Cargando…</p>
+<header class="brand">
+  <img src="/static/viacotur-logo.png" alt="VIACOTUR S.A. — Transporte especial y de carga">
+  <h1>Inspección Preoperacional</h1>
+</header>
 
-<form id="form" hidden novalidate>
-  <section class="card" id="header-card">
-    <div id="empleado" class="hint"></div>
-    <label class="field" for="vehiculo">Vehículo</label>
-    <input id="vehiculo-buscar" type="search" placeholder="Buscar por número interno, placa o nombre" autocomplete="off">
-    <select id="vehiculo" required></select>
-    <div id="odometro-hint" class="hint"></div>
+<nav class="stepper" id="stepper" aria-label="Progreso" hidden>
+  <div class="bar" id="bar"></div>
+  <div class="step" data-n="1"><div class="dot">1</div>Información</div>
+  <div class="step" data-n="2"><div class="dot">2</div>Verificación</div>
+  <div class="step" data-n="3"><div class="dot">3</div>Evidencia</div>
+  <div class="step" data-n="4"><div class="dot">4</div>Resumen</div>
+</nav>
 
-    <label class="field" for="extracto">Extracto (opcional)</label>
-    <select id="extracto"></select>
+<main>
+  <p id="msg" class="hint center">Cargando…</p>
 
-    <label class="field" for="contrato">Contrato (opcional)</label>
-    <select id="contrato"></select>
-
-    <label class="field" for="km">Kilometraje actual</label>
-    <input id="km" type="number" inputmode="decimal" min="0" step="0.1" required>
+  <!-- Paso 1: información general -->
+  <section data-step="1" hidden>
+    <div class="card">
+      <h2>Información General</h2>
+      <label class="field" for="conductor">Conductor</label>
+      <input id="conductor" type="text" readonly>
+      <label class="field" for="responsable">Responsable jefe</label>
+      <input id="responsable" type="text" readonly>
+      <div class="banner ok">✔ <span>Conductor validado con extractos aprobados</span></div>
+    </div>
+    <div class="card">
+      <h2>Servicio</h2>
+      <div id="extracto-box">
+        <label class="field" for="extracto">Extracto <span class="req">*</span></label>
+        <select id="extracto"></select>
+      </div>
+      <label class="field">Vehículo</label>
+      <div class="vehiculo"><span class="ico">🚌</span><div><strong id="veh-nombre"></strong><span class="hint" id="veh-detalle"></span></div><span class="lock">🔒 del extracto</span></div>
+      <label class="field" for="contrato">Contrato <span class="req">*</span></label>
+      <select id="contrato"></select>
+      <label class="field" for="km">Kilometraje actual <span class="req">*</span></label>
+      <input id="km" type="number" inputmode="decimal" min="0" step="1" placeholder="Ej. 125430">
+      <div class="hint" id="km-hint"></div>
+    </div>
   </section>
 
-  <div id="sections"></div>
-
-  <section class="card">
-    <div class="section-head" data-toggle="medidas"><h2>Labrado y presión de llantas</h2><span class="count">opcional</span></div>
-    <div class="section-body" id="medidas" hidden><div class="grid2" id="measures"></div></div>
+  <!-- Paso 2: verificación de elementos -->
+  <section data-step="2" hidden>
+    <div class="card">
+      <h2>Verificación de Elementos</h2>
+      <div class="hint">Responde cada ítem. Toca el título de una sección para abrirla o cerrarla.</div>
+      <div class="toolbar">
+        <span class="progress-pill" id="total-count"></span>
+        <button type="button" class="link" id="todo-conforme">✔ Marcar todo conforme</button>
+      </div>
+    </div>
+    <div id="sections"></div>
+    <div class="card">
+      <div class="sec-head" data-toggle="medidas"><h2>Labrado y presión de llantas</h2><span class="count">opcional</span></div>
+      <div class="sec-body" id="medidas" hidden><div class="grid2" id="measures"></div></div>
+    </div>
   </section>
 
-  <section class="card">
-    <label class="field" for="observaciones">Observaciones</label>
-    <textarea id="observaciones" maxlength="2000"></textarea>
+  <!-- Paso 3: evidencia fotográfica -->
+  <section data-step="3" hidden>
+    <div class="card">
+      <h2>Evidencia Fotográfica</h2>
+      <div class="hint">Toma una foto del tablero con el vehículo encendido, donde se vean los testigos (luces de advertencia).</div>
+      <label class="field">Foto de testigos del tablero <span class="req">*</span></label>
+      <input id="foto-input" type="file" accept="image/*" capture="environment" hidden>
+      <div class="photo-zone" id="foto-zone" role="button" tabindex="0">
+        <span class="big">📷</span><strong>Toca para tomar la foto</strong><span class="hint">Se comprime antes de enviarla</span>
+      </div>
+      <img id="foto-preview" class="photo-preview" alt="Foto de testigos" hidden>
+      <button type="button" class="link" id="foto-cambiar" hidden>↺ Tomar otra foto</button>
+    </div>
   </section>
 
-  <button class="primary" id="enviar" type="submit">Enviar preoperacional</button>
-</form>
+  <!-- Paso 4: resumen -->
+  <section data-step="4" hidden>
+    <div class="card">
+      <h2>Resumen</h2>
+      <dl class="summary" id="summary"></dl>
+    </div>
+    <div class="card">
+      <h2>Resultado de la verificación</h2>
+      <div id="nc-ok" class="banner ok" hidden>✔ <span>Todos los ítems están conformes</span></div>
+      <div id="nc-warn" class="banner warn" hidden>⚠️ <span id="nc-title"></span></div>
+      <ul class="nc-list" id="nc-list"></ul>
+      <img id="foto-thumb" class="thumb" alt="Foto de testigos">
+    </div>
+    <div class="card">
+      <label class="field" for="observaciones" style="margin-top:0">Observaciones</label>
+      <textarea id="observaciones" maxlength="2000" placeholder="Novedades del vehículo (opcional)"></textarea>
+    </div>
+  </section>
 
-<section id="done" class="card" hidden>
-  <h2 id="done-title"></h2>
-  <p id="done-text" class="hint"></p>
-  <button class="primary" id="cerrar" type="button">Cerrar</button>
-</section>
+  <!-- Bloqueo (sin empleado o sin extracto aprobado) -->
+  <section id="blocked" class="card" hidden>
+    <div class="state-icon">🚫</div>
+    <h2 class="center" id="blocked-title"></h2>
+    <p class="hint center" id="blocked-text"></p>
+  </section>
+
+  <!-- Enviado -->
+  <section id="done" class="card" hidden>
+    <div class="state-icon">✅</div>
+    <h2 class="center" id="done-title"></h2>
+    <p class="hint center" id="done-text"></p>
+  </section>
+</main>
+
+<footer class="actions" id="actions" hidden>
+  <button type="button" class="btn-secondary" id="prev">← Anterior</button>
+  <button type="button" class="btn-primary" id="next">Siguiente →</button>
+</footer>
 
 <script>
 (() => {
@@ -105,17 +245,35 @@
     for (const [k, v] of Object.entries(props)) {
       if (k === "text") n.textContent = v;
       else if (k === "dataset") Object.assign(n.dataset, v);
+      else if (k === "class") n.className = v;
       else n.setAttribute(k, v);
     }
     for (const c of children) n.append(c);
     return n;
   };
 
-  const state = { form: null, ctx: null, answers: {}, uuid: null, sending: false };
+  const STEPS = 4;
+  const PHOTO_MAX_SIDE = 1600;
+  const OPTION_LABEL = { "conforme": "Conforme", "no conforme": "No conforme", "no aplica": "N/A", "si": "Sí", "no": "No", "s": "Sí", "n": "No" };
+  // "Marcar todo conforme" usa la respuesta conforme de cada ítem. Los ítems informativos
+  // (p. ej. «¿Tiene cámaras?», s/n) no tienen respuesta "buena" y se responden a mano.
+  const POSITIVE = ["conforme", "si"];
+  const OPTION_CLASS = { "conforme": "v-good", "si": "v-good", "s": "v-good", "no conforme": "v-bad", "no": "v-bad", "n": "v-bad", "no aplica": "v-na" };
+
+  const state = {
+    step: 1, form: null, ctx: null, extracto: null, answers: {}, foto: null, uuid: null,
+    sending: false, finished: false, dirty: false,
+  };
 
   function setMsg(text, isError = false) {
     $("msg").textContent = text;
-    $("msg").className = isError ? "error" : "hint";
+    $("msg").className = isError ? "error" : "hint center";
+    $("msg").hidden = !text;
+  }
+
+  function markDirty() {
+    if (!state.dirty && tg && tg.enableClosingConfirmation) tg.enableClosingConfirmation();
+    state.dirty = true;
   }
 
   function newUuid() {
@@ -132,65 +290,77 @@
       headers: { "Content-Type": "application/json", "X-Telegram-Init-Data": tg ? tg.initData : "", ...(options.headers || {}) },
     });
     let body = null;
-    try { body = await res.json(); } catch (_) { /* respuesta sin JSON */ }
+    try { body = await res.json(); } catch (_) { /* sin JSON */ }
     if (!res.ok) {
       let detail = body && body.detail;
       if (Array.isArray(detail)) detail = detail.map((d) => d.msg).join("\n");
-      throw new Error(detail || `Error ${res.status}`);
+      const err = new Error(detail || `Error ${res.status}`);
+      err.status = res.status;
+      throw err;
     }
     return body;
   }
 
-  // ── encabezado ───────────────────────────────────────────────────────────
-  function fillVehiculos(filter = "") {
-    const sel = $("vehiculo");
-    const current = sel.value;
-    const f = filter.trim().toLowerCase();
-    sel.replaceChildren(el("option", { value: "", text: "— Selecciona —" }));
-    for (const v of state.ctx.vehiculos) {
-      const label = [v.numero_interno, v.matricula, v.nombre].filter(Boolean).join(" · ");
-      if (f && !label.toLowerCase().includes(f)) continue;
-      sel.append(el("option", { value: String(v.id), text: label }));
-    }
-    sel.value = current;
+  function confirmAsync(text) {
+    return new Promise((resolve) => {
+      if (tg && tg.showConfirm) tg.showConfirm(text, (ok) => resolve(Boolean(ok)));
+      else resolve(window.confirm(text));
+    });
   }
 
-  function selectedVehiculo() {
-    return state.ctx.vehiculos.find((v) => String(v.id) === $("vehiculo").value) || null;
+  // ── Paso 1: información general ───────────────────────────────────────────
+  function fmtFecha(iso) {
+    if (!iso) return "";
+    return new Date(iso).toLocaleString("es-CO", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
   }
 
   function fillExtractos() {
-    const v = selectedVehiculo();
+    const items = state.ctx.extractos;
     const sel = $("extracto");
-    sel.replaceChildren(el("option", { value: "", text: "— Sin extracto —" }));
-    if (!v) return fillContratos();
-    const items = state.ctx.extractos.filter((e) => e.vehiculo_odoo_id === v.odoo_id);
+    sel.replaceChildren();
+    if (items.length > 1) sel.append(el("option", { value: "", text: "Selecciona un extracto…" }));
     for (const e of items) {
-      const fecha = e.fecha_hora_inicio ? new Date(e.fecha_hora_inicio).toLocaleString() : "";
-      sel.append(el("option", { value: String(e.id), text: [e.codigo, fecha, e.conductor].filter(Boolean).join(" · ") }));
+      const rango = [fmtFecha(e.fecha_hora_inicio), fmtFecha(e.fecha_hora_fin)].filter(Boolean).join(" → ");
+      sel.append(el("option", { value: String(e.id), text: [e.codigo, e.vehiculo.nombre, rango].filter(Boolean).join(" · ") }));
     }
     if (items.length === 1) sel.value = String(items[0].id);
-    $("odometro-hint").textContent = v.odometer_post ? `Último odómetro registrado: ${v.odometer_post}` : "";
-    fillContratos();
+    onExtracto();
   }
 
-  function fillContratos() {
+  function onExtracto() {
+    state.extracto = state.ctx.extractos.find((e) => String(e.id) === $("extracto").value) || null;
+    const v = state.extracto ? state.extracto.vehiculo : null;
+    $("veh-nombre").textContent = v ? v.nombre || "Vehículo" : "Selecciona el extracto";
+    $("veh-detalle").textContent = v
+      ? [v.matricula && `Placa ${v.matricula}`, v.numero_interno && `N.º interno ${v.numero_interno}`].filter(Boolean).join(" · ")
+      : "";
+    $("km-hint").textContent = v && v.odometer_post ? `Último kilometraje registrado: ${Number(v.odometer_post).toLocaleString("es-CO")} km` : "";
     const sel = $("contrato");
-    sel.replaceChildren(el("option", { value: "", text: "— Automático —" }));
-    const ext = state.ctx.extractos.find((e) => String(e.id) === $("extracto").value);
-    const seen = new Set();
-    for (const c of [...(ext ? ext.contratos : []), ...state.ctx.empleado.contratos]) {
-      if (seen.has(c.id_contrato)) continue;
-      seen.add(c.id_contrato);
-      sel.append(el("option", { value: String(c.id_contrato), text: c.nombre || `Contrato ${c.id_contrato}` }));
-    }
+    sel.replaceChildren();
+    const contratos = state.extracto ? state.extracto.contratos : [];
+    if (contratos.length !== 1) sel.append(el("option", { value: "", text: contratos.length ? "Selecciona un contrato…" : "Sin contrato asociado" }));
+    for (const c of contratos) sel.append(el("option", { value: String(c.id_contrato), text: c.nombre || `Contrato ${c.id_contrato}` }));
+    sel.disabled = contratos.length <= 1;
+    if (contratos.length === 1) sel.value = String(contratos[0].id_contrato);
+    refreshNext();
   }
 
-  // ── checklist ────────────────────────────────────────────────────────────
-  const OPTION_LABEL = { "conforme": "Conforme", "no conforme": "No conforme", "no aplica": "N/A", "si": "Sí", "no": "No", "s": "Sí", "n": "No" };
+  function step1Errors() {
+    const errors = [];
+    if (!state.extracto) errors.push("Selecciona el extracto.");
+    else if (!state.extracto.vehiculo.id) errors.push("El vehículo del extracto aún no está sincronizado. Intenta en unos minutos.");
+    if (state.extracto && state.extracto.contratos.length > 1 && !$("contrato").value) errors.push("Selecciona el contrato.");
+    const km = parseFloat($("km").value);
+    if (!Number.isFinite(km) || km < 0) errors.push("Ingresa el kilometraje actual.");
+    return errors;
+  }
+
+  // ── Paso 2: verificación ──────────────────────────────────────────────────
+  function allItems() { return state.form.sections.flatMap((s) => s.items); }
 
   function setAnswer(key, value) {
     state.answers[key] = value;
+    markDirty();
     document.querySelectorAll(`[data-item="${CSS.escape(key)}"] button`).forEach((b) => {
       b.setAttribute("aria-pressed", String(b.dataset.v === value));
     });
@@ -199,12 +369,30 @@
     updateCounts();
   }
 
-  function updateCounts() {
-    for (const s of state.form.sections) {
-      const done = s.items.filter((i) => state.answers[i.key]).length;
-      const node = document.querySelector(`[data-count="${CSS.escape(s.title)}"]`);
-      if (node) node.textContent = `${done}/${s.items.length}`;
+  function markAllPositive(items) {
+    for (const i of items) {
+      const positive = POSITIVE.find((o) => i.options.includes(o));
+      if (positive) setAnswer(i.key, positive);
     }
+    const manual = items.filter((i) => !state.answers[i.key]);
+    if (manual.length) {
+      setMsg(`Responde a mano: ${manual.map((i) => i.label).join(", ")}.`, true);
+      highlightMissing(manual);
+    } else {
+      setMsg("");
+    }
+  }
+
+  function updateCounts() {
+    let done = 0, total = 0;
+    for (const s of state.form.sections) {
+      const n = s.items.filter((i) => state.answers[i.key]).length;
+      done += n; total += s.items.length;
+      const node = document.querySelector(`[data-count="${CSS.escape(s.title)}"]`);
+      if (node) { node.textContent = `${n}/${s.items.length}`; node.classList.toggle("full", n === s.items.length); }
+    }
+    $("total-count").textContent = `${done} de ${total} ítems respondidos`;
+    refreshNext();
   }
 
   function renderSections() {
@@ -212,22 +400,26 @@
     root.replaceChildren();
     state.form.sections.forEach((s, idx) => {
       const bodyId = `sec-${idx}`;
-      const allOk = el("button", { type: "button", class: "link", text: "Marcar todo conforme" });
-      allOk.addEventListener("click", () => s.items.forEach((i) => i.options.includes("conforme") && setAnswer(i.key, "conforme")));
-      const body = el("div", { class: "section-body", id: bodyId }, [allOk]);
+      const allOk = el("button", { type: "button", class: "link", text: "✔ Todo conforme en esta sección" });
+      allOk.addEventListener("click", () => markAllPositive(s.items));
+      const body = el("div", { class: "sec-body", id: bodyId }, [allOk]);
+      if (idx > 0) body.hidden = true;
       for (const item of s.items) {
         const opts = el("div", { class: "opts", dataset: { item: item.key } });
         for (const o of item.options) {
-          const b = el("button", { type: "button", "aria-pressed": "false", text: OPTION_LABEL[o] || o, dataset: { v: o } });
+          const b = el("button", {
+            type: "button", "aria-pressed": "false", class: OPTION_CLASS[o] || "v-good",
+            text: OPTION_LABEL[o] || o, dataset: { v: o },
+          });
           b.addEventListener("click", () => setAnswer(item.key, o));
           opts.append(b);
         }
         body.append(el("div", { class: "item", dataset: { row: item.key } }, [el("div", { class: "name", text: item.label }), opts]));
       }
-      const head = el("div", { class: "section-head", dataset: { toggle: bodyId } }, [
+      const head = el("div", { class: "sec-head", dataset: { toggle: bodyId } }, [
         el("h2", { text: s.title }), el("span", { class: "count", dataset: { count: s.title } }),
       ]);
-      root.append(el("section", { class: "card" }, [head, body]));
+      root.append(el("div", { class: "card" }, [head, body]));
     });
     updateCounts();
   }
@@ -237,114 +429,267 @@
     root.replaceChildren();
     for (const m of state.form.measures) {
       const id = `m-${m.key}`;
-      root.append(el("div", {}, [
-        el("label", { for: id, text: `${m.label} (${m.unit})` }),
-        el("input", { id, type: "number", inputmode: "decimal", min: "0", max: String(m.max), step: "0.1", dataset: { measure: m.key } }),
-      ]));
+      const input = el("input", {
+        id, type: "number", inputmode: "decimal", min: "0", max: String(m.max), step: "0.1",
+        dataset: { measure: m.key, label: m.label },
+      });
+      input.addEventListener("input", markDirty);
+      root.append(el("div", {}, [el("label", { for: id, text: `${m.label} (${m.unit})` }), input]));
     }
   }
 
-  document.addEventListener("click", (ev) => {
-    const head = ev.target.closest("[data-toggle]");
-    if (!head || ev.target.closest("button")) return;
-    const body = document.getElementById(head.dataset.toggle);
-    if (body) body.hidden = !body.hidden;
-  });
-
-  // ── envío ────────────────────────────────────────────────────────────────
-  function collect() {
-    const errors = [];
-    const vehiculo = selectedVehiculo();
-    if (!vehiculo) errors.push("Selecciona el vehículo.");
-    const km = parseFloat($("km").value);
-    if (!Number.isFinite(km) || km < 0) errors.push("Ingresa el kilometraje actual.");
-    const missing = [];
-    for (const s of state.form.sections) for (const i of s.items) if (!state.answers[i.key]) missing.push(i);
-    document.querySelectorAll(".item.missing").forEach((n) => n.classList.remove("missing"));
-    for (const i of missing) {
-      const row = document.querySelector(`.item[data-row="${CSS.escape(i.key)}"]`);
-      if (row) { row.classList.add("missing"); row.parentElement.hidden = false; }
-    }
-    if (missing.length) errors.push(`Faltan ${missing.length} ítem(s) por responder (marcados en rojo).`);
+  function collectMeasures() {
     const llantas = {};
+    const errors = [];
     document.querySelectorAll("[data-measure]").forEach((input) => {
       if (input.value === "") return;
       const n = parseFloat(input.value);
-      if (Number.isFinite(n)) llantas[input.dataset.measure] = n;
+      const max = parseFloat(input.max);
+      if (!Number.isFinite(n) || n < 0 || n > max) errors.push(`${input.dataset.label}: valor fuera de rango (0–${max}).`);
+      else llantas[input.dataset.measure] = n;
     });
-    if (errors.length) return { errors };
-    const extracto = $("extracto").value ? Number($("extracto").value) : null;
-    const contrato = $("contrato").value ? Number($("contrato").value) : null;
-    return {
-      payload: {
-        uuid: state.uuid, vehiculo_id: vehiculo.id, extracto_id: extracto, contrato_odoo_id: contrato,
-        kilometraje: km, observaciones: $("observaciones").value.trim() || null,
-        checklist: { ...state.answers }, llantas, extra: {},
-      },
-    };
+    return { llantas, errors };
   }
 
-  async function submit(ev) {
-    ev.preventDefault();
-    if (state.sending) return;
-    const { errors, payload } = collect();
-    if (errors) { setMsg(errors.join("\n"), true); window.scrollTo({ top: 0, behavior: "smooth" }); return; }
-    state.sending = true;
-    $("enviar").disabled = true;
-    setMsg("Enviando…");
+  function step2Errors() {
+    const missing = allItems().filter((i) => !state.answers[i.key]);
+    const errors = missing.length ? [`Faltan ${missing.length} ítem(s) por responder (marcados en rojo).`] : [];
+    return errors.concat(collectMeasures().errors);
+  }
+
+  function highlightMissing(items = allItems()) {
+    let first = null;
+    for (const i of items) {
+      const row = document.querySelector(`.item[data-row="${CSS.escape(i.key)}"]`);
+      if (!row) continue;
+      const missing = !state.answers[i.key];
+      row.classList.toggle("missing", missing);
+      if (missing) { row.parentElement.hidden = false; first = first || row; }
+    }
+    if (first) first.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+
+  // ── Paso 3: foto de testigos ─────────────────────────────────────────────
+  function loadImage(file) {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
+      img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("No se pudo leer la imagen. Intenta de nuevo.")); };
+      img.src = url;
+    });
+  }
+
+  async function compress(file) {
+    const img = await loadImage(file);
+    const scale = Math.min(1, PHOTO_MAX_SIDE / Math.max(img.naturalWidth, img.naturalHeight));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(img.naturalWidth * scale);
+    canvas.height = Math.round(img.naturalHeight * scale);
+    canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+    let data = canvas.toDataURL("image/jpeg", 0.8);
+    if (data.length > 1_400_000) data = canvas.toDataURL("image/jpeg", 0.6);
+    return data;
+  }
+
+  async function onPhoto(ev) {
+    const file = ev.target.files && ev.target.files[0];
+    ev.target.value = "";
+    if (!file) return;
+    setMsg("Procesando foto…");
     try {
-      // El mismo uuid en un reintento evita duplicados (idempotencia del servidor).
+      state.foto = await compress(file);
+      markDirty();
+      $("foto-preview").src = state.foto;
+      $("foto-preview").hidden = false;
+      $("foto-cambiar").hidden = false;
+      $("foto-zone").hidden = true;
+      setMsg("");
+    } catch (err) {
+      setMsg(err.message, true);
+    }
+    refreshNext();
+  }
+
+  function step3Errors() { return state.foto ? [] : ["Toma la foto de los testigos del tablero."]; }
+
+  // ── Paso 4: resumen ──────────────────────────────────────────────────────
+  function renderSummary() {
+    const e = state.extracto, v = e.vehiculo;
+    const contratoSel = $("contrato");
+    const contrato = contratoSel.value ? contratoSel.options[contratoSel.selectedIndex].text : "—";
+    const rows = [
+      ["Conductor", state.ctx.empleado.nombre],
+      ["Vehículo", [v.nombre, v.matricula].filter(Boolean).join(" · ")],
+      ["Extracto", e.codigo || "—"],
+      ["Contrato", contrato],
+      ["Kilometraje", `${Number($("km").value).toLocaleString("es-CO")} km`],
+    ];
+    $("summary").replaceChildren(...rows.flatMap(([k, val]) => [el("dt", { text: k }), el("dd", { text: val })]));
+    const nc = allItems().filter((i) => state.answers[i.key] === "no conforme");
+    $("nc-ok").hidden = nc.length > 0;
+    $("nc-warn").hidden = nc.length === 0;
+    $("nc-title").textContent = `${nc.length} ítem(s) no conforme(s): se generará un plan de acción`;
+    $("nc-list").replaceChildren(...nc.map((i) => el("li", { text: i.label })));
+    $("foto-thumb").src = state.foto;
+  }
+
+  // ── Navegación ───────────────────────────────────────────────────────────
+  const VALIDATORS = { 1: step1Errors, 2: step2Errors, 3: step3Errors, 4: () => [] };
+
+  function refreshNext() {
+    if (state.finished) return;
+    if (state.step === 1) $("next").disabled = step1Errors().length > 0;
+    else if (state.step === 3) $("next").disabled = step3Errors().length > 0;
+    else $("next").disabled = state.sending;
+  }
+
+  function goTo(n) {
+    state.step = n;
+    document.querySelectorAll("section[data-step]").forEach((s) => { s.hidden = Number(s.dataset.step) !== n; });
+    document.querySelectorAll(".step").forEach((s) => {
+      const k = Number(s.dataset.n);
+      s.classList.toggle("active", k === n);
+      s.classList.toggle("done", k < n);
+    });
+    $("bar").style.width = `${((n - 1) / (STEPS - 1)) * 75}%`;
+    $("prev").hidden = n === 1;
+    $("next").textContent = n === STEPS ? "Enviar preoperacional" : "Siguiente →";
+    if (tg && tg.BackButton) { if (n > 1) tg.BackButton.show(); else tg.BackButton.hide(); }
+    if (n === STEPS) renderSummary();
+    setMsg("");
+    refreshNext();
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  async function next() {
+    if (state.finished) { tg.close(); return; }
+    const errors = VALIDATORS[state.step]();
+    if (errors.length) {
+      if (state.step === 2) highlightMissing();
+      setMsg(errors.join("\n"), true);
+      if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("error");
+      return;
+    }
+    if (state.step === 1) {
+      const last = state.extracto.vehiculo.odometer_post;
+      const km = parseFloat($("km").value);
+      if (last && km < last
+          && !(await confirmAsync(`El kilometraje (${km}) es menor al último registrado (${last}). ¿Es correcto?`))) return;
+    }
+    if (state.step < STEPS) { goTo(state.step + 1); return; }
+    await submit();
+  }
+
+  function prev() { if (state.step > 1 && !state.finished) goTo(state.step - 1); }
+
+  // ── Envío ────────────────────────────────────────────────────────────────
+  async function submit() {
+    if (state.sending) return;
+    state.sending = true;
+    $("next").disabled = true;
+    $("next").textContent = "Enviando…";
+    const payload = {
+      uuid: state.uuid,
+      extracto_id: state.extracto.id,
+      vehiculo_id: state.extracto.vehiculo.id,
+      contrato_odoo_id: $("contrato").value ? Number($("contrato").value) : null,
+      kilometraje: parseFloat($("km").value),
+      observaciones: $("observaciones").value.trim() || null,
+      checklist: { ...state.answers },
+      llantas: collectMeasures().llantas,
+      extra: {},
+      testigos_img: state.foto,
+    };
+    try {
+      // Reintentar con el mismo uuid no duplica (idempotencia del servidor).
       const out = await api("/api/preop", { method: "POST", body: JSON.stringify(payload) });
       showDone(out);
     } catch (err) {
       setMsg(`No se pudo enviar: ${err.message}\nPuedes reintentar: no se duplicará.`, true);
-      $("enviar").disabled = false;
-    } finally {
+      $("next").textContent = "Reintentar envío";
       state.sending = false;
+      $("next").disabled = false;
     }
   }
 
   function showDone(out) {
-    $("form").hidden = true;
-    $("done").hidden = false;
+    state.finished = true;
+    if (tg && tg.disableClosingConfirmation) tg.disableClosingConfirmation();
+    if (tg && tg.BackButton) tg.BackButton.hide();
+    document.querySelectorAll("section[data-step]").forEach((s) => { s.hidden = true; });
+    $("stepper").hidden = true;
+    $("prev").hidden = true;
+    $("next").textContent = "Cerrar";
+    $("next").disabled = false;
     setMsg("");
-    $("done-title").textContent = out.duplicado ? "Este formulario ya había sido recibido" : "✅ Preoperacional recibido";
-    const nc = out.no_conformes ? `\n⚠️ ${out.no_conformes} ítem(s) no conforme(s).` : "";
+    $("done").hidden = false;
+    $("done-title").textContent = out.duplicado ? "Este formulario ya había sido recibido" : "Preoperacional recibido";
+    const nc = out.no_conformes ? ` Se registraron ${out.no_conformes} ítem(s) no conforme(s).` : "";
     $("done-text").textContent =
-      `Se está registrando en Odoo. Te llegará la confirmación en el chat del bot.${nc}`;
+      `Se está registrando en Odoo y te llegará la confirmación en el chat.${nc}\n\n` +
+      "📍 Regresa al chat y toca «Enviar ubicación» en los próximos 10 minutos para asociar tu ubicación.";
     if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
   }
 
-  // ── arranque ─────────────────────────────────────────────────────────────
+  function block(title, text) {
+    $("blocked").hidden = false;
+    $("blocked-title").textContent = title;
+    $("blocked-text").textContent = text;
+    setMsg("");
+  }
+
+  // ── Arranque ─────────────────────────────────────────────────────────────
+  document.addEventListener("click", (ev) => {
+    const head = ev.target.closest("[data-toggle]");
+    if (!head) return;
+    const body = document.getElementById(head.dataset.toggle);
+    if (body) body.hidden = !body.hidden;
+  });
+
   async function init() {
     if (!tg || !tg.initData) {
-      setMsg("Abre este formulario desde el botón «📝 Preoperacional» del bot en Telegram.", true);
+      block("Abre el formulario desde Telegram", "Usa el botón «📋 Formularios» del bot y elige «✅ Preoperacional».");
       return;
     }
     tg.ready();
     tg.expand();
+    if (tg.setHeaderColor) { try { tg.setHeaderColor("#ffffff"); } catch (_) { /* versión antigua */ } }
     try {
       const [form, ctx] = await Promise.all([api("/api/preop/form"), api("/api/preop/context")]);
       state.form = form;
       state.ctx = ctx;
     } catch (err) {
-      setMsg(err.message, true);
+      if (err.status === 403) block("Usuario no registrado", `${err.message}.\nPide a Recursos Humanos que lo registre.`);
+      else block("No se pudo cargar el formulario", err.message);
+      return;
+    }
+    if (!state.ctx.validado) {
+      block("Sin extracto aprobado",
+        "No tienes un extracto aprobado y vigente como conductor.\nPide a tu responsable que apruebe tu extracto y vuelve a abrir el formulario.");
       return;
     }
     state.uuid = newUuid();
-    const e = state.ctx.empleado;
-    $("empleado").textContent = `👤 ${e.nombre}${e.puesto_trabajo ? " · " + e.puesto_trabajo : ""}`;
-    fillVehiculos();
+    $("conductor").value = state.ctx.empleado.nombre;
+    $("responsable").value = state.ctx.empleado.responsable || "—";
+    $("extracto-box").hidden = state.ctx.extractos.length === 1;
     fillExtractos();
     renderSections();
     renderMeasures();
-    $("vehiculo-buscar").addEventListener("input", (ev) => fillVehiculos(ev.target.value));
-    $("vehiculo").addEventListener("change", fillExtractos);
-    $("extracto").addEventListener("change", fillContratos);
-    $("form").addEventListener("submit", submit);
-    $("cerrar").addEventListener("click", () => tg.close());
-    $("form").hidden = false;
-    setMsg(state.ctx.vehiculos.length ? "Responde todos los ítems y envía." : "No hay vehículos sincronizados para tu compañía.", !state.ctx.vehiculos.length);
+    $("extracto").addEventListener("change", () => { markDirty(); onExtracto(); });
+    $("contrato").addEventListener("change", () => { markDirty(); refreshNext(); });
+    $("km").addEventListener("input", () => { markDirty(); refreshNext(); });
+    $("observaciones").addEventListener("input", markDirty);
+    $("todo-conforme").addEventListener("click", () => markAllPositive(allItems()));
+    $("foto-input").addEventListener("change", onPhoto);
+    for (const id of ["foto-zone", "foto-cambiar"]) $(id).addEventListener("click", () => $("foto-input").click());
+    $("foto-zone").addEventListener("keydown", (ev) => { if (ev.key === "Enter" || ev.key === " ") $("foto-input").click(); });
+    $("next").addEventListener("click", next);
+    $("prev").addEventListener("click", prev);
+    if (tg.BackButton) tg.BackButton.onClick(prev);
+    $("stepper").hidden = false;
+    $("actions").hidden = false;
+    goTo(1);
   }
 
   init();

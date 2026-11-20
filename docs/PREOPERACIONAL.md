@@ -39,6 +39,8 @@ graph TD
 | `flota` | `odoo_id` | `nombre`, `matricula`, `estado`, `numero_interno`, `parque_automotor`, `odometer_post NUMERIC(14,2)`, `tipo_solicitud` |
 | `extractos` | `odoo_id` | conductores 1-3 con celular y estado de documentos, `contratos_list JSONB`, `estado`, `fecha_hora_inicio/fin TIMESTAMPTZ`, `responsable_cliente`, `responsable_cliente_mobile`, `vehiculo`, `vehiculo_id` |
 | `preoperacional` | `uuid` (único, idempotencia) | ver abajo |
+| `preop_fotos` | (`preop_id`, `tipo`) único | foto de evidencia en `BYTEA` (`tipo='testigos'` → `testigos_img` de Odoo), `mime`, `tamano`, `sha256` |
+| `ubicaciones` | — | ubicación compartida desde el chat (📍): `telegram_user_id`, `empleado_id`, `preop_id` (preoperacional de los últimos 10 min, si hay), `latitud`, `longitud`, `precision_m`, `recibido_at` |
 | `sync_runs` | — | bitácora de cada sincronización: recibidos, upserts, inválidos, desactivados, error |
 
 Las tres tablas maestras comparten estos campos: `id` (PK local), `company_id` (nombre que devuelve la API), `company_odoo_id`, `activo`, `synced_at`, `raw JSONB` (el objeto original), `created_at` y `updated_at`.
@@ -55,6 +57,8 @@ Decisiones de diseño:
 - **El checklist va en JSONB y no en 56 columnas.** El catálogo `app/preop/checklist.py` es la fuente única: valida el payload con Pydantic, define el formulario (`GET /api/preop/form`) y fija qué campos se envían a Odoo. Las claves son los nombres técnicos de Odoo, así que el mapeo es directo. Agregar un ítem significa tocar una sola línea, sin migración. Para consultar, el índice GIN permite buscar con `checklist @> '{"frenos": "no conforme"}'`.
 - **`extractos.vehiculo_id` no tiene FK física.** Un extracto puede apuntar a un vehículo de otra compañía que no se sincroniza, y una FK rompería el UPSERT. La relación ORM (`Extracto.flota`) es `viewonly`.
 - **Nunca se borran filas maestras.** Las que dejan de llegar quedan con `activo = false`, para que los preoperacionales históricos sigan resolviendo su empleado o vehículo.
+- **La foto va en una tabla aparte** (`preop_fotos`), no como columna de `preoperacional`: el binario no se carga al leer la cola y se pueden sumar tipos de foto sin migrar.
+- **La ubicación se guarda solo en la BD del bot** (el modelo `preoperacional` de Odoo no tiene campos de ubicación). Se asocia al preoperacional enviado por el mismo usuario en los últimos 10 minutos.
 - **Esquema:** `Base.metadata.create_all` es idempotente y crea tablas e índices que falten. Para cambiar columnas de tablas existentes, agregar Alembic (`alembic init`, `target_metadata = Base.metadata`).
 
 ## 3. Ingesta y sincronización (`app/preop/rest_client.py`, `app/preop/etl.py`)
@@ -83,19 +87,33 @@ python scripts/introspect_endpoint.py --file respuesta.json --class Preoperacion
 
 ## 4. Backend API y conector Odoo
 
+### Mini App (`app/static/preoperacional.html`)
+
+Formulario por pasos con barra de progreso e identidad VIACOTUR (logo y paleta azul), como el bot de referencia `@viacoturform_bot`:
+
+1. **Información:** conductor y responsable bloqueados, aviso "Conductor validado con extractos aprobados", extracto (solo se elige si hay varios), vehículo bloqueado y tomado del extracto, contrato y kilometraje. Si el kilometraje es menor que el último registrado, pide confirmación.
+2. **Verificación:** secciones del checklist con contador; "Marcar todo conforme" marca la respuesta conforme de cada ítem. Los ítems informativos (p. ej. "¿Tiene cámaras?") se responden a mano. Las medidas de llantas son opcionales.
+3. **Evidencia:** foto de testigos del tablero con la cámara (obligatoria).
+4. **Resumen:** datos, ítems no conformes, miniatura de la foto, observaciones y **Enviar**.
+
+Sin empleado o sin extracto aprobado se muestra una pantalla de bloqueo que explica qué hacer. Al terminar, recuerda enviar la ubicación desde el chat (📍, dentro de 10 minutos).
+
 ### Seguridad de la Mini App (`app/webapp_auth.py`, dependencia `telegram_identity`)
 
 - `secret = HMAC_SHA256(key="WebAppData", msg=BOT_TOKEN)` y `hash = HMAC_SHA256(secret, data_check_string)`, donde `data_check_string` son los pares `clave=valor` ordenados, sin `hash` y unidos con `\n`. La comparación es en tiempo constante (`hmac.compare_digest`).
 - `auth_date` no puede tener más de `PREOP_AUTH_MAX_AGE_SECONDS` de antigüedad (3600 s por defecto, porque el formulario es largo) ni estar en el futuro.
 - La identidad (id, nombre, usuario) sale **solo** del `initData`. El cuerpo no acepta `telegram_user_id`, porque `extra="forbid"` lo rechaza.
-- Autorización: el empleado debe estar activo y su `codigo_pin` debe ser igual al id de Telegram (tabla local). El vehículo tiene que ser de su compañía, el extracto de ese vehículo y el contrato del extracto o del empleado.
+- Autorización: el empleado debe estar activo y su `codigo_pin` debe ser igual al id de Telegram (tabla local).
+- **Vehículo desde el extracto aprobado:** el extracto es obligatorio y debe estar **aprobado** (`estado = approved`), vigente (±1 día) y tener al empleado como conductor, segundo o tercer conductor. La API entrega el conductor por nombre: se compara sin tildes, mayúsculas ni espacios extra. Cuando `viacotur_api` exponga el id del conductor, esta comparación debe pasar a ser por id. El vehículo se toma del extracto y no se puede cambiar. Si el extracto trae varios contratos, hay que elegir uno; si trae uno, se asigna solo.
+- **Foto de testigos obligatoria:** llega en base64 (JPEG o PNG, máximo 3 MB, validada por su firma real, no por lo que diga el cliente). La Mini App la comprime antes de enviarla (lado mayor 1600 px, unos 300 KB).
 - La Mini App pinta los datos con `textContent`, nunca con `innerHTML`.
 
 | Ruta | Respuesta |
 |---|---|
 | `GET /preoperacional` | HTML de la Mini App |
 | `GET /api/preop/form` | catálogo de secciones, ítems, opciones y medidas |
-| `GET /api/preop/context` | empleado, vehículos activos de su compañía y extractos vigentes (±1 día) |
+| `GET /api/preop/context` | conductor y responsable, `validado` y extractos aprobados del conductor con su vehículo y contratos |
+| `GET /static/viacotur-logo.png` | logo de la cabecera |
 | `POST /api/preop` | **202** con `{id, uuid, sync_status: "pendiente", no_conformes, duplicado}`; 401, 403, 409 o 422 si se rechaza |
 | `GET /api/preop/{uuid}` | estado de un envío propio |
 
@@ -105,7 +123,7 @@ python scripts/introspect_endpoint.py --file respuesta.json --class Preoperacion
 
 1. `common.authenticate`. El uid queda en caché y se invalida si Odoo responde `AccessDenied`.
 2. Idempotencia: primero se busca el external id `telegram_bot_operativos.preop_<uuid>` en `ir.model.data`. Si el intento anterior fue incierto (timeout después de enviar), también se busca por llave natural: empleado, vehículo, odómetro y `create_date >=` fecha de envío − 2 min.
-3. `execute_kw('preoperacional', 'create', [vals])`. Odoo aplica sus reglas (labrado mínimo, `no conforme` → plan de acción, actividades, odómetro).
+3. `execute_kw('preoperacional', 'create', [vals])`, con la foto en `testigos_img`. Odoo aplica sus reglas (labrado mínimo, `no conforme` → plan de acción, actividades, odómetro).
 4. Se registra el external id y se lee `name`.
 
 Clasificación de errores:
@@ -163,7 +181,7 @@ tests/test_preop.py              29 pruebas (SQLite; opcional PostgreSQL real)
 
 ### Registrar la Mini App en @BotFather
 
-La Mini App se abre desde un **botón inline `web_app`** que envía el bot (`/preoperacional` o el botón 📝, primera opción del menú de @QRLectorBot), así que no hace falta registrar nada para que funcione. Opcionalmente:
+La Mini App se abre desde un **botón inline `web_app`** que envía el bot (`/preoperacional` o el botón 📝, primera opción del menú de @OperativosViacoturBot), así que no hace falta registrar nada para que funcione. Opcionalmente:
 
 1. `@BotFather → /mybots → <bot> → Bot Settings → Menu Button → Configure menu button`: URL `https://<PREOP_BASE_URL>/preoperacional` y texto `Preoperacional`. Así se abre desde el botón de menú del chat.
 2. Para un enlace directo `t.me/<bot>/preop`: `/newapp`, elegir el bot, título, descripción, imagen 640×360, URL `https://<PREOP_BASE_URL>/preoperacional` y nombre corto `preop`.

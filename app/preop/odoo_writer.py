@@ -90,7 +90,8 @@ def _odoo_datetime(value: datetime) -> str:
     return value.strftime("%Y-%m-%d %H:%M:%S")
 
 
-def build_odoo_values(preop: Preoperacional, boss_odoo_id: int | None = None) -> dict[str, Any]:
+def build_odoo_values(preop: Preoperacional, boss_odoo_id: int | None = None,
+                      testigos_b64: str | None = None) -> dict[str, Any]:
     """Traduce el registro local a ``vals`` del modelo ``preoperacional`` de Odoo.
 
     Solo se envían campos del catálogo (checklist/llantas): ``extra`` se queda en
@@ -113,6 +114,8 @@ def build_odoo_values(preop: Preoperacional, boss_odoo_id: int | None = None) ->
         vals["observaciones"] = preop.observaciones
     vals.update({key: value for key, value in preop.checklist.items() if key in CHECKLIST_BY_KEY})
     vals.update({key: float(value) for key, value in preop.llantas.items() if key in MEASURES_BY_KEY})
+    if testigos_b64:
+        vals["testigos_img"] = testigos_b64  # Binary en Odoo: base64 sin prefijo data:
     return vals
 
 

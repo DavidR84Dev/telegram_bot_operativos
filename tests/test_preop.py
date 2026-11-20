@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import os
 import xmlrpc.client
@@ -18,7 +19,18 @@ from tenacity import wait_none
 from app.preop import etl, service
 from app.preop.checklist import CHECKLIST, NO_CONFORME, count_no_conformes, form_definition
 from app.preop.db import Database
-from app.preop.models import Base, Empleado, Extracto, Flota, Preoperacional, SyncRun, SyncStatus, utc_now
+from app.preop.models import (
+    Base,
+    Empleado,
+    Extracto,
+    Flota,
+    Preoperacional,
+    PreopFoto,
+    SyncRun,
+    SyncStatus,
+    Ubicacion,
+    utc_now,
+)
 from app.preop.odoo_writer import (
     OdooPermanentError,
     OdooTransientError,
@@ -35,6 +47,8 @@ from .helpers import BOT_TOKEN, make_init_data
 
 TG_USER = 7913476225
 UUID = "0b8f5a8e-3c1d-4f7a-9a2b-1c2d3e4f5a6b"
+JPEG = b"\xff\xd8\xff\xe0" + b"\x00" * 64  # firma JPEG válida
+FOTO_B64 = base64.b64encode(JPEG).decode()
 
 
 # ────────────────────────────────────────── fixtures ──────────────────────────────────────────
@@ -53,7 +67,7 @@ def _empleado(odoo_id=100, pin=str(TG_USER), responsable="Jefe Uno", **extra):
 
 def _extracto(odoo_id=500, vehiculo: Any = "BUS 01/ABC123", **extra):
     now = utc_now()
-    return {"id": odoo_id, "codigo": "EXT-500", "estado": "activo", "company_id": "Viacotur",
+    return {"id": odoo_id, "codigo": "EXT-500", "estado": "approved", "company_id": "Viacotur",
             "contratos_list": [{"id_contrato": 55, "nombre": "Contrato Minera"}],
             "vehiculo": vehiculo, "conductor": "Ana Conductora", "cel_conductor1": "3001112233",
             "responsable_cliente": {"name": "Cliente SA", "mobile": "3109998877"},
@@ -103,9 +117,10 @@ def _ids(db) -> tuple[int, int]:
                 s.scalar(select(Extracto.id).where(Extracto.odoo_id == 500)))
 
 
-def _payload(vehiculo_id: int, extracto_id: int | None = None, **over) -> PreoperacionalIn:
+def _payload(vehiculo_id: int | None, extracto_id: int, **over) -> PreoperacionalIn:
     data = {"uuid": UUID, "vehiculo_id": vehiculo_id, "extracto_id": extracto_id, "kilometraje": 1510,
-            "checklist": {item.key: item.options[0] for item in CHECKLIST}, "llantas": {"llanta_1": 5.0}}
+            "checklist": {item.key: item.options[0] for item in CHECKLIST}, "llantas": {"llanta_1": 5.0},
+            "testigos_img": f"data:image/jpeg;base64,{FOTO_B64}"}
     data.update(over)
     return PreoperacionalIn.model_validate(data)
 
@@ -136,14 +151,14 @@ def test_extracto_maps_nested_vehicle_and_client_mobile():
 
 def test_preop_input_requires_every_item_and_valid_options():
     with pytest.raises(ValueError, match="Faltan ítems"):
-        _payload(1, checklist={"soat": "conforme"})
+        _payload(1, 1, checklist={"soat": "conforme"})
     bad = {item.key: item.options[0] for item in CHECKLIST} | {"soat": "regular"}
     with pytest.raises(ValueError, match="Valor inválido"):
-        _payload(1, checklist=bad)
+        _payload(1, 1, checklist=bad)
     with pytest.raises(ValueError, match="fuera de rango"):
-        _payload(1, llantas={"llanta_1_pre": 900})
+        _payload(1, 1, llantas={"llanta_1_pre": 900})
     with pytest.raises(ValueError):
-        PreoperacionalIn.model_validate({**_payload(1).model_dump(), "telegram_user_id": 1})  # extra=forbid
+        PreoperacionalIn.model_validate({**_payload(1, 1).model_dump(), "telegram_user_id": 1})  # extra=forbid
 
 
 def test_count_no_conformes_matches_odoo_rules():
@@ -301,15 +316,88 @@ def test_submit_is_idempotent_by_uuid(seeded):
     assert first.sync_status == SyncStatus.PENDIENTE
 
 
-def test_submit_rejects_unknown_employee_and_foreign_vehicle(seeded):
-    vehiculo, _ = _ids(seeded)
+def test_submit_rejects_unknown_employee(seeded):
+    vehiculo, extracto = _ids(seeded)
     with pytest.raises(service.SubmissionError) as exc:
-        service.submit(seeded, service.TelegramIdentity(1, None, "X"), _payload(vehiculo))
+        service.submit(seeded, service.TelegramIdentity(1, None, "X"), _payload(vehiculo, extracto))
     assert exc.value.status_code == 403
+
+
+@pytest.mark.parametrize("change", [
+    {"estado": "draft"},                      # extracto no aprobado
+    {"conductor": "Otro Conductor"},          # el empleado no es su conductor
+    {"fecha_hora_fin": utc_now() - timedelta(days=3)},  # vencido
+])
+def test_submit_requires_own_approved_current_extracto(seeded, change):
+    vehiculo, extracto = _ids(seeded)
     with seeded.session() as s:
-        s.get(Flota, vehiculo).company_odoo_id = 2
-    with pytest.raises(service.SubmissionError, match="compañía"):
-        service.submit(seeded, IDENTITY, _payload(vehiculo))
+        for key, value in change.items():
+            setattr(s.get(Extracto, extracto), key, value)
+    with pytest.raises(service.SubmissionError) as exc:
+        service.submit(seeded, IDENTITY, _payload(vehiculo, extracto))
+    assert exc.value.status_code == 403
+
+
+def test_vehicle_comes_from_extracto_and_cannot_be_changed(seeded):
+    vehiculo, extracto = _ids(seeded)
+    with seeded.session() as s:
+        otro = s.scalar(select(Flota.id).where(Flota.odoo_id == 11))
+    with pytest.raises(service.SubmissionError, match="no corresponde al extracto"):
+        service.submit(seeded, IDENTITY, _payload(otro, extracto))
+    preop, _ = service.submit(seeded, IDENTITY, _payload(None, extracto))  # sin vehículo: se toma del extracto
+    assert preop.vehiculo_id == vehiculo
+
+
+def test_conductor_name_matches_without_accents_or_case(seeded):
+    _, extracto = _ids(seeded)
+    with seeded.session() as s:
+        s.get(Extracto, extracto).segundo_conductor, s.get(Extracto, extracto).conductor = "  ANA  CONDUCTÓRA ", "Otro"
+        empleado = s.scalar(select(Empleado).where(Empleado.odoo_id == 100))
+        assert [e.id for e in service.extractos_del_conductor(s, empleado)] == [extracto]
+
+
+def test_contract_required_when_extracto_has_several(seeded):
+    vehiculo, extracto = _ids(seeded)
+    with seeded.session() as s:
+        s.get(Extracto, extracto).contratos_list = [{"id_contrato": 55, "nombre": "A"}, {"id_contrato": 56, "nombre": "B"}]
+    with pytest.raises(service.SubmissionError, match="Selecciona el contrato"):
+        service.submit(seeded, IDENTITY, _payload(vehiculo, extracto))
+    preop, _ = service.submit(seeded, IDENTITY, _payload(vehiculo, extracto, contrato_odoo_id=56))
+    assert preop.contrato_odoo_id == 56
+
+
+@pytest.mark.parametrize("foto, error", [
+    ("no-es-base64!!", "base64"),
+    (base64.b64encode(b"GIF89a" + b"\x00" * 32).decode(), "JPEG o PNG"),
+])
+def test_photo_is_validated_by_real_signature(foto, error):
+    with pytest.raises(ValueError, match=error):
+        _payload(1, 1, testigos_img=foto)
+
+
+def test_photo_is_stored_and_sent_as_testigos_img(seeded):
+    preop_id = _queue_one(seeded)
+    with seeded.session() as s:
+        foto = s.scalar(select(PreopFoto).where(PreopFoto.preop_id == preop_id))
+        assert (foto.tipo, foto.mime, foto.contenido) == ("testigos", "image/jpeg", JPEG)
+    service.claim_batch(seeded, 10, 300)
+    writer = FakeWriter([(77, "PRE-0077", False)])
+    service.send_one(seeded, writer, preop_id, 8)
+    assert writer.calls[0][1]["testigos_img"] == FOTO_B64
+
+
+def test_location_links_to_recent_preop_only(seeded):
+    preop_id = _queue_one(seeded)
+    reciente = service.registrar_ubicacion(seeded, TG_USER, 6.25, -75.56, 12.0)
+    assert reciente.preop_id == preop_id
+    tarde = service.registrar_ubicacion(seeded, TG_USER, 6.25, -75.56, now=utc_now() + timedelta(minutes=11))
+    assert tarde.preop_id is None
+    otro = service.registrar_ubicacion(seeded, 42, 6.0, -75.0)
+    assert otro.preop_id is None
+    with seeded.session() as s:
+        filas = s.scalars(select(Ubicacion).order_by(Ubicacion.id)).all()
+        assert [(u.telegram_user_id, u.empleado_id is not None) for u in filas] == [
+            (TG_USER, True), (TG_USER, True), (42, False)]
 
 
 def test_submit_rejects_contract_not_related(seeded):
@@ -501,9 +589,25 @@ def test_api_context_and_unknown_user(api):
     client, _ = api
     assert client.get("/api/preop/context", headers=_headers(user_id=1)).status_code == 403
     ctx = client.get("/api/preop/context", headers=_headers()).json()
-    assert ctx["empleado"]["nombre"] == "Ana Conductora"
-    assert {v["odoo_id"] for v in ctx["vehiculos"]} == {10, 11, 12}
-    assert [e["vehiculo_odoo_id"] for e in ctx["extractos"]] == [10]
+    assert ctx["empleado"] == {"nombre": "Ana Conductora", "puesto_trabajo": "Conductor", "responsable": "Jefe Uno"}
+    assert ctx["validado"] is True
+    [extracto] = ctx["extractos"]
+    assert extracto["vehiculo"]["odoo_id"] == 10 and extracto["vehiculo"]["matricula"] == "ABC123"
+    assert extracto["contratos"] == [{"id_contrato": 55, "nombre": "Contrato Minera"}]
+
+
+def test_api_context_not_validated_without_approved_extracto(api, seeded):
+    client, _ = api
+    with seeded.session() as s:
+        s.scalar(select(Extracto)).estado = "pending"
+    ctx = client.get("/api/preop/context", headers=_headers()).json()
+    assert ctx["validado"] is False and ctx["extractos"] == []
+
+
+def test_api_serves_logo(api):
+    client, _ = api
+    response = client.get("/static/viacotur-logo.png")
+    assert response.status_code == 200 and response.content.startswith(b"\x89PNG")
 
 
 def test_api_submit_accepts_and_wakes_worker(api, seeded):
@@ -521,7 +625,7 @@ def test_api_submit_accepts_and_wakes_worker(api, seeded):
 
 def test_api_submit_validates_payload(api, seeded):
     client, _ = api
-    vehiculo, _ = _ids(seeded)
-    body = _payload(vehiculo).model_dump()
+    vehiculo, extracto = _ids(seeded)
+    body = _payload(vehiculo, extracto).model_dump()
     body["checklist"]["soat"] = "<script>"
     assert client.post("/api/preop", json=body, headers=_headers()).status_code == 422
