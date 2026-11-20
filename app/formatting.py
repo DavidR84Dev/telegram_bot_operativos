@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 from . import ticket_state
 
 if TYPE_CHECKING:
-    from .preop.service import SendOutcome
+    from .preop.service import SendOutcome, UbicacionRegistrada
 
 
 def _route(origin: str | None, destination: str | None) -> str:
@@ -54,3 +54,12 @@ def preop_result(outcome: SendOutcome) -> str:
         f"Referencia local: #{outcome.preop_id}. El área de sistemas ya tiene el detalle; "
         "no es necesario diligenciarlo de nuevo."
     )
+
+
+def ubicacion_registrada(registro: UbicacionRegistrada) -> str:
+    """Confirmación del botón 📍 Enviar ubicación."""
+    text = "📍 <b>Ubicación recibida</b>"
+    if registro.preop_id is None:
+        return text + "\n\nQuedó registrada. No hay un preoperacional enviado en los últimos 10 minutos para asociarla."
+    ref = escape(registro.preop_nombre) if registro.preop_nombre else f"#{registro.preop_id}"
+    return text + f"\n\nQuedó asociada a tu preoperacional {ref}."

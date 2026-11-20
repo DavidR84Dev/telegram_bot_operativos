@@ -66,34 +66,67 @@ def test_non_qr_text_points_to_scanner_button():
     assert "Escanear QR" in upd.message.reply_text.await_args.args[0]
 
 
-def test_main_keyboard_order_preoperacional_then_scanner():
+def test_main_keyboard_formularios_scanner_location():
     kb = tga.main_keyboard()
-    assert [[b.text for b in row] for row in kb.keyboard] == [[tga.BTN_PREOP], [tga.BTN_ESCANEAR]]
+    assert [[b.text for b in row] for row in kb.keyboard] == [
+        [tga.BTN_FORMULARIOS], [tga.BTN_ESCANEAR], [tga.BTN_UBICACION]]
     # Botones de texto: las Mini Apps se abren con botones inline (initData).
     assert all(b.web_app is None for row in kb.keyboard for b in row)
+    assert kb.keyboard[2][0].request_location is True
 
 
-def test_start_shows_menu_and_inline_buttons_in_order():
+def test_start_shows_welcome_and_keyboard():
     upd = _update(text="/start")
     asyncio.run(tga.cmd_start(upd, _ctx(_services())))
-    first, second = upd.message.reply_text.await_args_list
-    assert first.args[0].index("Preoperacional") < first.args[0].index("Escanear QR")
-    urls = [row[0].web_app.url for row in second.kwargs["reply_markup"].inline_keyboard]
-    assert urls == ["https://scan.example.com/preoperacional", "https://scan.example.com/scanner"]
+    call = upd.message.reply_text.await_args
+    assert call.args[0].startswith("Bienvenido")
+    assert call.kwargs["reply_markup"].keyboard[0][0].text == tga.BTN_FORMULARIOS
 
 
-def test_menu_buttons_open_their_mini_app():
-    for label, url in ((tga.BTN_PREOP, "https://scan.example.com/preoperacional"),
-                       (tga.BTN_ESCANEAR, "https://scan.example.com/scanner")):
-        upd = _update(text=label)
-        asyncio.run(tga.on_text(upd, _ctx(_services())))
-        assert upd.message.reply_text.await_args.kwargs["reply_markup"].inline_keyboard[0][0].web_app.url == url
+def test_formularios_lists_preoperacional_first():
+    upd = _update(text=tga.BTN_FORMULARIOS)
+    asyncio.run(tga.on_text(upd, _ctx(_services())))
+    call = upd.message.reply_text.await_args
+    assert call.args[0] == "📂 Formularios disponibles:"
+    rows = call.kwargs["reply_markup"].inline_keyboard
+    assert rows[0][0].text == tga.BTN_PREOP
+    assert rows[0][0].web_app.url == "https://scan.example.com/preoperacional"
+
+
+def test_scanner_button_opens_scanner():
+    upd = _update(text=tga.BTN_ESCANEAR)
+    asyncio.run(tga.on_text(upd, _ctx(_services())))
+    button = upd.message.reply_text.await_args.kwargs["reply_markup"].inline_keyboard[0][0]
+    assert button.web_app.url == "https://scan.example.com/scanner"
 
 
 def test_menu_button_requires_authorization():
-    upd = _update(user_id=111, text=tga.BTN_PREOP)
+    upd = _update(user_id=111, text=tga.BTN_FORMULARIOS)
     asyncio.run(tga.on_text(upd, _ctx(_services(pin_ok=False))))
     assert "no autorizado" in upd.message.reply_text.await_args.args[0].lower()
+
+
+def test_location_is_saved_in_bot_database(monkeypatch):
+    saved = []
+
+    def fake_registrar(db, user_id, lat, lon, accuracy=None):
+        saved.append((db, user_id, lat, lon, accuracy))
+        return SimpleNamespace(id=1, preop_id=9, preop_nombre="PRE-0009")
+
+    monkeypatch.setattr(tga.preop_service, "registrar_ubicacion", fake_registrar)
+    upd = _update()
+    upd.message.location = SimpleNamespace(latitude=6.25, longitude=-75.56, horizontal_accuracy=8.0)
+    ctx = _ctx(_services())
+    ctx.application.bot_data[tga.PREOP_DB_KEY] = "db"
+    asyncio.run(tga.on_location(upd, ctx))
+    assert saved == [("db", 7913476225, 6.25, -75.56, 8.0)]
+    assert "PRE-0009" in upd.message.reply_text.await_args.args[0]
+
+
+def test_location_text_from_desktop_explains_how():
+    upd = _update(text=tga.BTN_UBICACION)
+    asyncio.run(tga.on_text(upd, _ctx(_services())))
+    assert "celular" in upd.message.reply_text.await_args.args[0]
 
 
 def test_scanner_inline_button_is_web_app():

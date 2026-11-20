@@ -6,6 +6,12 @@ Versionado: [SemVer](https://semver.org/lang/es/) (`MAJOR.MINOR.PATCH`).
 ## [Sin publicar]
 
 ### Agregado
+- **Preoperacional como bot de referencia (`@viacoturform_bot`)**:
+  - Menú de @QRLectorBot: **📋 Formularios** (lista inline, ✅ Preoperacional primero), **📷 Escanear QR** y **📍 Enviar ubicación**; comando `/formularios`.
+  - Mini App por pasos (Información → Verificación → Evidencia → Resumen) con barra de progreso e identidad VIACOTUR (logo y paleta).
+  - Vehículo tomado y bloqueado desde el **extracto aprobado** del conductor; sin extracto aprobado, pantalla de bloqueo con instrucciones.
+  - Foto de testigos del tablero obligatoria (comprimida en el teléfono), guardada en `preop_fotos` y enviada a `testigos_img` de Odoo.
+  - Tabla `ubicaciones` en la BD del bot: ubicación compartida desde el chat, asociada al preoperacional de los últimos 10 minutos.
 - **Preoperacional vehicular** (`app/preop/`, documentación en `docs/PREOPERACIONAL.md`):
   - Mini App `/preoperacional` (botón 📝 y comando `/preoperacional`) con autocompletado de vehículo, extracto y contrato desde tablas locales.
   - Tablas `empleados`, `flota`, `extractos` sincronizadas desde la API REST de Odoo (`viacotur_api`, JWT) con UPSERT por `odoo_id`, desactivación de los que desaparecen y bitácora `sync_runs`.

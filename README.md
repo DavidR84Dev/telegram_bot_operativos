@@ -1,13 +1,14 @@
 # Telegram Bot Operativos — Validador de QR de abordaje y Preoperacional
 
-Servicio independiente (FastAPI + `python-telegram-bot`) detrás de **@QRLectorBot**, el punto de entrada de las funcionalidades operativas. Cada funcionalidad es una Mini App con su botón en el menú principal (teclado persistente, una opción por fila, en este orden):
+Servicio independiente (FastAPI + `python-telegram-bot`) detrás de **@QRLectorBot**, el punto de entrada de las funcionalidades operativas. Su diseño sigue al bot de referencia `@viacoturform_bot` ([docs/mapa_viacotur_form.md](docs/mapa_viacotur_form.md)). Menú principal (teclado persistente, una opción por fila):
 
-| # | Botón | Comando | Mini App |
-|---|---|---|---|
-| 1 | 📝 Preoperacional | `/preoperacional` | `PREOP_BASE_URL/preoperacional` |
-| 2 | 📷 Escanear QR | `/escanear` | `SCANNER_BASE_URL/scanner` |
+| Botón | Comando | Qué hace |
+|---|---|---|
+| 📋 Formularios | `/formularios` | Lista inline de formularios (Mini Apps), en orden: **✅ Preoperacional** (`/preoperacional`) |
+| 📷 Escanear QR | `/escanear` | Abre la Mini App del escáner (`SCANNER_BASE_URL/scanner`) |
+| 📍 Enviar ubicación | — | Comparte la ubicación (`request_location`); se guarda en la BD del bot y se asocia al preoperacional de los últimos 10 min |
 
-`/start` (y `/ayuda`) muestra el menú y los botones inline de todas las Mini Apps en el mismo orden. Para agregar una opción, ver CONTRIBUTING.md → *Agregar una opción al menú del bot*.
+`/start` (y `/ayuda`) muestra la bienvenida y el teclado. Para agregar un formulario, ver CONTRIBUTING.md → *Agregar una opción al menú del bot*.
 
 Funcionalidades actuales:
 
@@ -72,7 +73,7 @@ telegram_boarding_bot ◄──HTTPS POST /internal/notify-boarding (Bearer)─�
 app/
   main.py            Entrypoint FastAPI: lifespan (arranca/para el bot y el sondeo), /health, webhook de Telegram
   config.py          Settings (pydantic-settings), todo viene de .env
-  telegram_app.py    Menú principal (registro MENU), comandos, respaldo por texto, construcción de la Application
+  telegram_app.py    Menú principal (Formularios, escáner, ubicación), comandos, respaldo por texto, Application
   web.py             GET /scanner (Mini App) y POST /api/scan (API de la Mini App)
   webapp_auth.py     Validación de initData de Telegram (HMAC-SHA256)
   access.py          Whitelist con caché (hr.employee.pin)
@@ -89,7 +90,7 @@ app/
   preop/             Preoperacional: ORM, ETL de maestros (API REST), cola y conector XML-RPC (ver docs/PREOPERACIONAL.md)
 scripts/introspect_endpoint.py  Genera modelos SQLAlchemy/Pydantic a partir de un endpoint de la API
 docs/PREOPERACIONAL.md          Arquitectura, BD, ETL, seguridad, despliegue y BotFather del preoperacional
-tests/               96 pruebas (pytest), ver CONTRIBUTING.md
+tests/               114 pruebas (pytest), ver CONTRIBUTING.md
 Dockerfile           Imagen de la app (también usada para correr los tests en CI/local)
 docker-compose.yml   Servicios "app" (este bot) y "db" (PostgreSQL) para desarrollo/producción
 pyproject.toml       Configuración de ruff, mypy, pytest y cobertura (gate de calidad)
@@ -199,12 +200,12 @@ Ver también `PLAN_IMPLEMENTACION.md` para el detalle del estado de la implement
 
 ```bash
 .venv/bin/pip install -r requirements-dev.txt   # agrega ruff y mypy sobre requirements.txt
-.venv/bin/python -m pytest -q                   # 96 pruebas; aplica --cov=app --cov-fail-under=70 (ver pyproject.toml)
+.venv/bin/python -m pytest -q                   # 114 pruebas; aplica --cov=app --cov-fail-under=70 (ver pyproject.toml)
 .venv/bin/ruff check app tests scripts          # lint (pyflakes + pycodestyle + bugbear)
 .venv/bin/mypy app                              # tipado estático de todo el paquete app/
 ```
 
-Las tres pasan limpias hoy (96 tests, ~84% de cobertura, 0 hallazgos de `ruff`/`mypy`) y están pensadas como **gate de calidad**: cualquier cambio debería mantenerlas en verde antes de mergear. El mismo comando de pytest corre igual dentro del contenedor: `docker compose run --rm app python -m pytest -q`.
+Las tres pasan limpias hoy (114 tests, ~85% de cobertura, 0 hallazgos de `ruff`/`mypy`) y están pensadas como **gate de calidad**: cualquier cambio debería mantenerlas en verde antes de mergear. El mismo comando de pytest corre igual dentro del contenedor: `docker compose run --rm app python -m pytest -q`.
 
 No hay pruebas contra un Odoo real: `app/odoo_client.py` se sustituye por dobles en los tests, y `tests/test_odoo_client_readonly.py` comprueba específicamente que el cliente **no** expone `write`/`create`/`call`. Detalle de las convenciones de tipado (`assert` para invariantes que `mypy` no puede ver, `# type: ignore` puntual donde una librería externa tipa de forma imprecisa) en `CONTRIBUTING.md`.
 

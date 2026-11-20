@@ -10,6 +10,8 @@ el objeto completo se guarda en ``raw``).
 """
 from __future__ import annotations
 
+import base64
+import binascii
 from datetime import UTC, datetime
 from typing import Any
 
@@ -188,6 +190,30 @@ class ExtractoApi(_ApiRecord):
 _REQUIRED_ITEMS = frozenset(item.key for item in CHECKLIST)
 
 
+FOTO_MAX_BYTES = 3 * 1024 * 1024  # la Mini App comprime a ~300 KB; esto es solo un tope
+_FOTO_FIRMAS = {b"\xff\xd8\xff": "image/jpeg", b"\x89PNG\r\n\x1a\n": "image/png"}
+
+
+def decode_photo(value: str) -> tuple[bytes, str]:
+    """Decodifica una foto en base64 (admite prefijo ``data:image/...;base64,``).
+
+    Devuelve (bytes, mime). Valida el tipo por su firma real, no por lo que diga el cliente.
+    """
+    raw = value.split(",", 1)[1] if value.startswith("data:") else value
+    try:
+        data = base64.b64decode(raw, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError("La foto no es base64 válido") from exc
+    if not data:
+        raise ValueError("La foto está vacía")
+    if len(data) > FOTO_MAX_BYTES:
+        raise ValueError(f"La foto supera {FOTO_MAX_BYTES // (1024 * 1024)} MB")
+    for firma, mime in _FOTO_FIRMAS.items():
+        if data.startswith(firma):
+            return data, mime
+    raise ValueError("La foto debe ser JPEG o PNG")
+
+
 class PreoperacionalIn(BaseModel):
     """Formulario enviado por la Mini App. La identidad NO viaja aquí (sale de initData)."""
 
@@ -195,14 +221,24 @@ class PreoperacionalIn(BaseModel):
 
     # Llave de idempotencia generada en el cliente (crypto.randomUUID()).
     uuid: str = Field(pattern=r"^[0-9a-fA-F-]{36}$")
-    vehiculo_id: int = Field(gt=0, description="id local de la tabla flota")
-    extracto_id: int | None = Field(default=None, gt=0, description="id local de la tabla extractos")
+    # El vehículo sale del extracto aprobado del conductor. Si la Mini App lo manda,
+    # debe coincidir (defensa ante clientes viejos o manipulados).
+    extracto_id: int = Field(gt=0, description="id local de la tabla extractos (aprobado y vigente)")
+    vehiculo_id: int | None = Field(default=None, gt=0, description="id local de la tabla flota")
     contrato_odoo_id: int | None = Field(default=None, gt=0)
     kilometraje: float = Field(ge=0, le=10_000_000)
     observaciones: str | None = Field(default=None, max_length=2000)
     checklist: dict[str, str]
     llantas: dict[str, float] = Field(default_factory=dict)
     extra: dict[str, str | int | float | bool | None] = Field(default_factory=dict, max_length=50)
+    # Foto de los testigos del tablero (obligatoria) -> campo ``testigos_img`` de Odoo.
+    testigos_img: str = Field(min_length=16, max_length=FOTO_MAX_BYTES * 4 // 3 + 64)
+
+    @field_validator("testigos_img")
+    @classmethod
+    def _check_photo(cls, value: str) -> str:
+        decode_photo(value)
+        return value
 
     @field_validator("checklist")
     @classmethod

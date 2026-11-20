@@ -82,7 +82,7 @@ docker compose exec app python -m app.preop.worker --requeue-all # reencolar fal
 
 En Odoo, `preoperacional` solo tiene **un** campo de imagen: `testigos_img` (Binary, `attachment=True`). Cualquier otra foto debe guardarse como `ir.attachment` con `res_model='preoperacional'` y `res_id` del registro.
 
-## 5. Decisiones pendientes del usuario
+## 5. Decisiones del usuario (resueltas el 2026-11-20: 1A + ubicación, 2A, 3B, 4A; implementadas)
 
 Responder, por ejemplo, "1A, 2A, 3A, 4A". La opción **A** es la recomendada en cada caso.
 

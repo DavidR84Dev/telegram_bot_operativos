@@ -1,8 +1,12 @@
-"""Handlers de @QRLectorBot: menú principal de Mini Apps y aviso de abordaje.
+"""Handlers de @QRLectorBot: menú principal, formularios (Mini Apps), ubicación y aviso de abordaje.
 
-El bot es el punto de entrada de las funcionalidades operativas. Cada opción del
-menú es una entrada de ``MENU`` (en el orden en que se muestra): agregar una
-funcionalidad nueva = agregar una ``MenuOption`` y, si hace falta, su comando.
+El bot es el punto de entrada de las funcionalidades operativas. Teclado principal:
+
+    📋 Formularios      -> lista inline de formularios (``FORMULARIOS``, en orden)
+    📷 Escanear QR      -> Mini App del escáner
+    📍 Enviar ubicación -> comparte la ubicación (se guarda en la BD del bot)
+
+Agregar un formulario nuevo = agregar una ``MenuOption`` a ``FORMULARIOS``.
 
 La lectura del QR la hace el escáner nativo de Telegram dentro de la Mini App
 (``/scanner``). En el chat solo se acepta pegar la URL del QR como respaldo.
@@ -33,6 +37,7 @@ from .config import Settings
 from .odoo_client import OdooClient
 from .odoo_queries import find_employee_by_pin, find_internal_token, find_tickets_by_ids
 from .passenger_notifier import PassengerNotifier
+from .preop import service as preop_service
 from .scan_service import STATUS_MESSAGES, scan_qr
 from .watch_store import WatchStore
 from .watcher import Watcher, utc_now
@@ -40,8 +45,12 @@ from .watcher import Watcher, utc_now
 logger = logging.getLogger(__name__)
 
 SERVICES_KEY = "services"
+# BD del preoperacional (la cuelga main._start_preop); la usa el handler de ubicación.
+PREOP_DB_KEY = "preop_db"
+BTN_FORMULARIOS = "📋 Formularios"
 BTN_ESCANEAR = "📷 Escanear QR"
-BTN_PREOP = "📝 Preoperacional"
+BTN_UBICACION = "📍 Enviar ubicación"
+BTN_PREOP = "✅ Preoperacional"
 
 
 @dataclass(frozen=True)
@@ -52,7 +61,7 @@ class MenuOption:
     teclado llegan sin ``initData`` y no se pueden autenticar.
     """
 
-    label: str                          # texto del botón del teclado (y del mensaje que envía)
+    label: str                          # nombre de la opción (botón de la lista o del teclado)
     open_text: str                      # texto del botón inline que abre la Mini App
     prompt: str                         # mensaje que acompaña al botón inline
     help: str                           # línea de ayuda (HTML)
@@ -70,6 +79,7 @@ class Services:
 
 BOT_COMMANDS = [
     BotCommand("start", "Abrir el menú principal"),
+    BotCommand("formularios", "Ver los formularios disponibles"),
     BotCommand("preoperacional", "Diligenciar la inspección preoperacional"),
     BotCommand("escanear", "Abrir el escáner de QR"),
     BotCommand("ayuda", "Qué hace cada opción del menú"),
@@ -91,33 +101,45 @@ def scanner_inline(base: str) -> InlineKeyboardMarkup:
     )
 
 
-# Orden del menú = orden de esta tupla (una opción por fila).
-MENU: tuple[MenuOption, ...] = (
+# Formularios disponibles: orden de la lista inline = orden de esta tupla.
+FORMULARIOS: tuple[MenuOption, ...] = (
     MenuOption(
         label=BTN_PREOP,
-        open_text="📝 Abrir preoperacional",
+        open_text=BTN_PREOP,
         prompt="Toca para abrir el formulario preoperacional:",
-        help=f"<b>{BTN_PREOP}</b>: inspección preoperacional del vehículo antes de salir.",
+        help="inspección preoperacional del vehículo antes de salir.",
         url=preop_url,
     ),
-    MenuOption(
-        label=BTN_ESCANEAR,
-        open_text="📷 Abrir escáner",
-        prompt="Toca para abrir el escáner:",
-        help=(f"<b>{BTN_ESCANEAR}</b>: lee el QR del pasajero, muestra la ficha del ticket y el botón "
-              "de la página de abordaje. Cuando se registre el abordaje recibirás aquí la confirmación."),
-        url=lambda settings: scanner_url(settings.scanner_base_url),
-    ),
 )
-_MENU_BY_LABEL = {option.label: option for option in MENU}
+_FORM_BY_LABEL = {option.label: option for option in FORMULARIOS}
 
-HELP_TEXT = "🚍 <b>Menú operativo</b>\n\n" + "\n\n".join(option.help for option in MENU)
+ESCANER = MenuOption(
+    label=BTN_ESCANEAR,
+    open_text="📷 Abrir escáner",
+    prompt="Toca para abrir el escáner:",
+    help=("lee el QR del pasajero, muestra la ficha del ticket y el botón de la página de abordaje. "
+          "Cuando se registre el abordaje recibirás aquí la confirmación."),
+    url=lambda settings: scanner_url(settings.scanner_base_url),
+)
+
+HELP_TEXT = (
+    "Bienvenido 👋 Elige una opción:\n\n"
+    f"<b>{BTN_FORMULARIOS}</b>: formularios operativos.\n"
+    + "".join(f"   • <b>{f.label}</b>: {f.help}\n" for f in FORMULARIOS)
+    + f"\n<b>{BTN_ESCANEAR}</b>: {ESCANER.help}\n\n"
+    f"<b>{BTN_UBICACION}</b>: comparte tu ubicación actual. Si acabas de enviar un preoperacional "
+    "(últimos 10 minutos), queda asociada a él."
+)
 
 
 def main_keyboard() -> ReplyKeyboardMarkup:
-    """Teclado persistente del menú principal (botones de texto, uno por fila, en el orden de ``MENU``)."""
+    """Teclado persistente del menú principal (una opción por fila)."""
     return ReplyKeyboardMarkup(
-        [[KeyboardButton(option.label)] for option in MENU],
+        [
+            [KeyboardButton(BTN_FORMULARIOS)],
+            [KeyboardButton(BTN_ESCANEAR)],
+            [KeyboardButton(BTN_UBICACION, request_location=True)],
+        ],
         resize_keyboard=True,
         is_persistent=True,
         input_field_placeholder="Elige una opción del menú",
@@ -128,10 +150,10 @@ def option_inline(option: MenuOption, settings: Settings) -> InlineKeyboardMarku
     return InlineKeyboardMarkup([[InlineKeyboardButton(option.open_text, web_app=WebAppInfo(url=option.url(settings)))]])
 
 
-def menu_inline(settings: Settings) -> InlineKeyboardMarkup:
-    """Todas las Mini Apps como botones inline, en el orden del menú."""
+def formularios_inline(settings: Settings) -> InlineKeyboardMarkup:
+    """Lista de formularios como botones inline ``web_app`` (traen initData), en orden."""
     return InlineKeyboardMarkup(
-        [[InlineKeyboardButton(o.open_text, web_app=WebAppInfo(url=o.url(settings)))] for o in MENU]
+        [[InlineKeyboardButton(f.open_text, web_app=WebAppInfo(url=f.url(settings)))] for f in FORMULARIOS]
     )
 
 
@@ -177,8 +199,10 @@ def build_application(settings: Settings, odoo: OdooClient, store: WatchStore) -
 
     application.add_handler(CommandHandler("start", cmd_start))
     application.add_handler(CommandHandler("ayuda", cmd_start))
+    application.add_handler(CommandHandler("formularios", cmd_formularios))
     application.add_handler(CommandHandler("preoperacional", cmd_preop))
     application.add_handler(CommandHandler("escanear", cmd_escanear))
+    application.add_handler(MessageHandler(filters.LOCATION & ~filters.UpdateType.EDITED, on_location))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
     return application
 
@@ -207,8 +231,14 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     assert update.message is not None
     await update.message.reply_text(HELP_TEXT, parse_mode="HTML", reply_markup=main_keyboard())
-    await update.message.reply_text("Toca una opción para abrirla:",
-                                    reply_markup=menu_inline(_services(context).settings))
+
+
+async def cmd_formularios(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await _authorized(update, context):
+        return
+    assert update.message is not None
+    await update.message.reply_text("📂 Formularios disponibles:",
+                                    reply_markup=formularios_inline(_services(context).settings))
 
 
 async def _open_option(update: Update, context: ContextTypes.DEFAULT_TYPE, option: MenuOption) -> None:
@@ -219,19 +249,46 @@ async def _open_option(update: Update, context: ContextTypes.DEFAULT_TYPE, optio
 
 
 async def cmd_preop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await _open_option(update, context, _MENU_BY_LABEL[BTN_PREOP])
+    await _open_option(update, context, _FORM_BY_LABEL[BTN_PREOP])
 
 
 async def cmd_escanear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await _open_option(update, context, _MENU_BY_LABEL[BTN_ESCANEAR])
+    await _open_option(update, context, ESCANER)
+
+
+async def on_location(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Botón 📍: guarda la ubicación en la BD del bot y la asocia al preoperacional reciente."""
+    if not await _authorized(update, context):
+        return
+    assert update.message is not None and update.message.location is not None
+    assert update.effective_user is not None
+    db = context.application.bot_data.get(PREOP_DB_KEY)
+    if db is None:
+        await update.message.reply_text("El registro de ubicación no está disponible en este momento.")
+        return
+    loc = update.message.location
+    registro = await asyncio.to_thread(
+        preop_service.registrar_ubicacion, db, update.effective_user.id,
+        loc.latitude, loc.longitude, loc.horizontal_accuracy,
+    )
+    await update.message.reply_text(formatting.ubicacion_registrada(registro), parse_mode="HTML",
+                                    reply_markup=main_keyboard())
 
 
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     assert update.message is not None  # filters.TEXT exige un mensaje de texto
-    text = update.message.text or ""
-    option = _MENU_BY_LABEL.get(text.strip())
-    if option is not None:
-        await _open_option(update, context, option)
+    text = (update.message.text or "").strip()
+    if text == BTN_FORMULARIOS:
+        await cmd_formularios(update, context)
+        return
+    if text == BTN_ESCANEAR:
+        await _open_option(update, context, ESCANER)
+        return
+    if text == BTN_UBICACION:
+        # Clientes sin soporte de ubicación (p. ej. Telegram Desktop) envían el texto del botón.
+        await update.message.reply_text("Para compartir tu ubicación abre el bot desde el celular "
+                                        f"y toca <b>{BTN_UBICACION}</b>.", parse_mode="HTML",
+                                        reply_markup=main_keyboard())
         return
     if ticket_state.extract_token(text) is None:
         await update.message.reply_text(
