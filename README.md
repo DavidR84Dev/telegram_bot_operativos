@@ -1,8 +1,20 @@
-# Telegram Bot Operativos — Validador de QR de abordaje
+# Telegram Bot Operativos — Validador de QR de abordaje y Preoperacional
 
-Servicio independiente (FastAPI + `python-telegram-bot`) que usa el validador de abordaje (conductor/auxiliar) para leer el QR del ticket del pasajero y confirmar el abordaje en Odoo.
+Servicio independiente (FastAPI + `python-telegram-bot`) detrás de **@QRLectorBot**, el punto de entrada de las funcionalidades operativas. Cada funcionalidad es una Mini App con su botón en el menú principal (teclado persistente, una opción por fila, en este orden):
 
-- **Qué NO hace**: no escribe en Odoo. Toda consulta es de **solo lectura** (XML-RPC `search_read`). La confirmación del abordaje la hace la propia página web de Odoo (`programacion_operativos`), abierta desde la Mini App.
+| # | Botón | Comando | Mini App |
+|---|---|---|---|
+| 1 | 📝 Preoperacional | `/preoperacional` | `PREOP_BASE_URL/preoperacional` |
+| 2 | 📷 Escanear QR | `/escanear` | `SCANNER_BASE_URL/scanner` |
+
+`/start` (y `/ayuda`) muestra el menú y los botones inline de todas las Mini Apps en el mismo orden. Para agregar una opción, ver CONTRIBUTING.md → *Agregar una opción al menú del bot*.
+
+Funcionalidades actuales:
+
+1. **Validador de QR de abordaje**: el validador (conductor/auxiliar) lee el QR del ticket del pasajero y confirma el abordaje en Odoo.
+2. **Preoperacional vehicular** (`/preoperacional`): el conductor diligencia la inspección; se guarda en PostgreSQL y un worker la crea en Odoo por XML-RPC. Documentación completa: **[docs/PREOPERACIONAL.md](docs/PREOPERACIONAL.md)**.
+
+- **Escritura en Odoo**: el validador de QR **no** escribe (XML-RPC `search_read`; la confirmación la hace la página web de Odoo de `programacion_operativos`). La única escritura del servicio es `create` del modelo `preoperacional`, aislada en `app/preop/odoo_writer.py`.
 - **Quién lo usa**: personal autorizado (validadores) cuyo Telegram ID está en el campo `pin` de su `hr.employee` en Odoo, con `active = True`.
 - **Stack**: FastAPI, `python-telegram-bot` 22.x, SQLAlchemy (SQLite en desarrollo/pruebas, PostgreSQL en Docker/producción), XML-RPC hacia Odoo.
 - **Puerto**: `127.0.0.1:8011` (sin exponer directamente; en producción va detrás de nginx/TLS).
@@ -31,7 +43,7 @@ telegram_boarding_bot ◄──HTTPS POST /internal/notify-boarding (Bearer)─�
 
 ## Flujo de validación de abordaje
 
-1. El validador pulsa **📷 Escanear QR** (botón de teclado) dentro del chat del bot.
+1. El validador pulsa **📷 Escanear QR** (segunda opción del menú) o envía `/escanear`; el bot responde con el botón inline que abre el escáner.
 2. Se abre la Mini App `SCANNER_BASE_URL/scanner`, que usa el escáner **nativo** de Telegram (`Telegram.WebApp.showScanQrPopup()`). No se procesan fotos ni hay OpenCV: la Mini App exige dispositivos móviles con Telegram actualizado (Bot API ≥ 6.4).
 3. La página envía el texto leído a `POST /api/scan`, firmado con el `initData` de Telegram (cabecera `X-Telegram-Init-Data`).
 4. El servidor:
@@ -60,7 +72,7 @@ telegram_boarding_bot ◄──HTTPS POST /internal/notify-boarding (Bearer)─�
 app/
   main.py            Entrypoint FastAPI: lifespan (arranca/para el bot y el sondeo), /health, webhook de Telegram
   config.py          Settings (pydantic-settings), todo viene de .env
-  telegram_app.py    Comandos /start y /ayuda, botón del escáner, respaldo por texto, construcción de la Application
+  telegram_app.py    Menú principal (registro MENU), comandos, respaldo por texto, construcción de la Application
   web.py             GET /scanner (Mini App) y POST /api/scan (API de la Mini App)
   webapp_auth.py     Validación de initData de Telegram (HMAC-SHA256)
   access.py          Whitelist con caché (hr.employee.pin)
@@ -73,7 +85,11 @@ app/
   passenger_notifier.py  Cliente HTTP hacia telegram_boarding_bot (aviso al pasajero)
   formatting.py      Textos HTML para los mensajes de Telegram
   static/scanner.html   Página de la Mini App (escáner nativo + ficha del ticket)
-tests/               66 pruebas (pytest), ver CONTRIBUTING.md
+  static/preoperacional.html  Mini App del preoperacional
+  preop/             Preoperacional: ORM, ETL de maestros (API REST), cola y conector XML-RPC (ver docs/PREOPERACIONAL.md)
+scripts/introspect_endpoint.py  Genera modelos SQLAlchemy/Pydantic a partir de un endpoint de la API
+docs/PREOPERACIONAL.md          Arquitectura, BD, ETL, seguridad, despliegue y BotFather del preoperacional
+tests/               96 pruebas (pytest), ver CONTRIBUTING.md
 Dockerfile           Imagen de la app (también usada para correr los tests en CI/local)
 docker-compose.yml   Servicios "app" (este bot) y "db" (PostgreSQL) para desarrollo/producción
 pyproject.toml       Configuración de ruff, mypy, pytest y cobertura (gate de calidad)
@@ -106,6 +122,7 @@ Todo se configura por `.env` (no hay modelo de configuración en Odoo para este 
 | `EMPLOYEE_CACHE_SECONDS` | Caché de la whitelist de empleados (300 s por defecto) |
 | `DATABASE_URL` | Backend del estado de vigilancias: `sqlite:///run/watches.sqlite3` (desarrollo/manual) o `postgresql+psycopg2://user:pass@host:5432/db` (Docker/producción). Al correr con `docker-compose`, se sobreescribe automáticamente apuntando al contenedor `db` |
 | `POSTGRES_PASSWORD` | Solo la usa `docker-compose` para el contenedor `db` |
+| `ODOO_API_*`, `ODOO_WRITE_*`, `PREOP_*`, `MASTER_SYNC_INTERVAL_SECONDS` | Preoperacional: ver [docs/PREOPERACIONAL.md](docs/PREOPERACIONAL.md#env-además-de-las-variables-existentes) |
 
 Plantilla completa: `.env.example`.
 
@@ -182,12 +199,12 @@ Ver también `PLAN_IMPLEMENTACION.md` para el detalle del estado de la implement
 
 ```bash
 .venv/bin/pip install -r requirements-dev.txt   # agrega ruff y mypy sobre requirements.txt
-.venv/bin/python -m pytest -q                   # 66 pruebas; aplica --cov=app --cov-fail-under=70 (ver pyproject.toml)
-.venv/bin/ruff check app tests                  # lint (pyflakes + pycodestyle + bugbear)
+.venv/bin/python -m pytest -q                   # 96 pruebas; aplica --cov=app --cov-fail-under=70 (ver pyproject.toml)
+.venv/bin/ruff check app tests scripts          # lint (pyflakes + pycodestyle + bugbear)
 .venv/bin/mypy app                              # tipado estático de todo el paquete app/
 ```
 
-Las tres pasan limpias hoy (66 tests, ~78% de cobertura, 0 hallazgos de `ruff`/`mypy`) y están pensadas como **gate de calidad**: cualquier cambio debería mantenerlas en verde antes de mergear. El mismo comando de pytest corre igual dentro del contenedor: `docker compose run --rm app python -m pytest -q`.
+Las tres pasan limpias hoy (96 tests, ~84% de cobertura, 0 hallazgos de `ruff`/`mypy`) y están pensadas como **gate de calidad**: cualquier cambio debería mantenerlas en verde antes de mergear. El mismo comando de pytest corre igual dentro del contenedor: `docker compose run --rm app python -m pytest -q`.
 
 No hay pruebas contra un Odoo real: `app/odoo_client.py` se sustituye por dobles en los tests, y `tests/test_odoo_client_readonly.py` comprueba específicamente que el cliente **no** expone `write`/`create`/`call`. Detalle de las convenciones de tipado (`assert` para invariantes que `mypy` no puede ver, `# type: ignore` puntual donde una librería externa tipa de forma imprecisa) en `CONTRIBUTING.md`.
 
@@ -239,12 +256,15 @@ WantedBy=multi-user.target
 | Reiniciar la app (sin tocar la base) | `docker compose restart app` |
 | Reiniciar todo tras cambiar código/`.env` | `docker compose up -d --build` |
 | Entrar a PostgreSQL | `docker compose exec db psql -U watcher -d watches` |
+| Sincronizar maestros del preoperacional | `docker compose exec app python -m app.preop.etl` |
+| Reencolar preoperacionales fallidos | `docker compose exec app python -m app.preop.worker --requeue-all` |
 
 Antes de reiniciar el contenedor `app` en caliente: revisar que no haya vigilancias importantes en curso (`docker compose exec db psql -U watcher -d watches -c "SELECT COUNT(*) FROM watches"`). Al estar en PostgreSQL (volumen `pgdata`), las vigilancias sobreviven al reinicio; el sondeo simplemente se reanuda al arrancar `lifespan` (`watcher.ensure_running()`).
 
 ## Pendientes y riesgos conocidos
 
-- **Usuario de Odoo**: en QA se usa un usuario admin; en producción debe ser un usuario técnico dedicado (grupo `hr.group_hr_user` o similar, sin permisos de escritura).
+- **Usuario de Odoo**: en QA se usa un usuario admin; en producción debe ser un usuario técnico dedicado (grupo `hr.group_hr_user` o similar) para lectura, y uno con permiso de crear `preoperacional` para `ODOO_WRITE_USERNAME`.
+- **Preoperacional**: riesgos propios (credenciales de la API REST, campos anidados pendientes en `viacotur_api`) en [docs/PREOPERACIONAL.md](docs/PREOPERACIONAL.md#riesgos-y-pendientes).
 - **Cookies de Odoo en el webview**: la página de abordaje se abre por navegación (no en `iframe`, por ser origen distinto). Confirmar en un móvil real que el botón "Confirmar" funciona dentro de la Mini App.
 - **Dispositivos**: requiere un cliente de Telegram con `showScanQrPopup` (Bot API ≥ 6.4). Clientes antiguos no pueden usar el escáner.
 - **Túneles `cloudflared` en QA**: la URL `*.trycloudflare.com` cambia en cada reinicio del túnel; hay que actualizar `WEBAPP_BASE_URL`/`SCANNER_BASE_URL` y recrear el validador con `docker compose up -d` (`restart` no relee el `.env`). `WEBAPP_BASE_URL` es un túnel al puerto de Odoo (`8079`) y `SCANNER_BASE_URL` uno al validador (`8011`). No aplica una vez en producción con dominio fijo.

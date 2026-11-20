@@ -53,6 +53,41 @@ class Settings(BaseSettings):
     # PostgreSQL en Docker/producción (p. ej. "postgresql+psycopg2://user:pass@db:5432/watches").
     database_url: str = "sqlite:///run/watches.sqlite3"
 
+    # ── Preoperacional (Mini App /preoperacional) ───────────────────────────
+    # API REST de Odoo (módulo viacotur_api, JWT validador "e2et") para las tablas maestras.
+    # Vacío = se usa ODOO_URL. Sin ODOO_API_LOGIN la sincronización maestra queda desactivada.
+    odoo_api_url: str = ""
+    odoo_api_login: str = ""
+    # Contraseña real del usuario (no API key: /api/authenticate es un login interactivo).
+    odoo_api_password: SecretStr | None = None
+    # Compañías a sincronizar (ids de res.company separados por coma).
+    odoo_api_company_ids: str = "1"
+    odoo_api_page_size: int = 500
+    odoo_api_timeout_seconds: int = 60
+    master_sync_interval_seconds: int = 900
+
+    # Escritura XML-RPC del preoperacional. Vacíos = mismas credenciales de ODOO_USERNAME/ODOO_PASSWORD.
+    odoo_write_username: str = ""
+    odoo_write_password: SecretStr | None = None
+    # Cola de envío a Odoo.
+    preop_worker_interval_seconds: int = 10
+    preop_max_attempts: int = 8
+    # Un registro "enviando" más viejo que esto se considera abandonado (caída del proceso) y se reintenta.
+    preop_sending_lease_seconds: int = 300
+    # HTTPS público de la Mini App del preoperacional. Vacío = SCANNER_BASE_URL (mismo servicio).
+    preop_base_url: str = ""
+    # Antigüedad máxima de initData en la Mini App del preoperacional: el formulario es largo
+    # (se diligencia en varios minutos), por eso es mayor que la del escáner.
+    preop_auth_max_age_seconds: int = 3600
+
+    @property
+    def api_company_ids(self) -> list[int]:
+        return [int(part) for part in self.odoo_api_company_ids.split(",") if part.strip()]
+
+    @property
+    def master_sync_enabled(self) -> bool:
+        return bool(self.odoo_api_login and self.odoo_api_password)
+
 
 @lru_cache
 def get_settings() -> Settings:

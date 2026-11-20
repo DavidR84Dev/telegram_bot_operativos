@@ -24,6 +24,18 @@ def validate_init_data(
     now: float | None = None,
 ) -> dict[str, str]:
     """Devuelve ``{"user_id": ...}`` si la firma y la antigüedad son válidas."""
+    user = validate_init_data_user(init_data, bot_token, max_age_seconds, now)
+    return {"user_id": str(user["id"])}
+
+
+def validate_init_data_user(
+    init_data: str,
+    bot_token: str,
+    max_age_seconds: int,
+    now: float | None = None,
+) -> dict:
+    """Como ``validate_init_data`` pero devuelve el objeto ``user`` completo de Telegram
+    (``id``, ``first_name``, ``last_name``, ``username``...), ya verificado."""
     if not init_data:
         raise InitDataError("initData ausente")
     data = dict(parse_qsl(init_data, keep_blank_values=True))
@@ -49,6 +61,6 @@ def validate_init_data(
         user = json.loads(data.get("user", "{}"))
     except json.JSONDecodeError as exc:
         raise InitDataError("usuario inválido") from exc
-    if not isinstance(user, dict) or "id" not in user:
+    if not isinstance(user, dict) or not isinstance(user.get("id"), int):
         raise InitDataError("usuario inválido")
-    return {"user_id": str(user["id"])}
+    return user

@@ -52,7 +52,7 @@ No agregues `# type: ignore` para silenciar un error que no entiendes: primero c
 
 ## Convenciones del código
 
-- **Nunca escribir en Odoo.** `app/odoo_client.py` solo expone `search_read`. Toda consulta nueva va en `app/odoo_queries.py` como una función de solo lectura. Si una funcionalidad necesitara escribir en Odoo, es una señal de que no pertenece a este bot (la escritura la hace la página web de Odoo).
+- **Escritura en Odoo acotada.** `app/odoo_client.py` solo expone `search_read` y toda consulta nueva va en `app/odoo_queries.py` como función de solo lectura. La **única** escritura del servicio es `OdooWriter.create_preoperacional` (`app/preop/odoo_writer.py`), que pasa siempre por la cola de `preoperacional` (estado, reintentos, idempotencia). No agregar escrituras directas desde handlers o endpoints: si una funcionalidad nueva necesita escribir, debe seguir el mismo patrón (registro local `pendiente` → worker → Odoo).
 - **Separar lógica pura de E/S.** `ticket_state.py` (reglas de estado) y `watcher.decide()` (qué hacer con una vigilancia) no hacen llamadas de red ni a la base de datos: reciben datos ya cargados y devuelven una decisión. La E/S (Odoo, Telegram, SQLite) vive en `odoo_client.py`, `telegram_app.py`, `watch_store.py`. Mantén esa frontera al agregar funcionalidad: si una función nueva necesita decidir algo, piensa primero si puede ser pura y probarse sin mocks.
 - **Inyección de dependencias simple.** `telegram_app.build_application()` construye un único objeto `Services` (dataclass) con todas las dependencias (`settings`, `odoo`, `access`, `store`, `watcher`) y lo cuelga en `application.bot_data`. Los handlers lo recuperan con `_services(context)`. Sigue ese mismo patrón para nuevas dependencias en vez de usar variables globales o `get_settings()` disperso por el código.
 - **Nunca confiar en el cuerpo de la petición para la identidad.** La Mini App (`app/web.py`) obtiene el `user_id` únicamente de `initData` validado con HMAC (`app/webapp_auth.py`). Si agregas un endpoint nuevo que actúa en nombre de un usuario, exige y valida `initData`; no aceptes un `user_id` en el body o en query params.
@@ -68,6 +68,16 @@ Si agregas una variable:
 2. Documéntala en `.env.example` con un comentario breve.
 3. Añádela a la tabla de variables de `README.md`.
 4. Si es un secreto, usa `SecretStr`.
+
+## Agregar una opción al menú del bot
+
+El menú de @QRLectorBot sale de la tupla `MENU` de `app/telegram_app.py`; el orden de la tupla es el orden en pantalla (hoy: Preoperacional → Escanear QR).
+
+1. Servir la Mini App desde este servicio (ruta FastAPI + `app/static/<nombre>.html`) y validar `initData` en su API (`app.webapp_auth.validate_init_data_user`).
+2. Agregar una `MenuOption(label, open_text, prompt, help, url)` a `MENU` en la posición deseada. El teclado, `/start`, la ayuda y el manejo del botón se generan solos.
+3. Opcional: un comando (`CommandHandler` + `BotCommand` en `BOT_COMMANDS`) que llame a `_open_option`.
+4. Las Mini Apps se abren siempre con botón **inline** `web_app`: desde un botón de teclado llegan sin `initData`.
+5. Cubrir el orden y la apertura en `tests/test_handlers.py`.
 
 ## Agregar un nuevo bot operativo al mismo patrón
 

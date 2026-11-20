@@ -1,4 +1,8 @@
-"""Handlers del validador: /start, botón del escáner (Mini App) y aviso de abordaje.
+"""Handlers de @QRLectorBot: menú principal de Mini Apps y aviso de abordaje.
+
+El bot es el punto de entrada de las funcionalidades operativas. Cada opción del
+menú es una entrada de ``MENU`` (en el orden en que se muestra): agregar una
+funcionalidad nueva = agregar una ``MenuOption`` y, si hace falta, su comando.
 
 La lectura del QR la hace el escáner nativo de Telegram dentro de la Mini App
 (``/scanner``). En el chat solo se acepta pegar la URL del QR como respaldo.
@@ -9,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
+from typing import Callable
 from html import escape
 
 from telegram import (
@@ -36,6 +41,22 @@ logger = logging.getLogger(__name__)
 
 SERVICES_KEY = "services"
 BTN_ESCANEAR = "📷 Escanear QR"
+BTN_PREOP = "📝 Preoperacional"
+
+
+@dataclass(frozen=True)
+class MenuOption:
+    """Opción del menú principal: botón de teclado -> botón inline que abre la Mini App.
+
+    Las Mini Apps se abren con botones *inline*: las lanzadas desde un botón de
+    teclado llegan sin ``initData`` y no se pueden autenticar.
+    """
+
+    label: str                          # texto del botón del teclado (y del mensaje que envía)
+    open_text: str                      # texto del botón inline que abre la Mini App
+    prompt: str                         # mensaje que acompaña al botón inline
+    help: str                           # línea de ayuda (HTML)
+    url: Callable[[Settings], str]      # URL HTTPS de la Mini App
 
 
 @dataclass
@@ -48,30 +69,20 @@ class Services:
 
 
 BOT_COMMANDS = [
-    BotCommand("start", "Abrir el escáner de QR"),
-    BotCommand("ayuda", "Cómo validar un ticket"),
+    BotCommand("start", "Abrir el menú principal"),
+    BotCommand("preoperacional", "Diligenciar la inspección preoperacional"),
+    BotCommand("escanear", "Abrir el escáner de QR"),
+    BotCommand("ayuda", "Qué hace cada opción del menú"),
 ]
-
-HELP_TEXT = (
-    "📷 <b>Lector de QR de abordaje</b>\n\n"
-    f"Pulsa <b>{BTN_ESCANEAR}</b>: se abre el escáner de Telegram. "
-    "Al leer el código verás la ficha del ticket y el botón para abrir la página de abordaje.\n\n"
-    "Cuando se registre el abordaje recibirás aquí la confirmación."
-)
 
 
 def scanner_url(base: str) -> str:
     return f"{base.rstrip('/')}/scanner"
 
 
-def scanner_keyboard() -> ReplyKeyboardMarkup:
-    """Botón de texto. El escáner se abre con un botón inline (ver ``scanner_inline``):
-    las Mini Apps lanzadas desde un botón de teclado llegan sin ``initData``."""
-    return ReplyKeyboardMarkup(
-        [[KeyboardButton(BTN_ESCANEAR)]],
-        resize_keyboard=True,
-        input_field_placeholder="Pulsa para escanear un QR",
-    )
+def preop_url(settings: Settings) -> str:
+    base = settings.preop_base_url or settings.scanner_base_url
+    return f"{base.rstrip('/')}/preoperacional"
 
 
 def scanner_inline(base: str) -> InlineKeyboardMarkup:
@@ -80,9 +91,54 @@ def scanner_inline(base: str) -> InlineKeyboardMarkup:
     )
 
 
+# Orden del menú = orden de esta tupla (una opción por fila).
+MENU: tuple[MenuOption, ...] = (
+    MenuOption(
+        label=BTN_PREOP,
+        open_text="📝 Abrir preoperacional",
+        prompt="Toca para abrir el formulario preoperacional:",
+        help=f"<b>{BTN_PREOP}</b>: inspección preoperacional del vehículo antes de salir.",
+        url=preop_url,
+    ),
+    MenuOption(
+        label=BTN_ESCANEAR,
+        open_text="📷 Abrir escáner",
+        prompt="Toca para abrir el escáner:",
+        help=(f"<b>{BTN_ESCANEAR}</b>: lee el QR del pasajero, muestra la ficha del ticket y el botón "
+              "de la página de abordaje. Cuando se registre el abordaje recibirás aquí la confirmación."),
+        url=lambda settings: scanner_url(settings.scanner_base_url),
+    ),
+)
+_MENU_BY_LABEL = {option.label: option for option in MENU}
+
+HELP_TEXT = "🚍 <b>Menú operativo</b>\n\n" + "\n\n".join(option.help for option in MENU)
+
+
+def main_keyboard() -> ReplyKeyboardMarkup:
+    """Teclado persistente del menú principal (botones de texto, uno por fila, en el orden de ``MENU``)."""
+    return ReplyKeyboardMarkup(
+        [[KeyboardButton(option.label)] for option in MENU],
+        resize_keyboard=True,
+        is_persistent=True,
+        input_field_placeholder="Elige una opción del menú",
+    )
+
+
+def option_inline(option: MenuOption, settings: Settings) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[InlineKeyboardButton(option.open_text, web_app=WebAppInfo(url=option.url(settings)))]])
+
+
+def menu_inline(settings: Settings) -> InlineKeyboardMarkup:
+    """Todas las Mini Apps como botones inline, en el orden del menú."""
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton(o.open_text, web_app=WebAppInfo(url=o.url(settings)))] for o in MENU]
+    )
+
+
 def build_application(settings: Settings, odoo: OdooClient, store: WatchStore) -> Application:
     for name, value in (("WEBAPP_BASE_URL", settings.webapp_base_url),
-                        ("SCANNER_BASE_URL", settings.scanner_base_url)):
+                        ("SCANNER_BASE_URL", settings.scanner_base_url),
+                        ("PREOP_BASE_URL", settings.preop_base_url or settings.scanner_base_url)):
         if not value.startswith("https://"):
             raise ValueError(f"{name} debe ser una URL HTTPS pública (requisito de la Mini App)")
     if settings.telegram_mode == "webhook" and not settings.telegram_webhook_secret:
@@ -121,6 +177,8 @@ def build_application(settings: Settings, odoo: OdooClient, store: WatchStore) -
 
     application.add_handler(CommandHandler("start", cmd_start))
     application.add_handler(CommandHandler("ayuda", cmd_start))
+    application.add_handler(CommandHandler("preoperacional", cmd_preop))
+    application.add_handler(CommandHandler("escanear", cmd_escanear))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
     return application
 
@@ -148,25 +206,39 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await _authorized(update, context):
         return
     assert update.message is not None
-    base = _services(context).settings.scanner_base_url
-    await update.message.reply_text(HELP_TEXT, parse_mode="HTML", reply_markup=scanner_keyboard())
-    await update.message.reply_text("Toca para abrir el escáner:", reply_markup=scanner_inline(base))
+    await update.message.reply_text(HELP_TEXT, parse_mode="HTML", reply_markup=main_keyboard())
+    await update.message.reply_text("Toca una opción para abrirla:",
+                                    reply_markup=menu_inline(_services(context).settings))
+
+
+async def _open_option(update: Update, context: ContextTypes.DEFAULT_TYPE, option: MenuOption) -> None:
+    if not await _authorized(update, context):
+        return
+    assert update.message is not None
+    await update.message.reply_text(option.prompt, reply_markup=option_inline(option, _services(context).settings))
+
+
+async def cmd_preop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _open_option(update, context, _MENU_BY_LABEL[BTN_PREOP])
+
+
+async def cmd_escanear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _open_option(update, context, _MENU_BY_LABEL[BTN_ESCANEAR])
 
 
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     assert update.message is not None  # filters.TEXT exige un mensaje de texto
     text = update.message.text or ""
-    if text.strip() == BTN_ESCANEAR:
-        if not await _authorized(update, context):
-            return
-        base = _services(context).settings.scanner_base_url
-        await update.message.reply_text("Toca para abrir el escáner:", reply_markup=scanner_inline(base))
+    option = _MENU_BY_LABEL.get(text.strip())
+    if option is not None:
+        await _open_option(update, context, option)
         return
     if ticket_state.extract_token(text) is None:
         await update.message.reply_text(
-            f"Pulsa <b>{BTN_ESCANEAR}</b> para leer el QR del pasajero.",
+            "Elige una opción del menú. Para validar un pasajero pulsa "
+            f"<b>{BTN_ESCANEAR}</b> y lee su QR.",
             parse_mode="HTML",
-            reply_markup=scanner_keyboard(),
+            reply_markup=main_keyboard(),
         )
         return
     if not await _authorized(update, context):
