@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 from . import ticket_state
 
 if TYPE_CHECKING:
-    from .preop.service import SendOutcome, UbicacionRegistrada
+    from .preop.service import AvisoJefe, SendOutcome, UbicacionRegistrada
 
 
 def _route(origin: str | None, destination: str | None) -> str:
@@ -54,6 +54,25 @@ def preop_result(outcome: SendOutcome) -> str:
         f"Referencia local: #{outcome.preop_id}. El área de sistemas ya tiene el detalle; "
         "no es necesario diligenciarlo de nuevo."
     )
+
+
+def preop_aviso_jefe(aviso: AvisoJefe, odoo_name: str | None) -> str:
+    """Aviso al jefe inmediato cuando un preoperacional de su equipo trae hallazgos."""
+    lines = [
+        "⚠️ <b>Preoperacional con hallazgos</b>",
+        "",
+        f"👤 Conductor: <b>{escape(aviso.conductor)}</b>",
+        f"🚌 Vehículo: {escape(aviso.vehiculo or '—')}",
+    ]
+    if odoo_name:
+        lines.append(f"📄 {escape(odoo_name)}")
+    if aviso.no_conformes:
+        lines += ["", f"<b>No conformes ({len(aviso.no_conformes)}):</b>"]
+        lines += [f"• {escape(label)}" for label in aviso.no_conformes]
+    if aviso.llantas_bajas:
+        lines += ["", "<b>Labrado bajo el mínimo del contrato:</b>"]
+        lines += [f"• {escape(nombre)}" for nombre in aviso.llantas_bajas]
+    return "\n".join(lines)
 
 
 def ubicacion_registrada(registro: UbicacionRegistrada) -> str:

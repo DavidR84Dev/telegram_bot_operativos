@@ -110,8 +110,8 @@ def build_odoo_values(preop: Preoperacional, boss_odoo_id: int | None = None,
         vals["contrato_id"] = preop.contrato_odoo_id
     if boss_odoo_id:
         vals["immediate_boss_id"] = boss_odoo_id
-    if preop.observaciones:
-        vals["observaciones"] = preop.observaciones
+    # Solo el texto del conductor; sin texto se envía en blanco.
+    vals["observaciones"] = preop.observaciones or ""
     vals.update({key: value for key, value in preop.checklist.items() if key in CHECKLIST_BY_KEY})
     vals.update({key: float(value) for key, value in preop.llantas.items() if key in MEASURES_BY_KEY})
     if testigos_b64:

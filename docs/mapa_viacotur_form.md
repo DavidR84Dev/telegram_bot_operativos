@@ -132,7 +132,7 @@ Al abrir muestra una pantalla de carga **"Validando acceso… Verificando que es
 Formulario de una página, bienvenida "Bienvenido, CONDUCTOR DE PRUEBA", tarjeta **"Información de Compra"**:
 - **Información General:** Comprador (solo lectura), Vehículo Asignado (solo lectura, con "Matrícula: ABC125" — nótese que difiere de la placa ABC123 del campo principal: **posible inconsistencia a verificar**), **Proveedor** (toggle: `Combustible` | `Combustible para gastos` + buscador "Buscar o escribir proveedor…"), **Fecha de Transacción** (date, hoy por defecto).
 - **Detalles de Combustible:** Galones (ej. 12.50), Precio por Galón (ej. 12000,00), **Tipo de Combustible** (select, valor por defecto "Diesel / ACPM").
-- **Referencias y Documentos:** **Kilometraje al Tanqueo** (numérico; ayuda: *"Debe ser mayor a 250000 kilómetros (último registrado)"*), **Cargar Factura** (archivo).
+- **Referencias y Documentos:** **Kilometraje al Tanqueo** (numérico; ayuda: *"Debe ser mayor a 253888 kilómetros (último registrado)"*), **Cargar Factura** (archivo).
 - Botón **Enviar Registro**; pie "Viacotur S.A – Sistema de Gestión de Combustible © 2025".
 - No se vio total calculado (galones × precio) en pantalla.
 
@@ -202,3 +202,149 @@ Botón callback del menú. **No probado** (podría cerrar la jornada, sesión o 
 
 - Ningún formulario fue enviado, no se compartió ubicación y no se pulsó "Finalizar".
 - Durante la exploración se añadió accidentalmente una reacción ❤️ al mensaje de instrucciones del bot; se **retiró de inmediato** y el chat quedó como estaba.
+
+---
+
+## 8. Complemento: Preoperacional en profundidad (recorrido guiado, 2026-11-23)
+
+Recorrido hecho con el usuario guiando. No se envió el formulario; se llegó hasta el paso 2 y no se marcó ninguna casilla.
+
+### Paso 1 – Información General (completo)
+1. **Conductor** y **Responsable Jefe**: solo lectura, precargados.
+2. Banner verde "Conductor validado con extractos aprobados".
+3. **Contrato** (select): al elegir **CLIENTE X** aparece dinámicamente la sección **Vehículo**.
+4. **Vehículo**: lista de tarjetas seleccionables filtrada por contrato. Mostró una sola: **ABC125 – Marca/Modelo – N.º interno 090 – etiqueta verde "DISPONIBLE"**. (El usuario mencionó "ABC135"; la lista solo ofrecía ABC125, se seleccionó esa. Confirmar placa correcta.)
+5. Al seleccionar el vehículo se muestran **Número Interno del Vehículo** (solo lectura, 090) y **Odómetro Actual**.
+6. **Odómetro Actual**: numérico, con placeholder "Último registrado: 253600 km" y guía "El último odómetro registrado fue 253600 km". Se ingresó 253600 (igual al último registrado) y el botón **Siguiente →** se habilitó. *Por confirmar:* si el sistema exige valor estrictamente mayor (en Combustible dice "debe ser mayor a 253888") o acepta igual.
+7. **Siguiente →** solo se habilita con contrato + vehículo + odómetro.
+
+Dependencias: contrato → vehículos disponibles → n.º interno + último odómetro.
+
+### Paso 2 – Verificación de Elementos
+Cuatro pestañas: **Documentos | Rines/Llantas | Equipo | Vehículo**. Botones **← Atrás** y **Siguiente →** al pie. El contenido de cada pestaña hace scroll interno (dentro de un panel con barra de desplazamiento), además del scroll de la página.
+
+**Pestaña Documentos** — casillas (checkbox) simples:
+Licencia de Conducción, Licencia de Tránsito, SOAT, Revisión Tecnomecánica, Extracto de Contrato, Tarjeta de Operación, Cédula de Ciudadanía.
+
+**Pestaña Rines/Llantas:**
+- Casillas globales: "Estado de los rines conforme", "Estado de las llantas conforme".
+- Por llanta (**Llanta N.º 1 a 4**): **Labrado (mm)** (decimal, 0.0) y **Presión de aire (PSI)** (entero, 0).
+- Banner naranja: **"El vehículo tiene llantas internas"** con botón **Sí** que muestra las llantas 5 y 6.
+- **Llanta de Repuesto**: Labrado (mm) y Presión (PSI).
+
+**Pestaña Equipo** ("EQUIPO DE PREVENCIÓN Y SEGURIDAD"): cada ítem indica entre paréntesis el criterio de *no conforme* (p. ej. "sin existencia, dañado"). Dos tipos de control:
+- Casilla simple: Conos, Cuñas, Botiquín de primeros auxilios, Gato, Linterna, Herramientas básicas (alicate, destornilladores, llave de expansión y llaves fijas), entre otros.
+- Radio **Conforme / No conforme / No aplica**: Pico y pala, Eslingas, Cables de arranque, Cámaras de vehículo (delantera y trasera), Estado de barra antivuelco; el Kit control derrames químicos solo ofrece Conforme / No conforme.
+- Casillas al final: Cruceta, Profundímetro, Medidor de aire (y posiblemente más; la lista no se recorrió completa).
+
+**Pestaña Vehículo** (agrupada por secciones con encabezado):
+- **EXTINTORES:** Extintor N.º 1 (casilla); Extintor N.º 2 (radio Conforme / No conforme / No aplica).
+- **CHASIS Y CABINA:** orden y aseo dentro y fuera del vehículo, cinturones de seguridad, suspensión–dirección, espejos y retrovisores, estado de inclinación del espaldar, cojinería del asiento, fijación del asiento, etc.
+- **NIVELES, SISTEMAS DE DIRECCIÓN, MOTOR Y FRENOS:** nivel de líquido de frenos, nivel de aceite hidráulico, y otros niveles (lista no recorrida por completo).
+- Cada ítem muestra el criterio de no conforme en el texto (p. ej. "NO CONFORME: NIVEL BAJO").
+
+### Pasos 3 y 4
+**No explorados todavía** (Evidencia Fotográfica y Resumen).
+
+### Lecciones para el bot
+- La lógica es **dinámica por contrato/vehículo** (vehículos disponibles, n.º interno, último odómetro, llantas internas): el bot debe consultar esos datos en el backend (Odoo) y no estar fijo.
+- Hay tres patrones de respuesta: casilla simple (marcar = conforme), radio de 3 opciones (incluye "No aplica") y campos numéricos (labrado, PSI).
+- El criterio de "no conforme" va incrustado en el texto de cada ítem; conviene guardarlo como dato estructurado.
+- Validar odómetro contra el último registrado y conservar ese mensaje de ayuda.
+- Pestañas con scroll anidado dificultan el uso en móvil; considerar acordeones o una sección por pantalla.
+- Falta confirmar qué ítems "no conforme" bloquean la operación o notifican al jefe.
+
+---
+
+## 8.1 Inventario completo del paso 2 (Verificación de Elementos)
+
+Recorrido completo de las pestañas Equipo y Vehículo. Sigue sin enviarse nada.
+
+### Documentos (7, todas casilla simple)
+Licencia de Conducción · Licencia de Tránsito · SOAT · Revisión Tecnomecánica · Extracto de Contrato · Tarjeta de Operación · Cédula de Ciudadanía.
+
+### Rines/Llantas
+Casillas "Estado de los rines conforme" y "Estado de las llantas conforme"; Llantas 1–4 (Labrado mm + Presión PSI); botón "El vehículo tiene llantas internas → Sí" (muestra llantas 5 y 6); Llanta de Repuesto (Labrado + Presión).
+
+### Equipo — "EQUIPO DE PREVENCIÓN Y SEGURIDAD" (orden real)
+| # | Ítem | Control |
+|---|------|---------|
+| 1 | Conos (sin existencia, dañado, solo una unidad) | Casilla |
+| 2 | Cuñas (sin existencia, dañado, solo una unidad) | Casilla |
+| 3 | Botiquín de primeros auxilios | Casilla |
+| 4 | Gato | Casilla |
+| 5 | Linterna (sin existencia, sin baterías o baterías en mal estado) | Casilla |
+| 6 | Herramientas básicas (alicate, destornilladores, llave de expansión y llaves fijas) | Casilla |
+| 7 | Chaleco reflectivo | Radio: Conforme / No conforme |
+| 8 | Pico y pala | Radio: Conforme / No conforme / No aplica |
+| 9 | Eslingas (sin existencia, en mal estado) | Radio de 3 opciones |
+| 10 | Kit control derrames químicos | Radio: Conforme / No conforme |
+| 11 | Cables de arranque | Radio de 3 opciones |
+| 12 | Cámaras de vehículo (delantera y trasera) | Radio de 3 opciones |
+| 13 | Estado de barra antivuelco (dañado, con fisuras o defectos) | Radio de 3 opciones |
+| 14 | Cruceta (sin existencia, dañado) | Casilla |
+| 15 | Profundímetro | Casilla |
+| 16 | Medidor de aire | Casilla |
+| 17 | **Testigos del tablero** | Radio: Conforme / No conforme |
+
+### Vehículo (agrupado por secciones)
+- **EXTINTORES:** Extintor N.º 1 (casilla); Extintor N.º 2 (radio de 3 opciones).
+- **CHASIS Y CABINA (casillas):** orden y aseo dentro y fuera del vehículo; cinturones de seguridad; suspensión–dirección; espejos y retrovisores; vidrios; estado de inclinación del espaldar; cojinería del asiento; fijación del asiento.
+- **NIVELES, SISTEMAS DE DIRECCIÓN, MOTOR Y FRENOS (casillas):** nivel de líquido de frenos; nivel de aceite hidráulico; nivel de combustible; nivel de líquido refrigerante; nivel aceite de motor; frenos; freno de mano (tensión baja); correas.
+- **SISTEMA ELÉCTRICO (casillas):** switche de encendido o starter; pito; pito de reversa; batería; dispositivo de velocidad; cierre de puertas; aire acondicionado; velocímetro; limpiaparabrisas; luces delanteras, traseras, reversa y parada (stop); luces direccionales.
+
+### Observaciones adicionales
+- Hay **tres tipos de control**: casilla simple, radio de 2 opciones (Conforme/No conforme) y radio de 3 opciones (con "No aplica"). El tipo depende del ítem, no de la pestaña.
+- El texto de cada ítem incluye el criterio de "no conforme" entre paréntesis; la casilla marcada parece significar "conforme" (por confirmar).
+- Cada pestaña es una lista larga con scroll interno; en pantalla chica solo se ven ~5 ítems a la vez.
+- Los ítems de la pestaña Vehículo y Equipo parecen ser configurables por tipo de vehículo (el banner de "llantas internas" sugiere lógica por vehículo).
+- Incidente en la prueba: un clic marcó por error la casilla "Cierre de puertas" y se desmarcó de inmediato; el formulario no se envió.
+
+---
+
+## 9. Preoperacional: pasos 3 y 4 y requisitos de diseño (2026-11-23)
+
+El usuario marcó las opciones del paso 2 (dejando una sin marcar como ejemplo) para llegar hasta el final. Se recorrieron los pasos 3 y 4 **sin pulsar "Completar Inspección"**: nada se envió.
+
+### Paso 3 – Observaciones y Evidencia Fotográfica
+- **OBSERVACIONES Y ESTADO FINAL:** textarea libre ("Ingrese cualquier observación adicional sobre el estado del vehículo…").
+- **Subir imagen de testigos:** zona punteada "+ Agregar foto" (1 imagen; foto de los testigos del tablero).
+- Botones **← Atrás** / **Siguiente →**. "Siguiente" **no exigió la foto** para avanzar: la validación solo se muestra como alerta en el resumen.
+
+### Paso 4 – Resumen de la Inspección (solo lectura, antes de enviar)
+Tarjetas con lo capturado en pasos anteriores:
+1. **Información General:** Conductor, Contrato, Responsable Jefe, Vehículo (Marca/Modelo/ABC125), Número Interno (090), Odómetro (253600).
+2. **Documentos del Vehículo:** los 7 documentos, cada uno con icono ✔ verde.
+3. **Rines y Llantas:** estado de rines y llantas (✔); tabla **Labrado / Presión** por llanta (L1–L6, "-" cuando no aplica) y Repuesto. Ejemplo: L1 5/45, L2 6/45, L3 8/40, L4 6/40, Repuesto 8/30.
+4. **Equipo de Prevención y Seguridad:** rejilla a dos columnas con ✔ por ítem; los marcados "No aplica" aparecen como **N/A** (Pico y Pala, Extintor N.º 2).
+5. **Extintores**, **Chasis y Cabina**, **Niveles, Sistemas, Motor y Frenos**, **Sistema Eléctrico:** misma rejilla con ✔.
+6. **Imagen Testigo:** "Imagen subida: 0/1" con icono de advertencia naranja.
+- Pie: **← Atrás** (permite volver a corregir) y botón verde **Completar Inspección** (envío final; no pulsado).
+
+### Cómo marca el resumen cada estado
+| Estado del campo | Icono en el resumen |
+|---|---|
+| Marcado / Conforme | ✔ verde |
+| **Sin marcar** o **No conforme** | **⚠ círculo rojo con "!"** (alerta). Ejemplo: "Direccionales" quedó sin marcar |
+| No aplica | **N/A** en gris |
+| Pendiente de evidencia (foto) | **0/1** + advertencia naranja |
+
+Regla indicada por el usuario: los campos no seleccionados o marcados "No conforme" se muestran como alertados en el resumen; el usuario puede devolverse para corregir antes de enviar.
+
+### Requisitos de diseño pedidos por el usuario para el nuevo bot / mini app
+1. **Responsive para móviles:** la mini app debe verse y usarse bien en pantallas pequeñas (hoy las listas largas con scroll interno de ~5 ítems y las pestañas obligan a mucho desplazamiento).
+2. **Teclado numérico** en los campos de valores (odómetro, labrado, PSI, kilometraje, galones, precios): usar `inputmode="numeric"` (o `decimal` para labrado y precio) para que se despliegue el teclado numérico en el móvil.
+3. **Resumen con alertas** como el actual, con posibilidad de volver a cada paso a corregir.
+
+### Recomendaciones técnicas derivadas
+- Un solo scroll por pantalla (evitar paneles con scroll interno dentro de otro scroll) y barra de navegación (Atrás/Siguiente) fija abajo.
+- Botones/casillas con área táctil mínima de ~44 px; el texto de cada ítem junto con el criterio de "no conforme" en una segunda línea más pequeña.
+- Campos numéricos: `inputmode="numeric"`/`"decimal"`, `pattern` y validación en vivo (p. ej. odómetro ≥ último registrado).
+- En el resumen, enlazar cada alerta al ítem para saltar directamente a corregirlo, y deshabilitar o confirmar el envío si hay alertas críticas.
+- Incluir la evidencia fotográfica como requisito explícito con contador (0/1) y bloqueo opcional del envío.
+- Confirmar la política de envío: ¿se permite enviar con ítems sin marcar o "No conforme"? (hoy solo se alertan).
+
+### Decisiones del usuario (2026-11-23)
+- **El sistema debe permitir enviar el Preoperacional con ítems alertados** (sin marcar o "No conforme"): las alertas del resumen son informativas, no bloquean el envío. Por tanto la foto de testigos tampoco debe bloquear el envío; solo advertir.
+- **Alcance actual:** enfocarse únicamente en el formulario **Preoperacional**; los demás (Prueba de Ruta, AST, Pos-Operacional, Combustible, Gastos) quedan para después.
+- El formulario de prueba se cerró sin enviar (se descartó el borrador).

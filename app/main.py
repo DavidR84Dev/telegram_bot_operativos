@@ -38,6 +38,14 @@ def _start_preop(app: FastAPI, application) -> list:
         await application.bot.send_message(
             chat_id=outcome.telegram_user_id, text=formatting.preop_result(outcome), parse_mode="HTML"
         )
+        if outcome.aviso_jefe is not None:
+            try:
+                await application.bot.send_message(
+                    chat_id=outcome.aviso_jefe.telegram_id,
+                    text=formatting.preop_aviso_jefe(outcome.aviso_jefe, outcome.odoo_name), parse_mode="HTML",
+                )
+            except Exception:  # p. ej. el jefe nunca abrió el bot: Telegram no permite escribirle
+                logger.exception("No se pudo avisar al jefe (Telegram %s)", outcome.aviso_jefe.telegram_id)
 
     sender = PreopSender(
         db, build_writer(settings), settings.preop_worker_interval_seconds, settings.preop_max_attempts,

@@ -38,6 +38,7 @@ graph TD
 | `empleados` | `odoo_id` (único) | `nombre`, `departamento_id`/`departamento`, `puesto_trabajo`, `codigo_pin` (índice, es el id de Telegram), `id_contract`, `contrato`, `contrato_temporal_id`, `contrato_temporal`, `responsable`, `responsable_mobile` |
 | `flota` | `odoo_id` | `nombre`, `matricula`, `estado`, `numero_interno`, `parque_automotor`, `odometer_post NUMERIC(14,2)`, `tipo_solicitud` |
 | `extractos` | `odoo_id` | conductores 1-3 con celular y estado de documentos, `contratos_list JSONB`, `estado`, `fecha_hora_inicio/fin TIMESTAMPTZ`, `responsable_cliente`, `responsable_cliente_mobile`, `vehiculo`, `vehiculo_id` |
+| `acuerdos` | `odoo_id` | contrato (`agreement`) desde `/api/acuerdos`: `nombre`, `cliente`, `labrado_camioneta`, `labrado_buses` (labrado mínimo de llantas por tipo de vehículo) |
 | `preoperacional` | `uuid` (único, idempotencia) | ver abajo |
 | `preop_fotos` | (`preop_id`, `tipo`) único | foto de evidencia en `BYTEA` (`tipo='testigos'` → `testigos_img` de Odoo), `mime`, `tamano`, `sha256` |
 | `ubicaciones` | — | ubicación compartida desde el chat (📍): `telegram_user_id`, `empleado_id`, `preop_id` (preoperacional de los últimos 10 min, si hay), `latitud`, `longitud`, `precision_m`, `recibido_at` |
@@ -91,10 +92,19 @@ python scripts/introspect_endpoint.py --file respuesta.json --class Preoperacion
 
 Formulario por pasos con barra de progreso e identidad VIACOTUR (logo y paleta azul), como el bot de referencia `@viacoturform_bot`:
 
-1. **Información:** conductor y responsable bloqueados, aviso "Conductor validado con extractos aprobados", extracto (solo se elige si hay varios), vehículo bloqueado y tomado del extracto, contrato y kilometraje. Si el kilometraje es menor que el último registrado, pide confirmación.
-2. **Verificación:** secciones del checklist con contador; "Marcar todo conforme" marca la respuesta conforme de cada ítem. Los ítems informativos (p. ej. "¿Tiene cámaras?") se responden a mano. Las medidas de llantas son opcionales.
-3. **Evidencia:** foto de testigos del tablero con la cámara (obligatoria).
-4. **Resumen:** datos, ítems no conformes, miniatura de la foto, observaciones y **Enviar**.
+1. **Información General:** conductor y responsable bloqueados y aviso "Conductor validado con extractos aprobados". Luego, como en la referencia: **Contrato** (los de todos los extractos aprobados y vigentes del conductor) → **Vehículo**, en tarjetas con placa, marca/modelo, número interno y "DISPONIBLE" (uno o varios, según los extractos que incluyen ese contrato) → número interno (solo lectura) y **Odómetro actual** con teclado numérico. El odómetro debe ser **mayor o igual** al último registrado en Odoo (último `km_end` del Pos-Operacional, `odometer_post` de `/api/flota`); si es menor, "Siguiente" queda deshabilitado y el servidor también lo rechaza.
+2. **Verificación de Elementos:** cuatro pestañas fijas arriba: **Documentos · Rines/Llantas · Equipo · Vehículo** (esta agrupa Extintores, Chasis y cabina, Niveles y Sistema eléctrico). Los controles siguen el patrón del bot de referencia:
+   - **Casilla** (46 ítems): marcada = `conforme`; **sin marcar = `no conforme`** al enviar a Odoo (abre plan de acción).
+   - **Radio** (9 ítems): Chaleco reflectivo, Kit control derrames y Testigos del tablero (Conforme / No conforme); Pico y pala, Eslingas, Cables de arranque, **Cámaras** (campo `camaras`), Barra antivuelco y Extintor N.º 2 (Conforme / No conforme / No aplica). Un radio sin elegir no se envía.
+   - Cada ítem muestra su criterio de no conforme. "Marcar pestaña conforme" marca la pestaña visible.
+   - **Llantas:** labrado (mm, teclado decimal) y presión (PSI, teclado numérico) de las llantas 1–4 y la de repuesto (`llanta_7` / `llanta_rep_pre`); las llantas 5 y 6 aparecen si el conductor responde **Sí** a "¿El vehículo tiene llantas internas?". Ya no se preguntan "¿La repuesto tiene presión?" (`llanta_rep_pre_act`) ni "¿Tiene cámaras?" (`camaras_new`).
+   - **Alerta de labrado:** cada llanta muestra su mínimo y alerta si está por debajo. El mínimo sale del acuerdo del contrato según el tipo de vehículo (`fleet.vehicle.type`): `labrado_buses` para bus, buseta y microbus; `labrado_camioneta` para los demás. Si el acuerdo tiene 0, se usa el de Odoo (1,6 mm; 2,0 mm en internas). Es solo una alerta: Odoo sigue aplicando sus propios umbrales al crear el registro.
+3. **Observaciones y Evidencia:** observaciones libres (sin texto, se envían en blanco) y foto de testigos del tablero (única foto; recomendada, no obligatoria).
+4. **Resumen de la Inspección:** información general y una tarjeta por sección con ✔ (conforme), **!** rojo (casilla sin marcar, no conforme o radio sin elegir) y **N/A**; tabla de labrado/presión con alerta bajo el mínimo; "Imagen subida: 0/1 o 1/1". Al tocar una alerta vuelve al ítem. **Completar inspección** envía aunque haya alertas, previa confirmación.
+
+El conductor puede enviar uno o varios preoperacionales (no hay límite diario).
+
+**Aviso al jefe por Telegram:** cuando el registro llega a Odoo con ítems no conformes o llantas bajo el mínimo del contrato, el bot avisa al jefe inmediato (conductor, vehículo, PRE-xxxx y lista de hallazgos). El jefe se identifica por el nombre del responsable del empleado y debe tener su **id de Telegram en el PIN** (`hr.employee.pin`) y haber abierto el bot al menos una vez; si no, se registra en el log.
 
 Sin empleado o sin extracto aprobado se muestra una pantalla de bloqueo que explica qué hacer. Al terminar, recuerda enviar la ubicación desde el chat (📍, dentro de 10 minutos).
 
@@ -105,7 +115,7 @@ Sin empleado o sin extracto aprobado se muestra una pantalla de bloqueo que expl
 - La identidad (id, nombre, usuario) sale **solo** del `initData`. El cuerpo no acepta `telegram_user_id`, porque `extra="forbid"` lo rechaza.
 - Autorización: el empleado debe estar activo y su `codigo_pin` debe ser igual al id de Telegram (tabla local).
 - **Vehículo desde el extracto aprobado:** el extracto es obligatorio y debe estar **aprobado** (`estado = approved`), vigente (±1 día) y tener al empleado como conductor, segundo o tercer conductor. La API entrega el conductor por nombre: se compara sin tildes, mayúsculas ni espacios extra. Cuando `viacotur_api` exponga el id del conductor, esta comparación debe pasar a ser por id. El vehículo se toma del extracto y no se puede cambiar. Si el extracto trae varios contratos, hay que elegir uno; si trae uno, se asigna solo.
-- **Foto de testigos obligatoria:** llega en base64 (JPEG o PNG, máximo 3 MB, validada por su firma real, no por lo que diga el cliente). La Mini App la comprime antes de enviarla (lado mayor 1600 px, unos 300 KB).
+- **Foto de testigos (opcional):** llega en base64 (JPEG o PNG, máximo 3 MB, validada por su firma real, no por lo que diga el cliente). La Mini App la comprime antes de enviarla (lado mayor 1600 px, unos 300 KB).
 - La Mini App pinta los datos con `textContent`, nunca con `innerHTML`.
 
 | Ruta | Respuesta |

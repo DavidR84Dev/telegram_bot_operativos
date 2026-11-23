@@ -5,12 +5,25 @@ Versionado: [SemVer](https://semver.org/lang/es/) (`MAJOR.MINOR.PATCH`).
 
 ## [Sin publicar]
 
+### Cambiado
+- **Formulario Preoperacional reorganizado según el recorrido de `@viacoturform_bot` (2026-11-23, `docs/mapa_viacotur_form.md` §8–9):**
+  - Catálogo (`app/preop/checklist.py`) con pestañas **Documentos · Rines/Llantas · Equipo · Vehículo**, el orden real de los ítems, el criterio de no conforme como dato y las llantas agrupadas por posición (5 y 6 solo con llantas internas). Mismos campos y opciones de Odoo que antes.
+  - "Testigos del tablero" pasa a la pestaña Equipo; "Odómetro actual" y número interno visibles en el paso 1.
+  - Se permite enviar con ítems sin marcar o no conformes y sin la foto de testigos: el resumen los muestra como alertas (✔ / ! / N/A, 0/1) y permite saltar al ítem para corregir.
+  - Diseño móvil: pestañas fijas, un solo scroll, áreas táctiles de 44 px y teclado numérico (`inputmode`) en odómetro, labrado y presión.
+- **Parámetros del Preoperacional (definidos por el usuario):**
+  - Paso 1 como la referencia: contrato → vehículo (tarjetas de los extractos aprobados, uno o varios) → odómetro, que debe ser **mayor o igual** al último registrado en Odoo (validado en la Mini App y en el servidor).
+  - Casillas y radios como `@viacoturform_bot`: casilla sin marcar = `no conforme`; cámaras con 3 opciones al campo `camaras`; sin las preguntas `llanta_rep_pre_act` ni `camaras_new`.
+  - Alerta de labrado con el mínimo del acuerdo (`labrado_camioneta` / `labrado_buses` según el tipo de vehículo); nueva tabla `acuerdos` sincronizada desde `/api/acuerdos`.
+  - Observaciones sin texto se envían en blanco; ya no se anotan ítems sin responder.
+  - Aviso por Telegram al jefe inmediato cuando hay no conformes o labrado bajo el mínimo.
+
 ### Agregado
 - **Preoperacional como bot de referencia (`@viacoturform_bot`)**:
   - Menú de @OperativosViacoturBot: **📋 Formularios** (lista inline, ✅ Preoperacional primero), **📷 Escanear QR** y **📍 Enviar ubicación**; comando `/formularios`.
   - Mini App por pasos (Información → Verificación → Evidencia → Resumen) con barra de progreso e identidad VIACOTUR (logo y paleta).
   - Vehículo tomado y bloqueado desde el **extracto aprobado** del conductor; sin extracto aprobado, pantalla de bloqueo con instrucciones.
-  - Foto de testigos del tablero obligatoria (comprimida en el teléfono), guardada en `preop_fotos` y enviada a `testigos_img` de Odoo.
+  - Foto de testigos del tablero (comprimida en el teléfono), guardada en `preop_fotos` y enviada a `testigos_img` de Odoo.
   - Tabla `ubicaciones` en la BD del bot: ubicación compartida desde el chat, asociada al preoperacional de los últimos 10 minutos.
 - **Preoperacional vehicular** (`app/preop/`, documentación en `docs/PREOPERACIONAL.md`):
   - Mini App `/preoperacional` (botón 📝 y comando `/preoperacional`) con autocompletado de vehículo, extracto y contrato desde tablas locales.

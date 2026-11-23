@@ -114,6 +114,17 @@ class Flota(MasterMixin, Base):
     __table_args__ = (Index("ix_flota_nombre", "nombre"),)
 
 
+class Acuerdo(MasterMixin, Base):
+    """Contrato (``agreement`` en Odoo): define el labrado mínimo de las llantas por tipo de vehículo."""
+
+    __tablename__ = "acuerdos"
+
+    nombre: Mapped[str] = mapped_column(String(255), nullable=False)
+    cliente: Mapped[str | None] = mapped_column(String(255))
+    labrado_camioneta: Mapped[float | None] = mapped_column(Numeric(6, 2, asdecimal=False))
+    labrado_buses: Mapped[float | None] = mapped_column(Numeric(6, 2, asdecimal=False))
+
+
 class Extracto(MasterMixin, Base):
     __tablename__ = "extractos"
 

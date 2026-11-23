@@ -17,9 +17,9 @@ from sqlalchemy import and_, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from .checklist import count_no_conformes
+from .checklist import CHECKLIST, NO_CONFORME, count_no_conformes, labrado_minimo_acuerdo, llantas_bajo_minimo
 from .db import Database
-from .models import Empleado, Extracto, Flota, Preoperacional, PreopFoto, SyncStatus, Ubicacion, utc_now
+from .models import Acuerdo, Empleado, Extracto, Flota, Preoperacional, PreopFoto, SyncStatus, Ubicacion, utc_now
 from .odoo_writer import OdooPermanentError, OdooTransientError, OdooWriter, build_odoo_values
 from .schemas import PreoperacionalIn, decode_photo
 
@@ -112,19 +112,39 @@ def _contratos_permitidos(extracto: Extracto, empleado: Empleado) -> list[dict[s
     return contratos or _contratos_empleado(empleado)
 
 
+def minimo_acuerdo(session: Session, contrato_odoo_id: int | None, tipo_vehiculo: str | None) -> float | None:
+    """Labrado mínimo que fija el acuerdo (agreement) para el tipo de vehículo; None si no lo define."""
+    if not contrato_odoo_id:
+        return None
+    acuerdo = session.scalar(select(Acuerdo).where(Acuerdo.odoo_id == contrato_odoo_id))
+    if acuerdo is None:
+        return None
+    return labrado_minimo_acuerdo(tipo_vehiculo, acuerdo.labrado_camioneta, acuerdo.labrado_buses)
+
+
 def form_context(db: Database, empleado: Empleado, now: datetime | None = None) -> dict[str, Any]:
-    """Datos del paso 1 de la Mini App: conductor, responsable y extractos aprobados con su vehículo."""
+    """Datos del paso 1 de la Mini App: conductor, responsable y extractos aprobados con su vehículo.
+
+    La Mini App muestra la unión de los contratos y, al elegir uno, los vehículos de los
+    extractos que lo incluyen (uno o varios). Cada contrato trae el labrado mínimo del
+    acuerdo según el tipo de vehículo del extracto (None = se usa el de Odoo).
+    """
     with db.session() as session:
         extractos = extractos_del_conductor(session, empleado, now)
         items = []
         for e in extractos:
             v = e.flota
+            tipo = v.tipo_solicitud if v else None
             items.append({
                 "id": e.id, "codigo": e.codigo, "estado": e.estado,
                 "fecha_hora_inicio": e.fecha_hora_inicio.isoformat() if e.fecha_hora_inicio else None,
                 "fecha_hora_fin": e.fecha_hora_fin.isoformat() if e.fecha_hora_fin else None,
-                "contratos": _contratos_permitidos(e, empleado),
+                "contratos": [
+                    {**c, "labrado_minimo": minimo_acuerdo(session, c["id_contrato"], tipo)}
+                    for c in _contratos_permitidos(e, empleado)
+                ],
                 "vehiculo": {
+                    "tipo": tipo,
                     "id": v.id if v and v.activo else None,
                     "odoo_id": e.vehiculo_id,
                     "nombre": v.nombre if v else e.vehiculo,
@@ -183,7 +203,13 @@ def submit(db: Database, identity: TelegramIdentity, data: PreoperacionalIn) -> 
         if contrato is None and len(permitidos) > 1:
             raise SubmissionError("Selecciona el contrato")
 
-        foto, mime = decode_photo(data.testigos_img)
+        ultimo = vehiculo.odometer_post
+        if ultimo is not None and data.kilometraje < ultimo:
+            raise SubmissionError(
+                f"El odómetro ({data.kilometraje:,.0f} km) debe ser mayor o igual al último registrado "
+                f"({ultimo:,.0f} km)".replace(",", "."))
+
+        foto, mime = decode_photo(data.testigos_img) if data.testigos_img else (None, None)
 
         preop = Preoperacional(
             uuid=data.uuid,
@@ -208,11 +234,12 @@ def submit(db: Database, identity: TelegramIdentity, data: PreoperacionalIn) -> 
         session.add(preop)
         try:
             session.flush()
-            session.add(PreopFoto(
-                preop_id=preop.id, tipo=FOTO_TESTIGOS, mime=mime, contenido=foto, tamano=len(foto),
-                sha256=hashlib.sha256(foto).hexdigest(),
-            ))
-            session.flush()
+            if foto is not None:
+                session.add(PreopFoto(
+                    preop_id=preop.id, tipo=FOTO_TESTIGOS, mime=mime, contenido=foto, tamano=len(foto),
+                    sha256=hashlib.sha256(foto).hexdigest(),
+                ))
+                session.flush()
         except IntegrityError as exc:
             # Carrera: el mismo uuid llegó dos veces en paralelo.
             raise SubmissionError("Formulario ya recibido", status_code=409) from exc
@@ -253,6 +280,17 @@ def claim_batch(db: Database, limit: int, lease_seconds: int, now: datetime | No
 
 
 @dataclass(frozen=True)
+class AvisoJefe:
+    """Datos del aviso por Telegram al jefe inmediato cuando hay hallazgos."""
+
+    telegram_id: int
+    conductor: str
+    vehiculo: str
+    no_conformes: tuple[str, ...]
+    llantas_bajas: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class SendOutcome:
     preop_id: int
     telegram_user_id: int
@@ -260,17 +298,45 @@ class SendOutcome:
     odoo_name: str | None = None
     no_conformes: int = 0
     error: str | None = None
+    aviso_jefe: AvisoJefe | None = None
 
 
 def _boss_odoo_id(session: Session, empleado: Empleado) -> int | None:
     """Jefe inmediato: la API entrega solo el nombre del responsable; se resuelve si es único."""
+    jefe = _jefe(session, empleado)
+    return jefe.odoo_id if jefe else None
+
+
+def _jefe(session: Session, empleado: Empleado) -> Empleado | None:
+    """Jefe inmediato (por nombre del responsable, solo si es único y activo)."""
     if not empleado.responsable:
         return None
-    ids = session.scalars(
-        select(Empleado.odoo_id).where(Empleado.nombre == empleado.responsable, Empleado.activo.is_(True))
-        .limit(2)
+    jefes = session.scalars(
+        select(Empleado).where(Empleado.nombre == empleado.responsable, Empleado.activo.is_(True)).limit(2)
     ).all()
-    return ids[0] if len(ids) == 1 else None
+    return jefes[0] if len(jefes) == 1 else None
+
+
+def _aviso_jefe(session: Session, preop: Preoperacional) -> AvisoJefe | None:
+    """Aviso para el jefe si hay ítems no conformes o llantas bajo el labrado del acuerdo.
+
+    Requiere que el jefe tenga su id de Telegram en el PIN (``hr.employee.pin``), igual
+    que los conductores; si no, no se avisa (queda en el log).
+    """
+    vehiculo = preop.vehiculo
+    no_conformes = tuple(i.label for i in CHECKLIST if preop.checklist.get(i.key) == NO_CONFORME)
+    llantas = tuple(llantas_bajo_minimo(
+        preop.llantas, minimo_acuerdo(session, preop.contrato_odoo_id, vehiculo.tipo_solicitud)))
+    if not no_conformes and not llantas:
+        return None
+    jefe = _jefe(session, preop.empleado)
+    pin = jefe.codigo_pin if jefe else None
+    if not pin or not pin.isdigit():
+        logger.warning("Preoperacional %s con hallazgos: el jefe (%s) no tiene id de Telegram en el PIN",
+                       preop.id, preop.empleado.responsable or "sin responsable")
+        return None
+    return AvisoJefe(int(pin), preop.empleado.nombre,
+                     " · ".join(x for x in (vehiculo.matricula, vehiculo.nombre) if x), no_conformes, llantas)
 
 
 def send_one(db: Database, writer: OdooWriter, preop_id: int, max_attempts: int) -> SendOutcome:
@@ -284,6 +350,7 @@ def send_one(db: Database, writer: OdooWriter, preop_id: int, max_attempts: int)
         vals = build_odoo_values(preop, _boss_odoo_id(session, preop.empleado),
                                  testigos_b64=base64.b64encode(foto).decode("ascii") if foto else None)
         ref, submitted_at, attempts = preop.uuid, preop.fecha, preop.attempts
+        aviso = _aviso_jefe(session, preop)
         user_id, no_conformes = preop.telegram_user_id, preop.no_conformes
 
     status: SyncStatus
@@ -317,7 +384,8 @@ def send_one(db: Database, writer: OdooWriter, preop_id: int, max_attempts: int)
             preop.next_attempt_at = None
     log = logger.info if status == SyncStatus.ENVIADO else logger.warning
     log("Preoperacional %s -> %s%s", preop_id, status.value, f" ({error})" if error else f" odoo_id={odoo_id}")
-    return SendOutcome(preop_id, user_id, status, odoo_name, no_conformes, error)
+    return SendOutcome(preop_id, user_id, status, odoo_name, no_conformes, error,
+                       aviso if status == SyncStatus.ENVIADO else None)
 
 
 def requeue_failed(db: Database, preop_ids: list[int] | None = None) -> int:

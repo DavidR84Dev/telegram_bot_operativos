@@ -17,7 +17,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from .checklist import CHECKLIST, CHECKLIST_BY_KEY, MEASURES_BY_KEY
+from .checklist import CHECKLIST, CHECKLIST_BY_KEY, MEASURES_BY_KEY, completar_casillas
 
 # ─────────────────────────────── Normalización de la API ───────────────────────────────
 
@@ -136,6 +136,29 @@ class FlotaApi(_ApiRecord):
         }
 
 
+def _float_or_none(value: Any) -> float | None:
+    try:
+        return float(value) if value not in (None, "", False) else None
+    except (TypeError, ValueError):
+        return None
+
+
+class AcuerdoApi(_ApiRecord):
+    nombre: str = Field(min_length=1)
+    cliente: Any = None
+    labrado_camioneta: Any = None
+    labrado_buses: Any = None
+
+    def to_row(self) -> dict[str, Any]:
+        return {
+            "nombre": self.nombre.strip(),
+            "cliente": related_name(self.cliente),
+            "labrado_camioneta": _float_or_none(self.labrado_camioneta),
+            "labrado_buses": _float_or_none(self.labrado_buses),
+            "company_id": related_name(self.company_id),
+        }
+
+
 class ExtractoApi(_ApiRecord):
     codigo: Any = None
     conductor: Any = None
@@ -187,7 +210,7 @@ class ExtractoApi(_ApiRecord):
 
 # ─────────────────────────────── Entrada de la Mini App ───────────────────────────────
 
-_REQUIRED_ITEMS = frozenset(item.key for item in CHECKLIST)
+_KNOWN_ITEMS = frozenset(item.key for item in CHECKLIST)
 
 
 FOTO_MAX_BYTES = 3 * 1024 * 1024  # la Mini App comprime a ~300 KB; esto es solo un tope
@@ -231,24 +254,25 @@ class PreoperacionalIn(BaseModel):
     checklist: dict[str, str]
     llantas: dict[str, float] = Field(default_factory=dict)
     extra: dict[str, str | int | float | bool | None] = Field(default_factory=dict, max_length=50)
-    # Foto de los testigos del tablero (obligatoria) -> campo ``testigos_img`` de Odoo.
-    testigos_img: str = Field(min_length=16, max_length=FOTO_MAX_BYTES * 4 // 3 + 64)
+    # Foto de los testigos del tablero -> campo ``testigos_img`` de Odoo. Recomendada pero
+    # no obligatoria (decisión del 2026-11-23): sin ella el resumen solo muestra una alerta.
+    testigos_img: str | None = Field(default=None, min_length=16, max_length=FOTO_MAX_BYTES * 4 // 3 + 64)
 
     @field_validator("testigos_img")
     @classmethod
-    def _check_photo(cls, value: str) -> str:
-        decode_photo(value)
+    def _check_photo(cls, value: str | None) -> str | None:
+        if value is not None:
+            decode_photo(value)
         return value
 
     @field_validator("checklist")
     @classmethod
     def _check_items(cls, value: dict[str, str]) -> dict[str, str]:
-        unknown = set(value) - _REQUIRED_ITEMS
+        # Se permite enviar con ítems sin marcar (decisión del 2026-11-23): la Mini App los
+        # alerta en el resumen. Las casillas que falten se completan como "no conforme".
+        unknown = set(value) - _KNOWN_ITEMS
         if unknown:
             raise ValueError(f"Ítems desconocidos: {', '.join(sorted(unknown))}")
-        missing = _REQUIRED_ITEMS - set(value)
-        if missing:
-            raise ValueError(f"Faltan ítems: {', '.join(sorted(missing))}")
         for key, option in value.items():
             if option not in CHECKLIST_BY_KEY[key].options:
                 raise ValueError(f"Valor inválido para {key}: {option!r}")
@@ -271,7 +295,7 @@ class PreoperacionalIn(BaseModel):
         for key, item in value.items():
             if not key.isidentifier() or len(key) > 64:
                 raise ValueError(f"Clave extra inválida: {key!r}")
-            if key in _REQUIRED_ITEMS or key in MEASURES_BY_KEY:
+            if key in _KNOWN_ITEMS or key in MEASURES_BY_KEY:
                 raise ValueError(f"{key} no puede ir en extra")
             if isinstance(item, str) and len(item) > 500:
                 raise ValueError(f"extra.{key}: texto demasiado largo")
@@ -280,6 +304,8 @@ class PreoperacionalIn(BaseModel):
     @model_validator(mode="after")
     def _normalize(self) -> PreoperacionalIn:
         self.uuid = self.uuid.lower()
+        # Casilla sin marcar = "no conforme"; un radio sin elegir no se envía.
+        self.checklist = completar_casillas(self.checklist)
         if self.observaciones == "":
             self.observaciones = None
         return self

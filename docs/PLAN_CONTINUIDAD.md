@@ -1,6 +1,6 @@
 # Plan de continuidad: preoperacional y menú de @OperativosViacoturBot
 
-> Documento de traspaso, por si se pierde la sesión de trabajo. Estado al **2026-11-20**.
+> Documento de traspaso, por si se pierde la sesión de trabajo. Estado al **2026-11-23** (parámetros del Preoperacional definidos; ver `docs/PREOPERACIONAL.md` §4 y el CHANGELOG).
 > Para retomar con Claude Code: *"Lee `docs/PLAN_CONTINUIDAD.md` y `docs/mapa_viacotur_form.md` y continúa desde la sección 5"*.
 > Aquí no hay secretos: todas las credenciales viven solo en `.env`.
 
@@ -162,7 +162,9 @@ Este plan asume las opciones **A**; si el usuario elige otra, se ajusta la fase 
 
 - [ ] DNS y certificado de `operativos.viacotur.com`, más el bloque nginx hacia `127.0.0.1:8011` (requiere sudo). Luego quitar la línea del túnel en `.env`.
 - [ ] Túnel o dominio para `WEBAPP_BASE_URL` (página de abordaje de Odoo), con aprobación del usuario.
-- [ ] Cargar el **ID de Telegram en el campo PIN** del empleado (`hr.employee.pin`) de cada conductor. En qa2 solo 4 empleados tienen PIN.
+- [ ] Cargar el **ID de Telegram en el campo PIN** del empleado (`hr.employee.pin`) de cada conductor **y de cada jefe** (para el aviso de hallazgos). En qa2 solo 4 empleados tienen PIN.
+- [ ] `viacotur_api` `/api/acuerdos` ignora el parámetro `company_id` (siempre filtra la compañía 1): corregirlo si hay contratos de otras compañías.
+- [ ] Llenar `labrado_camioneta` y `labrado_buses` en cada acuerdo; con 0 el bot usa el mínimo de Odoo (1,6 / 2,0 mm).
 - [ ] `viacotur_api`: exponer `responsable.mobile`, `responsable_cliente.mobile`, `vehiculo.id` y, para la fase 4, el id del conductor.
 - [ ] Revisar por qué `/api/empleados` devuelve solo 12 empleados en qa2.
 - [ ] Borrar el registro de prueba `PRE-000009912` en qa2 (opcional).

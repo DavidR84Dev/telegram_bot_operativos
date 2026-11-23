@@ -17,9 +17,11 @@ from sqlalchemy import func, select
 from tenacity import wait_none
 
 from app.preop import etl, service
-from app.preop.checklist import CHECKLIST, NO_CONFORME, count_no_conformes, form_definition
+from app.preop.checklist import CHECKLIST, NO_CONFORME, count_no_conformes, form_definition, llantas_bajo_minimo
 from app.preop.db import Database
+from app import formatting
 from app.preop.models import (
+    Acuerdo,
     Base,
     Empleado,
     Extracto,
@@ -149,9 +151,16 @@ def test_extracto_maps_nested_vehicle_and_client_mobile():
     assert row["contratos_list"] == [{"id_contrato": 55, "nombre": "Contrato Minera"}]
 
 
-def test_preop_input_requires_every_item_and_valid_options():
-    with pytest.raises(ValueError, match="Faltan ítems"):
-        _payload(1, 1, checklist={"soat": "conforme"})
+def test_preop_input_unchecked_box_is_no_conforme_and_unanswered_radio_is_empty():
+    # Se permite enviar con ítems sin marcar (decisión del 2026-11-23); solo se alertan.
+    checklist = _payload(1, 1, checklist={"soat": "conforme"}).checklist
+    assert checklist["soat"] == "conforme"
+    assert checklist["licencia_conduccion"] == NO_CONFORME  # casilla sin marcar
+    assert "pico_pala" not in checklist and "camaras" not in checklist  # radios sin elegir
+    with pytest.raises(ValueError, match="Valor inválido"):
+        _payload(1, 1, checklist={"soat": "no aplica"})  # una casilla no tiene "no aplica"
+    with pytest.raises(ValueError, match="Ítems desconocidos"):
+        _payload(1, 1, checklist={"no_existe": "conforme"})
     bad = {item.key: item.options[0] for item in CHECKLIST} | {"soat": "regular"}
     with pytest.raises(ValueError, match="Valor inválido"):
         _payload(1, 1, checklist=bad)
@@ -169,6 +178,27 @@ def test_count_no_conformes_matches_odoo_rules():
 def test_form_definition_lists_every_item():
     form = form_definition()
     assert sum(len(s["items"]) for s in form["sections"]) == len(CHECKLIST)
+    # Pestañas del formulario de referencia, en orden, y cada ítem en una sola.
+    assert [t["title"] for t in form["tabs"]] == ["Documentos", "Rines/Llantas", "Equipo", "Vehículo"]
+    assert sum(len(s["items"]) for t in form["tabs"] for s in t["sections"]) == len(CHECKLIST)
+    equipo = [i["key"] for s in form["tabs"][2]["sections"] for i in s["items"]]
+    assert equipo[0] == "conos" and equipo[-1] == "testigos"
+    items = {i["key"]: i for s in form["sections"] for i in s["items"]}
+    assert items["soat"]["criterio"] == "Documento vencido o inexistente"
+    # Controles como el formulario de referencia.
+    radios = {k for k, i in items.items() if i["control"] == "radio"}
+    assert radios == {"chaleco_reflectivo", "pico_pala", "eslingas", "kit_derrames", "cables_de_arranque",
+                      "camaras", "barra", "testigos", "extintor_2"}
+    assert items["camaras"]["options"] == ["conforme", "no conforme", "no aplica"]
+    assert "camaras_new" not in items and "llanta_rep_pre_act" not in items
+
+
+def test_form_definition_tires_cover_every_measure_once():
+    form = form_definition()
+    keys = [k for ll in form["llantas"] for k in (ll["labrado"], ll["presion"])]
+    assert sorted(keys) == sorted(m["key"] for m in form["measures"])
+    assert [ll["codigo"] for ll in form["llantas"] if ll["interna"]] == ["5", "6"]
+    assert {ll["codigo"]: ll["labrado_minimo"] for ll in form["llantas"]}["5"] == 2.0
 
 
 # ──────────────────────────────────────────── ETL ────────────────────────────────────────────
@@ -386,6 +416,88 @@ def test_photo_is_stored_and_sent_as_testigos_img(seeded):
     assert writer.calls[0][1]["testigos_img"] == FOTO_B64
 
 
+def test_submit_without_photo_and_with_unanswered_items(seeded):
+    vehiculo, extracto = _ids(seeded)
+    parcial = {item.key: item.options[0] for item in CHECKLIST if item.key not in {"soat", "pico_pala"}}
+    preop, _ = service.submit(seeded, IDENTITY, _payload(
+        vehiculo, extracto, checklist=parcial, testigos_img=None, observaciones="Rayón en puerta"))
+    with seeded.session() as s:
+        assert s.scalar(select(func.count()).select_from(PreopFoto).where(PreopFoto.preop_id == preop.id)) == 0
+    service.claim_batch(seeded, 10, 300)
+    writer = FakeWriter([(78, "PRE-0078", False)])
+    service.send_one(seeded, writer, preop.id, 8)
+    vals = writer.calls[0][1]
+    assert "testigos_img" not in vals and "pico_pala" not in vals
+    assert vals["soat"] == NO_CONFORME  # casilla sin marcar
+    assert vals["observaciones"] == "Rayón en puerta"
+
+
+def test_odometer_below_last_registered_is_rejected(seeded):
+    vehiculo, extracto = _ids(seeded)  # último odómetro (Pos-Operacional) = 1500.5
+    with pytest.raises(service.SubmissionError, match="mayor o igual"):
+        service.submit(seeded, IDENTITY, _payload(vehiculo, extracto, kilometraje=1500))
+    preop, _ = service.submit(seeded, IDENTITY, _payload(vehiculo, extracto, kilometraje=1500.5))
+    assert preop.kilometraje == 1500.5
+    # Varios preoperacionales del mismo conductor son válidos.
+    otro, dup = service.submit(seeded, IDENTITY, _payload(vehiculo, extracto, uuid=UUID.replace("0b", "1c", 1)))
+    assert not dup and otro.id != preop.id
+
+
+def _sync_acuerdo(db, tipo: str, camioneta: float, buses: float) -> None:
+    etl.sync_all(db, FakeRest({
+        "/api/flota": [_flota(tipo_solicitud=tipo), _flota(11, "VAN 02/XYZ987"), _flota(12, "OTRA", company=1)],
+        "/api/empleados": [_empleado(), _empleado(101, pin="999", responsable="", nombre="Jefe Uno")],
+        "/api/extractos": [_extracto()],
+        "/api/acuerdos": [{"id": 55, "nombre": "Contrato Minera", "cliente": "Minera",
+                           "labrado_camioneta": camioneta, "labrado_buses": buses, "company_id": "Viacotur"}],
+    }), [1])
+
+
+@pytest.mark.parametrize("tipo, camioneta, buses, esperado", [
+    ("bus", 2.0, 5.0, 5.0),
+    ("buseta", 2.0, 5.0, 5.0),
+    ("camioneta", 3.0, 5.0, 3.0),
+    ("camioneta", 0.0, 5.0, None),  # el acuerdo no lo define: se usa el de Odoo
+])
+def test_context_tread_minimum_comes_from_agreement_and_vehicle_type(seeded, tipo, camioneta, buses, esperado):
+    _sync_acuerdo(seeded, tipo, camioneta, buses)
+    with seeded.session() as s:
+        assert s.scalar(select(Acuerdo.labrado_buses).where(Acuerdo.odoo_id == 55)) == buses
+        empleado = s.scalar(select(Empleado).where(Empleado.odoo_id == 100))
+    [extracto] = service.form_context(seeded, empleado)["extractos"]
+    assert extracto["contratos"][0]["labrado_minimo"] == esperado
+    assert extracto["vehiculo"]["tipo"] == tipo
+
+
+def test_tires_below_minimum_use_agreement_or_odoo_default():
+    llantas = {"llanta_1": 4.0, "llanta_2": 6.0, "llanta_5": 1.9, "llanta_7": 0}
+    assert llantas_bajo_minimo(llantas, 5.0) == ["Llanta N.º 1", "Llanta N.º 5"]
+    assert llantas_bajo_minimo(llantas, None) == ["Llanta N.º 5"]  # Odoo: 2,0 mm en internas
+
+
+def test_boss_is_alerted_on_findings_when_has_telegram_pin(seeded):
+    _sync_acuerdo(seeded, "bus", 2.0, 5.0)
+    vehiculo, extracto = _ids(seeded)
+    checklist = {item.key: "conforme" for item in CHECKLIST} | {"frenos": NO_CONFORME}
+    preop, _ = service.submit(seeded, IDENTITY, _payload(vehiculo, extracto, checklist=checklist,
+                                                          llantas={"llanta_1": 4.0}))
+    service.claim_batch(seeded, 10, 300)
+    outcome = service.send_one(seeded, FakeWriter([(79, "PRE-0079", False)]), preop.id, 8)
+    aviso = outcome.aviso_jefe
+    assert aviso is not None and aviso.telegram_id == 999  # PIN del jefe = id de Telegram
+    assert aviso.no_conformes == ("Frenos",) and aviso.llantas_bajas == ("Llanta N.º 1",)
+    text = formatting.preop_aviso_jefe(aviso, outcome.odoo_name)
+    assert "Ana Conductora" in text and "PRE-0079" in text and "Frenos" in text
+
+
+def test_boss_not_alerted_without_findings(seeded):
+    vehiculo, extracto = _ids(seeded)
+    preop, _ = service.submit(seeded, IDENTITY, _payload(
+        vehiculo, extracto, checklist={item.key: "conforme" for item in CHECKLIST}))
+    service.claim_batch(seeded, 10, 300)
+    assert service.send_one(seeded, FakeWriter([(80, "PRE-0080", False)]), preop.id, 8).aviso_jefe is None
+
+
 def test_location_links_to_recent_preop_only(seeded):
     preop_id = _queue_one(seeded)
     reciente = service.registrar_ubicacion(seeded, TG_USER, 6.25, -75.56, 12.0)
@@ -593,7 +705,7 @@ def test_api_context_and_unknown_user(api):
     assert ctx["validado"] is True
     [extracto] = ctx["extractos"]
     assert extracto["vehiculo"]["odoo_id"] == 10 and extracto["vehiculo"]["matricula"] == "ABC123"
-    assert extracto["contratos"] == [{"id_contrato": 55, "nombre": "Contrato Minera"}]
+    assert extracto["contratos"] == [{"id_contrato": 55, "nombre": "Contrato Minera", "labrado_minimo": None}]
 
 
 def test_api_context_not_validated_without_approved_extracto(api, seeded):
