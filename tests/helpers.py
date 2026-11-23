@@ -13,7 +13,7 @@ def make_init_data(user_id=7913476225, auth_date=None, bot_token=BOT_TOKEN, tamp
     fields = {
         "auth_date": str(int(time.time()) if auth_date is None else auth_date),
         "query_id": "AAH-test",
-        "user": json.dumps({"id": user_id, "first_name": "Julian"}, separators=(",", ":")),
+        "user": json.dumps({"id": user_id, "first_name": "Prueba"}, separators=(",", ":")),
     }
     check = "\n".join(f"{k}={v}" for k, v in sorted(fields.items()))
     secret = hmac.new(b"WebAppData", bot_token.encode(), hashlib.sha256).digest()

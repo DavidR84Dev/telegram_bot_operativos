@@ -38,7 +38,12 @@ graph TD
 | `empleados` | `odoo_id` (único) | `nombre`, `departamento_id`/`departamento`, `puesto_trabajo`, `codigo_pin` (índice, es el id de Telegram), `id_contract`, `contrato`, `contrato_temporal_id`, `contrato_temporal`, `responsable`, `responsable_mobile` |
 | `flota` | `odoo_id` | `nombre`, `matricula`, `estado`, `numero_interno`, `parque_automotor`, `odometer_post NUMERIC(14,2)`, `tipo_solicitud` |
 | `extractos` | `odoo_id` | conductores 1-3 con celular y estado de documentos, `contratos_list JSONB`, `estado`, `fecha_hora_inicio/fin TIMESTAMPTZ`, `responsable_cliente`, `responsable_cliente_mobile`, `vehiculo`, `vehiculo_id` |
+| `acuerdos` | `odoo_id` | contrato (`agreement`) desde `/api/acuerdos`: `nombre`, `cliente`, `labrado_camioneta`, `labrado_buses` (labrado mínimo de llantas por tipo de vehículo) |
+| `reservas_vehiculo` | `vehiculo_id` y `telegram_user_id` (únicos) | **tabla temporal**: vehículo reservado al conductor que hizo el preoperacional (`empleado_id`, `telegram_user_id`, `extracto_id`, último `preop_id`, `fecha_jornada` local de Colombia, `reservado_at`, `ultimo_preop_at`). Se libera con 🔴 Finalizar, a las 24 h o a mano |
+| `reservas_historial` | `id` | histórico permanente de jornadas: placa, conductor, extracto, último preoperacional, n.º de preoperacionales, `reservado_at`, `liberado_at` y `motivo` (`finalizar`, `vencida`, `manual`) |
 | `preoperacional` | `uuid` (único, idempotencia) | ver abajo |
+| `preop_fotos` | (`preop_id`, `tipo`) único | foto de evidencia en `BYTEA` (`tipo='testigos'` → `testigos_img` de Odoo), `mime`, `tamano`, `sha256` |
+| `ubicaciones` | — | ubicación compartida desde el chat (📍): `telegram_user_id`, `empleado_id`, `preop_id` (preoperacional de los últimos 10 min, si hay), `latitud`, `longitud`, `precision_m`, `recibido_at` |
 | `sync_runs` | — | bitácora de cada sincronización: recibidos, upserts, inválidos, desactivados, error |
 
 Las tres tablas maestras comparten estos campos: `id` (PK local), `company_id` (nombre que devuelve la API), `company_odoo_id`, `activo`, `synced_at`, `raw JSONB` (el objeto original), `created_at` y `updated_at`.
@@ -55,6 +60,8 @@ Decisiones de diseño:
 - **El checklist va en JSONB y no en 56 columnas.** El catálogo `app/preop/checklist.py` es la fuente única: valida el payload con Pydantic, define el formulario (`GET /api/preop/form`) y fija qué campos se envían a Odoo. Las claves son los nombres técnicos de Odoo, así que el mapeo es directo. Agregar un ítem significa tocar una sola línea, sin migración. Para consultar, el índice GIN permite buscar con `checklist @> '{"frenos": "no conforme"}'`.
 - **`extractos.vehiculo_id` no tiene FK física.** Un extracto puede apuntar a un vehículo de otra compañía que no se sincroniza, y una FK rompería el UPSERT. La relación ORM (`Extracto.flota`) es `viewonly`.
 - **Nunca se borran filas maestras.** Las que dejan de llegar quedan con `activo = false`, para que los preoperacionales históricos sigan resolviendo su empleado o vehículo.
+- **La foto va en una tabla aparte** (`preop_fotos`), no como columna de `preoperacional`: el binario no se carga al leer la cola y se pueden sumar tipos de foto sin migrar.
+- **La ubicación se guarda solo en la BD del bot** (el modelo `preoperacional` de Odoo no tiene campos de ubicación). Se asocia al preoperacional enviado por el mismo usuario en los últimos 10 minutos.
 - **Esquema:** `Base.metadata.create_all` es idempotente y crea tablas e índices que falten. Para cambiar columnas de tablas existentes, agregar Alembic (`alembic init`, `target_metadata = Base.metadata`).
 
 ## 3. Ingesta y sincronización (`app/preop/rest_client.py`, `app/preop/etl.py`)
@@ -83,19 +90,53 @@ python scripts/introspect_endpoint.py --file respuesta.json --class Preoperacion
 
 ## 4. Backend API y conector Odoo
 
+### Mini App (`app/static/preoperacional.html`)
+
+Formulario por pasos con barra de progreso e identidad VIACOTUR (logo y paleta azul), como el bot de referencia `@viacoturform_bot`:
+
+1. **Información General:** conductor y responsable bloqueados y aviso "Conductor validado con extractos aprobados". Luego, como en la referencia: **Contrato** (los de todos los extractos aprobados y vigentes del conductor) → **Vehículo**, en tarjetas con placa, marca/modelo, número interno y "DISPONIBLE" (uno o varios, según los extractos que incluyen ese contrato) → número interno (solo lectura) y **Odómetro actual** con teclado numérico. Se sugiere el último odómetro ("Último registrado: N km", como la referencia), leído **en vivo** de `fleet.vehicle.odometer_post` por XML-RPC. Ese campo es calculado y almacenado sin `@api.depends` y en qa2 está en 0 en todos los vehículos; si vale 0 se aplica la regla que lo define (`km_end` del último `pos.operacional`). Si Odoo no responde, se usa el valor sincronizado de `/api/flota`. El odómetro debe ser **mayor o igual** a ese valor; si es menor, "Siguiente" queda deshabilitado y el servidor también lo rechaza.
+2. **Verificación de Elementos:** cuatro pestañas fijas arriba: **Documentos · Rines/Llantas · Equipo · Vehículo** (esta agrupa Extintores, Chasis y cabina, Niveles y Sistema eléctrico). Los controles siguen el patrón del bot de referencia:
+   - **Casilla** (47 ítems, incluido Testigos del tablero): marcada = `conforme`; **sin marcar = `no conforme`** al enviar a Odoo (abre plan de acción).
+   - **Radio** (8 ítems): Chaleco reflectivo y Kit control derrames (Conforme / No conforme; opcionales); Pico y pala, Eslingas, Cables de arranque, **Cámaras** (campo `camaras`), Barra antivuelco y Extintor N.º 2 (Conforme / No conforme / No aplica; **obligatorios**, marcados con *).
+   - "Siguiente" recorre las pestañas; desde la última solo pasa a **Evidencia** cuando los 6 obligatorios tienen respuesta (un aviso lista los pendientes y lleva a cada uno). El servidor también los exige.
+   - Cada ítem muestra su criterio de no conforme. "Marcar pestaña conforme" marca la pestaña visible.
+   - **Llantas:** labrado (mm, teclado decimal) y presión (PSI, teclado numérico) de las llantas 1–4 y la de repuesto (`llanta_7` / `llanta_rep_pre`); las llantas 5 y 6 aparecen si el conductor responde **Sí** a "¿El vehículo tiene llantas internas?". Ya no se preguntan "¿La repuesto tiene presión?" (`llanta_rep_pre_act`) ni "¿Tiene cámaras?" (`camaras_new`).
+   - **Alerta de labrado:** cada llanta muestra su mínimo y alerta si está por debajo. El mínimo sale del acuerdo del contrato según el tipo de vehículo (`fleet.vehicle.type`): `labrado_buses` para bus, buseta y microbus; `labrado_camioneta` para los demás. Si el acuerdo tiene 0, se usa el de Odoo (1,6 mm; 2,0 mm en internas). Es solo una alerta: Odoo sigue aplicando sus propios umbrales al crear el registro.
+3. **Observaciones y Evidencia:** observaciones libres (sin texto, se envían en blanco) y foto de testigos del tablero (única foto; recomendada, no obligatoria) con dos botones: **📷 Tomar foto** (cámara) y **🖼️ Elegir de la galería**.
+4. **Resumen de la Inspección:** información general, observaciones (si hay texto) y una tarjeta por sección con ✔ (conforme), **!** rojo (casilla sin marcar, no conforme o radio sin elegir) y **N/A**; tabla de labrado/presión con alerta bajo el mínimo; "Imagen subida: 0/1 o 1/1". Al tocar una alerta vuelve al ítem. **Completar inspección** envía aunque haya alertas, previa confirmación.
+
+El conductor puede enviar uno o varios preoperacionales (no hay límite diario).
+
+**Reserva del vehículo durante la jornada (`app/preop/reservas.py`):** un extracto puede tener varios conductores, pero solo uno puede tener el vehículo a la vez.
+- La reserva empieza **al enviar** el preoperacional (tabla temporal `reservas_vehiculo`). Si el conductor envía otro del mismo vehículo, la reserva se actualiza, pero su vencimiento no cambia.
+- **Una placa, un conductor:** los demás conductores ven la tarjeta en rojo como **NO DISPONIBLE** ("En uso por …", no seleccionable) y el servidor rechaza su envío (409). Su dueño la ve como **RESERVADO POR TI**.
+- **Un conductor, un vehículo:** mientras tenga una reserva, los demás vehículos le aparecen como **NO DISPONIBLE** ("Ya tienes reservado …") y el servidor rechaza el envío.
+- Ambas reglas las garantizan además índices únicos en la BD (envíos simultáneos).
+- **Vencimiento:** la reserva se libera sola **24 h después de su registro inicial** (`RESERVA_HORAS`); se verifica antes de cada consulta.
+- **🔴 Finalizar** (botón del menú y `/finalizar`): pregunta *«¿Confirmas que ya terminaste tu jornada laboral?»* con dos opciones: **✔ Sí, finalizar** libera la reserva del **id de Telegram** que lo toca; **❌ Cancelar** no cambia nada y vuelve al panel de formularios. Avisa al **jefe inmediato** por Telegram (conductor, placa, inicio, fin y n.º de preoperacionales), si el jefe tiene su id de Telegram en el PIN.
+- **Histórico:** toda reserva liberada pasa a `reservas_historial` con su motivo (`finalizar`, `vencida`, `manual`).
+- Operación manual: `docker compose exec app python -m app.preop.reservas --listar` y `--liberar PLACA` (queda como `manual`).
+
+**Aviso al jefe por Telegram:** cuando el registro llega a Odoo con ítems no conformes o llantas bajo el mínimo del contrato, el bot avisa al jefe inmediato (conductor, vehículo, PRE-xxxx y lista de hallazgos). El jefe se identifica por el nombre del responsable del empleado y debe tener su **id de Telegram en el PIN** (`hr.employee.pin`) y haber abierto el bot al menos una vez; si no, se registra en el log.
+
+Sin empleado o sin extracto aprobado se muestra una pantalla de bloqueo que explica qué hacer. Al terminar, recuerda enviar la ubicación desde el chat (📍, dentro de 10 minutos).
+
 ### Seguridad de la Mini App (`app/webapp_auth.py`, dependencia `telegram_identity`)
 
 - `secret = HMAC_SHA256(key="WebAppData", msg=BOT_TOKEN)` y `hash = HMAC_SHA256(secret, data_check_string)`, donde `data_check_string` son los pares `clave=valor` ordenados, sin `hash` y unidos con `\n`. La comparación es en tiempo constante (`hmac.compare_digest`).
 - `auth_date` no puede tener más de `PREOP_AUTH_MAX_AGE_SECONDS` de antigüedad (3600 s por defecto, porque el formulario es largo) ni estar en el futuro.
 - La identidad (id, nombre, usuario) sale **solo** del `initData`. El cuerpo no acepta `telegram_user_id`, porque `extra="forbid"` lo rechaza.
-- Autorización: el empleado debe estar activo y su `codigo_pin` debe ser igual al id de Telegram (tabla local). El vehículo tiene que ser de su compañía, el extracto de ese vehículo y el contrato del extracto o del empleado.
+- Autorización: el empleado debe estar activo y su `codigo_pin` debe ser igual al id de Telegram (tabla local).
+- **Vehículo desde el extracto aprobado:** el extracto es obligatorio y debe estar **aprobado** (`estado = approved`), vigente (±1 día) y tener al empleado como conductor, segundo o tercer conductor. La API entrega el conductor por nombre: se compara sin tildes, mayúsculas ni espacios extra. Cuando `viacotur_api` exponga el id del conductor, esta comparación debe pasar a ser por id. El vehículo se toma del extracto y no se puede cambiar. Si el extracto trae varios contratos, hay que elegir uno; si trae uno, se asigna solo.
+- **Foto de testigos (opcional):** llega en base64 (JPEG o PNG, máximo 3 MB, validada por su firma real, no por lo que diga el cliente). La Mini App la comprime antes de enviarla (lado mayor 1600 px, unos 300 KB).
 - La Mini App pinta los datos con `textContent`, nunca con `innerHTML`.
 
 | Ruta | Respuesta |
 |---|---|
 | `GET /preoperacional` | HTML de la Mini App |
 | `GET /api/preop/form` | catálogo de secciones, ítems, opciones y medidas |
-| `GET /api/preop/context` | empleado, vehículos activos de su compañía y extractos vigentes (±1 día) |
+| `GET /api/preop/context` | conductor y responsable, `validado` y extractos aprobados del conductor con su vehículo y contratos |
+| `GET /static/viacotur-logo.png` | logo de la cabecera |
 | `POST /api/preop` | **202** con `{id, uuid, sync_status: "pendiente", no_conformes, duplicado}`; 401, 403, 409 o 422 si se rechaza |
 | `GET /api/preop/{uuid}` | estado de un envío propio |
 
@@ -105,7 +146,7 @@ python scripts/introspect_endpoint.py --file respuesta.json --class Preoperacion
 
 1. `common.authenticate`. El uid queda en caché y se invalida si Odoo responde `AccessDenied`.
 2. Idempotencia: primero se busca el external id `telegram_bot_operativos.preop_<uuid>` en `ir.model.data`. Si el intento anterior fue incierto (timeout después de enviar), también se busca por llave natural: empleado, vehículo, odómetro y `create_date >=` fecha de envío − 2 min.
-3. `execute_kw('preoperacional', 'create', [vals])`. Odoo aplica sus reglas (labrado mínimo, `no conforme` → plan de acción, actividades, odómetro).
+3. `execute_kw('preoperacional', 'create', [vals])`, con la foto en `testigos_img`. Odoo aplica sus reglas (labrado mínimo, `no conforme` → plan de acción, actividades, odómetro).
 4. Se registra el external id y se lee `name`.
 
 Clasificación de errores:
@@ -163,7 +204,7 @@ tests/test_preop.py              29 pruebas (SQLite; opcional PostgreSQL real)
 
 ### Registrar la Mini App en @BotFather
 
-La Mini App se abre desde un **botón inline `web_app`** que envía el bot (`/preoperacional` o el botón 📝, primera opción del menú de @QRLectorBot), así que no hace falta registrar nada para que funcione. Opcionalmente:
+La Mini App se abre desde un **botón inline `web_app`** que envía el bot (`/preoperacional` o el botón 📝, primera opción del menú de @OperativosViacoturBot), así que no hace falta registrar nada para que funcione. Opcionalmente:
 
 1. `@BotFather → /mybots → <bot> → Bot Settings → Menu Button → Configure menu button`: URL `https://<PREOP_BASE_URL>/preoperacional` y texto `Preoperacional`. Así se abre desde el botón de menú del chat.
 2. Para un enlace directo `t.me/<bot>/preop`: `/newapp`, elegir el bot, título, descripción, imagen 640×360, URL `https://<PREOP_BASE_URL>/preoperacional` y nombre corto `preop`.

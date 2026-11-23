@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import os
 import xmlrpc.client
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -13,12 +14,27 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from tenacity import wait_none
 
 from app.preop import etl, service
-from app.preop.checklist import CHECKLIST, NO_CONFORME, count_no_conformes, form_definition
+from app.preop import reservas
+from app.preop.checklist import CHECKLIST, NO_CONFORME, count_no_conformes, form_definition, llantas_bajo_minimo
 from app.preop.db import Database
-from app.preop.models import Base, Empleado, Extracto, Flota, Preoperacional, SyncRun, SyncStatus, utc_now
+from app import formatting
+from app.preop.models import (
+    Acuerdo,
+    Base,
+    Empleado,
+    Extracto,
+    Flota,
+    Preoperacional,
+    PreopFoto,
+    SyncRun,
+    SyncStatus,
+    Ubicacion,
+    utc_now,
+)
 from app.preop.odoo_writer import (
     OdooPermanentError,
     OdooTransientError,
@@ -35,6 +51,8 @@ from .helpers import BOT_TOKEN, make_init_data
 
 TG_USER = 7913476225
 UUID = "0b8f5a8e-3c1d-4f7a-9a2b-1c2d3e4f5a6b"
+JPEG = b"\xff\xd8\xff\xe0" + b"\x00" * 64  # firma JPEG válida
+FOTO_B64 = base64.b64encode(JPEG).decode()
 
 
 # ────────────────────────────────────────── fixtures ──────────────────────────────────────────
@@ -53,7 +71,7 @@ def _empleado(odoo_id=100, pin=str(TG_USER), responsable="Jefe Uno", **extra):
 
 def _extracto(odoo_id=500, vehiculo: Any = "BUS 01/ABC123", **extra):
     now = utc_now()
-    return {"id": odoo_id, "codigo": "EXT-500", "estado": "activo", "company_id": "Viacotur",
+    return {"id": odoo_id, "codigo": "EXT-500", "estado": "approved", "company_id": "Viacotur",
             "contratos_list": [{"id_contrato": 55, "nombre": "Contrato Minera"}],
             "vehiculo": vehiculo, "conductor": "Ana Conductora", "cel_conductor1": "3001112233",
             "responsable_cliente": {"name": "Cliente SA", "mobile": "3109998877"},
@@ -103,9 +121,10 @@ def _ids(db) -> tuple[int, int]:
                 s.scalar(select(Extracto.id).where(Extracto.odoo_id == 500)))
 
 
-def _payload(vehiculo_id: int, extracto_id: int | None = None, **over) -> PreoperacionalIn:
+def _payload(vehiculo_id: int | None, extracto_id: int, **over) -> PreoperacionalIn:
     data = {"uuid": UUID, "vehiculo_id": vehiculo_id, "extracto_id": extracto_id, "kilometraje": 1510,
-            "checklist": {item.key: item.options[0] for item in CHECKLIST}, "llantas": {"llanta_1": 5.0}}
+            "checklist": {item.key: item.options[0] for item in CHECKLIST}, "llantas": {"llanta_1": 5.0},
+            "testigos_img": f"data:image/jpeg;base64,{FOTO_B64}"}
     data.update(over)
     return PreoperacionalIn.model_validate(data)
 
@@ -134,16 +153,29 @@ def test_extracto_maps_nested_vehicle_and_client_mobile():
     assert row["contratos_list"] == [{"id_contrato": 55, "nombre": "Contrato Minera"}]
 
 
-def test_preop_input_requires_every_item_and_valid_options():
-    with pytest.raises(ValueError, match="Faltan ítems"):
-        _payload(1, checklist={"soat": "conforme"})
+def test_preop_input_unchecked_box_is_no_conforme_and_unanswered_radio_is_empty():
+    obligatorios = {"pico_pala": "no aplica", "eslingas": "conforme", "cables_de_arranque": "conforme",
+                    "camaras": "conforme", "barra": "conforme", "extintor_2": "no aplica"}
+    # Se permite enviar con ítems sin marcar (decisión del 2026-11-23); solo se alertan.
+    checklist = _payload(1, 1, checklist={"soat": "conforme", **obligatorios}).checklist
+    assert checklist["soat"] == "conforme"
+    assert checklist["licencia_conduccion"] == NO_CONFORME  # casilla sin marcar
+    assert checklist["testigos"] == NO_CONFORME  # testigos ahora es casilla
+    assert "chaleco_reflectivo" not in checklist  # radio de 2 opciones sin elegir
+    # Los radios con "No aplica" son obligatorios.
+    with pytest.raises(ValueError, match="Responde: Pico y pala"):
+        _payload(1, 1, checklist={k: v for k, v in obligatorios.items() if k != "pico_pala"})
+    with pytest.raises(ValueError, match="Valor inválido"):
+        _payload(1, 1, checklist={**obligatorios, "soat": "no aplica"})  # una casilla no tiene "no aplica"
+    with pytest.raises(ValueError, match="Ítems desconocidos"):
+        _payload(1, 1, checklist={"no_existe": "conforme"})
     bad = {item.key: item.options[0] for item in CHECKLIST} | {"soat": "regular"}
     with pytest.raises(ValueError, match="Valor inválido"):
-        _payload(1, checklist=bad)
+        _payload(1, 1, checklist=bad)
     with pytest.raises(ValueError, match="fuera de rango"):
-        _payload(1, llantas={"llanta_1_pre": 900})
+        _payload(1, 1, llantas={"llanta_1_pre": 900})
     with pytest.raises(ValueError):
-        PreoperacionalIn.model_validate({**_payload(1).model_dump(), "telegram_user_id": 1})  # extra=forbid
+        PreoperacionalIn.model_validate({**_payload(1, 1).model_dump(), "telegram_user_id": 1})  # extra=forbid
 
 
 def test_count_no_conformes_matches_odoo_rules():
@@ -154,6 +186,29 @@ def test_count_no_conformes_matches_odoo_rules():
 def test_form_definition_lists_every_item():
     form = form_definition()
     assert sum(len(s["items"]) for s in form["sections"]) == len(CHECKLIST)
+    # Pestañas del formulario de referencia, en orden, y cada ítem en una sola.
+    assert [t["title"] for t in form["tabs"]] == ["Documentos", "Rines/Llantas", "Equipo", "Vehículo"]
+    assert sum(len(s["items"]) for t in form["tabs"] for s in t["sections"]) == len(CHECKLIST)
+    equipo = [i["key"] for s in form["tabs"][2]["sections"] for i in s["items"]]
+    assert equipo[0] == "conos" and equipo[-1] == "testigos"
+    items = {i["key"]: i for s in form["sections"] for i in s["items"]}
+    assert items["soat"]["criterio"] == "Documento vencido o inexistente"
+    # Controles como el formulario de referencia.
+    radios = {k for k, i in items.items() if i["control"] == "radio"}
+    assert radios == {"chaleco_reflectivo", "pico_pala", "eslingas", "kit_derrames", "cables_de_arranque",
+                      "camaras", "barra", "extintor_2"}
+    assert items["testigos"]["control"] == "casilla"
+    assert {k for k, i in items.items() if i["obligatorio"]} == radios - {"chaleco_reflectivo", "kit_derrames"}
+    assert items["camaras"]["options"] == ["conforme", "no conforme", "no aplica"]
+    assert "camaras_new" not in items and "llanta_rep_pre_act" not in items
+
+
+def test_form_definition_tires_cover_every_measure_once():
+    form = form_definition()
+    keys = [k for ll in form["llantas"] for k in (ll["labrado"], ll["presion"])]
+    assert sorted(keys) == sorted(m["key"] for m in form["measures"])
+    assert [ll["codigo"] for ll in form["llantas"] if ll["interna"]] == ["5", "6"]
+    assert {ll["codigo"]: ll["labrado_minimo"] for ll in form["llantas"]}["5"] == 2.0
 
 
 # ──────────────────────────────────────────── ETL ────────────────────────────────────────────
@@ -301,15 +356,350 @@ def test_submit_is_idempotent_by_uuid(seeded):
     assert first.sync_status == SyncStatus.PENDIENTE
 
 
-def test_submit_rejects_unknown_employee_and_foreign_vehicle(seeded):
-    vehiculo, _ = _ids(seeded)
+def test_submit_rejects_unknown_employee(seeded):
+    vehiculo, extracto = _ids(seeded)
     with pytest.raises(service.SubmissionError) as exc:
-        service.submit(seeded, service.TelegramIdentity(1, None, "X"), _payload(vehiculo))
+        service.submit(seeded, service.TelegramIdentity(1, None, "X"), _payload(vehiculo, extracto))
     assert exc.value.status_code == 403
+
+
+@pytest.mark.parametrize("change", [
+    {"estado": "draft"},                      # extracto no aprobado
+    {"conductor": "Otro Conductor"},          # el empleado no es su conductor
+    {"fecha_hora_fin": utc_now() - timedelta(days=3)},  # vencido
+])
+def test_submit_requires_own_approved_current_extracto(seeded, change):
+    vehiculo, extracto = _ids(seeded)
     with seeded.session() as s:
-        s.get(Flota, vehiculo).company_odoo_id = 2
-    with pytest.raises(service.SubmissionError, match="compañía"):
-        service.submit(seeded, IDENTITY, _payload(vehiculo))
+        for key, value in change.items():
+            setattr(s.get(Extracto, extracto), key, value)
+    with pytest.raises(service.SubmissionError) as exc:
+        service.submit(seeded, IDENTITY, _payload(vehiculo, extracto))
+    assert exc.value.status_code == 403
+
+
+def test_vehicle_comes_from_extracto_and_cannot_be_changed(seeded):
+    vehiculo, extracto = _ids(seeded)
+    with seeded.session() as s:
+        otro = s.scalar(select(Flota.id).where(Flota.odoo_id == 11))
+    with pytest.raises(service.SubmissionError, match="no corresponde al extracto"):
+        service.submit(seeded, IDENTITY, _payload(otro, extracto))
+    preop, _ = service.submit(seeded, IDENTITY, _payload(None, extracto))  # sin vehículo: se toma del extracto
+    assert preop.vehiculo_id == vehiculo
+
+
+def test_conductor_name_matches_without_accents_or_case(seeded):
+    _, extracto = _ids(seeded)
+    with seeded.session() as s:
+        s.get(Extracto, extracto).segundo_conductor, s.get(Extracto, extracto).conductor = "  ANA  CONDUCTÓRA ", "Otro"
+        empleado = s.scalar(select(Empleado).where(Empleado.odoo_id == 100))
+        assert [e.id for e in service.extractos_del_conductor(s, empleado)] == [extracto]
+
+
+def test_contract_required_when_extracto_has_several(seeded):
+    vehiculo, extracto = _ids(seeded)
+    with seeded.session() as s:
+        s.get(Extracto, extracto).contratos_list = [{"id_contrato": 55, "nombre": "A"}, {"id_contrato": 56, "nombre": "B"}]
+    with pytest.raises(service.SubmissionError, match="Selecciona el contrato"):
+        service.submit(seeded, IDENTITY, _payload(vehiculo, extracto))
+    preop, _ = service.submit(seeded, IDENTITY, _payload(vehiculo, extracto, contrato_odoo_id=56))
+    assert preop.contrato_odoo_id == 56
+
+
+@pytest.mark.parametrize("foto, error", [
+    ("no-es-base64!!", "base64"),
+    (base64.b64encode(b"GIF89a" + b"\x00" * 32).decode(), "JPEG o PNG"),
+])
+def test_photo_is_validated_by_real_signature(foto, error):
+    with pytest.raises(ValueError, match=error):
+        _payload(1, 1, testigos_img=foto)
+
+
+def test_photo_is_stored_and_sent_as_testigos_img(seeded):
+    preop_id = _queue_one(seeded)
+    with seeded.session() as s:
+        foto = s.scalar(select(PreopFoto).where(PreopFoto.preop_id == preop_id))
+        assert (foto.tipo, foto.mime, foto.contenido) == ("testigos", "image/jpeg", JPEG)
+    service.claim_batch(seeded, 10, 300)
+    writer = FakeWriter([(77, "PRE-0077", False)])
+    service.send_one(seeded, writer, preop_id, 8)
+    assert writer.calls[0][1]["testigos_img"] == FOTO_B64
+
+
+def test_submit_without_photo_and_with_unanswered_items(seeded):
+    vehiculo, extracto = _ids(seeded)
+    parcial = {item.key: item.options[0] for item in CHECKLIST if item.key not in {"soat", "chaleco_reflectivo"}}
+    preop, _ = service.submit(seeded, IDENTITY, _payload(
+        vehiculo, extracto, checklist=parcial, testigos_img=None, observaciones="Rayón en puerta"))
+    with seeded.session() as s:
+        assert s.scalar(select(func.count()).select_from(PreopFoto).where(PreopFoto.preop_id == preop.id)) == 0
+    service.claim_batch(seeded, 10, 300)
+    writer = FakeWriter([(78, "PRE-0078", False)])
+    service.send_one(seeded, writer, preop.id, 8)
+    vals = writer.calls[0][1]
+    assert "testigos_img" not in vals and "chaleco_reflectivo" not in vals
+    assert vals["soat"] == NO_CONFORME  # casilla sin marcar
+    assert vals["observaciones"] == "Rayón en puerta"
+
+
+def test_odometer_below_last_registered_is_rejected(seeded):
+    vehiculo, extracto = _ids(seeded)  # último odómetro (Pos-Operacional) = 1500.5
+    with pytest.raises(service.SubmissionError, match="mayor o igual"):
+        service.submit(seeded, IDENTITY, _payload(vehiculo, extracto, kilometraje=1500))
+    preop, _ = service.submit(seeded, IDENTITY, _payload(vehiculo, extracto, kilometraje=1500.5))
+    assert preop.kilometraje == 1500.5
+    # Varios preoperacionales del mismo conductor son válidos.
+    otro, dup = service.submit(seeded, IDENTITY, _payload(vehiculo, extracto, uuid=UUID.replace("0b", "1c", 1)))
+    assert not dup and otro.id != preop.id
+
+
+def test_odometer_is_read_live_from_odoo_with_local_fallback(seeded):
+    vehiculo, extracto = _ids(seeded)
+    with seeded.session() as s:
+        empleado = s.scalar(select(Empleado).where(Empleado.odoo_id == 100))
+    leidos: list[int] = []
+
+    def odoo(vehicle_odoo_id: int) -> float | None:
+        leidos.append(vehicle_odoo_id)
+        return 20000.0
+
+    [ext] = service.form_context(seeded, empleado, odometro=odoo)["extractos"]
+    assert ext["vehiculo"]["odometer_post"] == 20000.0 and leidos == [10]
+    with pytest.raises(service.SubmissionError, match="20.000"):
+        service.submit(seeded, IDENTITY, _payload(vehiculo, extracto, kilometraje=19999), odometro=odoo)
+    # Odoo no responde: se usa el valor sincronizado (1500.5).
+    [ext] = service.form_context(seeded, empleado, odometro=lambda _id: None)["extractos"]
+    assert ext["vehiculo"]["odometer_post"] == 1500.5
+
+
+@pytest.mark.parametrize("post, pos, esperado", [(253600.0, [], 253600.0), (0.0, [{"km_end": 12000.0}], 12000.0),
+                                                 (0.0, [], None)])
+def test_writer_last_odometer_uses_odometer_post_then_last_pos(post, pos, esperado):
+    writer = OdooWriter("http://odoo.local", "db", "u", "p")
+    calls = []
+
+    def fake_execute(model, method, args, kwargs=None):
+        calls.append(model)
+        return [{"odometer_post": post}] if model == "fleet.vehicle" else pos
+
+    writer._execute = fake_execute  # type: ignore[method-assign]
+    assert writer.ultimo_odometro(2051) == esperado
+    assert calls == (["fleet.vehicle"] if post else ["fleet.vehicle", "pos.operacional"])
+
+
+def test_writer_last_odometer_returns_none_when_odoo_fails():
+    writer = OdooWriter("http://odoo.local", "db", "u", "p")
+
+    def boom(*_a, **_k):
+        raise OdooTransientError("timeout")
+
+    writer._execute = boom  # type: ignore[method-assign]
+    assert writer.ultimo_odometro(2051) is None
+
+
+def _sync_acuerdo(db, tipo: str, camioneta: float, buses: float) -> None:
+    etl.sync_all(db, FakeRest({
+        "/api/flota": [_flota(tipo_solicitud=tipo), _flota(11, "VAN 02/XYZ987"), _flota(12, "OTRA", company=1)],
+        "/api/empleados": [_empleado(), _empleado(101, pin="999", responsable="", nombre="Jefe Uno")],
+        "/api/extractos": [_extracto()],
+        "/api/acuerdos": [{"id": 55, "nombre": "Contrato Minera", "cliente": "Minera",
+                           "labrado_camioneta": camioneta, "labrado_buses": buses, "company_id": "Viacotur"}],
+    }), [1])
+
+
+@pytest.mark.parametrize("tipo, camioneta, buses, esperado", [
+    ("bus", 2.0, 5.0, 5.0),
+    ("buseta", 2.0, 5.0, 5.0),
+    ("camioneta", 3.0, 5.0, 3.0),
+    ("camioneta", 0.0, 5.0, None),  # el acuerdo no lo define: se usa el de Odoo
+])
+def test_context_tread_minimum_comes_from_agreement_and_vehicle_type(seeded, tipo, camioneta, buses, esperado):
+    _sync_acuerdo(seeded, tipo, camioneta, buses)
+    with seeded.session() as s:
+        assert s.scalar(select(Acuerdo.labrado_buses).where(Acuerdo.odoo_id == 55)) == buses
+        empleado = s.scalar(select(Empleado).where(Empleado.odoo_id == 100))
+    [extracto] = service.form_context(seeded, empleado)["extractos"]
+    assert extracto["contratos"][0]["labrado_minimo"] == esperado
+    assert extracto["vehiculo"]["tipo"] == tipo
+
+
+def test_tires_below_minimum_use_agreement_or_odoo_default():
+    llantas = {"llanta_1": 4.0, "llanta_2": 6.0, "llanta_5": 1.9, "llanta_7": 0}
+    assert llantas_bajo_minimo(llantas, 5.0) == ["Llanta N.º 1", "Llanta N.º 5"]
+    assert llantas_bajo_minimo(llantas, None) == ["Llanta N.º 5"]  # Odoo: 2,0 mm en internas
+
+
+def test_boss_is_alerted_on_findings_when_has_telegram_pin(seeded):
+    _sync_acuerdo(seeded, "bus", 2.0, 5.0)
+    vehiculo, extracto = _ids(seeded)
+    checklist = {item.key: "conforme" for item in CHECKLIST} | {"frenos": NO_CONFORME}
+    preop, _ = service.submit(seeded, IDENTITY, _payload(vehiculo, extracto, checklist=checklist,
+                                                          llantas={"llanta_1": 4.0}))
+    service.claim_batch(seeded, 10, 300)
+    outcome = service.send_one(seeded, FakeWriter([(79, "PRE-0079", False)]), preop.id, 8)
+    aviso = outcome.aviso_jefe
+    assert aviso is not None and aviso.telegram_id == 999  # PIN del jefe = id de Telegram
+    assert aviso.no_conformes == ("Frenos",) and aviso.llantas_bajas == ("Llanta N.º 1",)
+    text = formatting.preop_aviso_jefe(aviso, outcome.odoo_name)
+    assert "Ana Conductora" in text and "PRE-0079" in text and "Frenos" in text
+
+
+def test_boss_not_alerted_without_findings(seeded):
+    vehiculo, extracto = _ids(seeded)
+    preop, _ = service.submit(seeded, IDENTITY, _payload(
+        vehiculo, extracto, checklist={item.key: "conforme" for item in CHECKLIST}))
+    service.claim_batch(seeded, 10, 300)
+    assert service.send_one(seeded, FakeWriter([(80, "PRE-0080", False)]), preop.id, 8).aviso_jefe is None
+
+
+SEGUNDO = service.TelegramIdentity(555, "beto", "Beto S")
+
+
+def _con_segundo_conductor(db) -> None:
+    """Mismo extracto con dos conductores: Ana (PIN TG_USER) y Beto (PIN 555)."""
+    etl.sync_all(db, FakeRest({
+        "/api/flota": [_flota(), _flota(11, "VAN 02/XYZ987", numero_interno="102"), _flota(12, "OTRA", company=1)],
+        "/api/empleados": [_empleado(), _empleado(101, pin="999", responsable="", nombre="Jefe Uno"),
+                           _empleado(102, pin="555", nombre="Beto Segundo")],
+        "/api/extractos": [_extracto(segundo_conductor="Beto Segundo")],
+    }), [1])
+
+
+def _uuid(n: int) -> str:
+    return f"{n:08x}-3c1d-4f7a-9a2b-1c2d3e4f5a6b"
+
+
+def test_vehicle_is_reserved_to_one_driver_until_finalizar(seeded):
+    _con_segundo_conductor(seeded)
+    vehiculo, extracto = _ids(seeded)
+    preop, _ = service.submit(seeded, IDENTITY, _payload(vehiculo, extracto, uuid=_uuid(1)))
+    # El mismo conductor puede hacer otro preoperacional del vehículo (la reserva se actualiza).
+    otro, _ = service.submit(seeded, IDENTITY, _payload(vehiculo, extracto, uuid=_uuid(2)))
+    with seeded.session() as s:
+        [reserva] = s.scalars(select(reservas.ReservaVehiculo)).all()
+        assert (reserva.telegram_user_id, reserva.preop_id) == (TG_USER, otro.id)
+    # El segundo conductor del mismo extracto no puede mientras Ana no finalice.
+    with pytest.raises(service.SubmissionError, match="lo tiene Ana Conductora") as err:
+        service.submit(seeded, SEGUNDO, _payload(vehiculo, extracto, uuid=_uuid(3)))
+    assert err.value.status_code == 409
+    with seeded.session() as s:  # el rechazo no deja nada guardado
+        assert s.scalar(select(func.count()).select_from(Preoperacional)) == 2
+
+    # Finalizar de otro usuario no libera la reserva de Ana.
+    assert reservas.finalizar_jornada(seeded, SEGUNDO.user_id).placas == ()
+    assert reservas.finalizar_jornada(seeded, TG_USER).placas == ("ABC123",)
+    assert reservas.reservas_de(seeded, TG_USER) == ()
+    beto, _ = service.submit(seeded, SEGUNDO, _payload(vehiculo, extracto, uuid=_uuid(4)))
+    assert reservas.reservas_de(seeded, SEGUNDO.user_id) == ("ABC123",)
+    assert beto.id != preop.id
+
+
+def test_context_shows_reservation_state_per_driver(seeded):
+    _con_segundo_conductor(seeded)
+    vehiculo, extracto = _ids(seeded)
+    with seeded.session() as s:
+        ana = s.scalar(select(Empleado).where(Empleado.odoo_id == 100))
+        beto = s.scalar(select(Empleado).where(Empleado.odoo_id == 102))
+    assert service.form_context(seeded, beto)["extractos"][0]["vehiculo"]["reserva"]["estado"] == "disponible"
+    service.submit(seeded, IDENTITY, _payload(vehiculo, extracto))
+    assert service.form_context(seeded, ana)["extractos"][0]["vehiculo"]["reserva"]["estado"] == "propia"
+    reserva = service.form_context(seeded, beto)["extractos"][0]["vehiculo"]["reserva"]
+    assert reserva == {"estado": "ocupado", "conductor": "Ana Conductora", "placa_propia": None}
+
+
+def test_reservation_race_and_manual_release(seeded):
+    vehiculo, extracto = _ids(seeded)
+    service.submit(seeded, IDENTITY, _payload(vehiculo, extracto))
+    # Dos envíos simultáneos chocan con el índice único: se reconoce como conflicto de reserva.
+    with pytest.raises(IntegrityError) as err, seeded.session() as s:
+        s.add(reservas.ReservaVehiculo(vehiculo_id=vehiculo, empleado_id=1, telegram_user_id=1,
+                                       fecha_jornada=reservas.fecha_jornada()))
+        s.flush()
+    assert reservas.es_conflicto_de_reserva(err.value)
+    assert reservas.liberar_placa(seeded, "abc123") == 1
+    assert reservas.reservas_de(seeded, TG_USER) == ()
+
+
+def test_driver_can_hold_only_one_vehicle(seeded):
+    etl.sync_all(seeded, FakeRest({
+        "/api/flota": [_flota(), _flota(11, "VAN 02/XYZ987", numero_interno="102", matricula="XYZ987"),
+                       _flota(12, "OTRA", company=1)],
+        "/api/empleados": [_empleado(), _empleado(101, pin="999", responsable="", nombre="Jefe Uno")],
+        "/api/extractos": [_extracto(), _extracto(501, vehiculo="VAN 02/XYZ987", codigo="EXT-501")],
+    }), [1])
+    with seeded.session() as s:
+        van = s.scalar(select(Flota.id).where(Flota.odoo_id == 11))
+        ext_van = s.scalar(select(Extracto.id).where(Extracto.odoo_id == 501))
+        ana = s.scalar(select(Empleado).where(Empleado.odoo_id == 100))
+    vehiculo, extracto = _ids(seeded)
+    service.submit(seeded, IDENTITY, _payload(vehiculo, extracto, uuid=_uuid(1)))
+    # El otro vehículo aparece NO DISPONIBLE para ella mientras no finalice.
+    estados = {e["vehiculo"]["matricula"]: e["vehiculo"]["reserva"] for e in service.form_context(seeded, ana)["extractos"]}
+    assert estados["XYZ987"] == {"estado": "otro_propio", "conductor": None, "placa_propia": "ABC123"}
+    assert estados["ABC123"]["estado"] == "propia"
+    with pytest.raises(service.SubmissionError, match="Ya tienes reservado el vehículo ABC123"):
+        service.submit(seeded, IDENTITY, _payload(van, ext_van, uuid=_uuid(2)))
+    reservas.finalizar_jornada(seeded, TG_USER)
+    service.submit(seeded, IDENTITY, _payload(van, ext_van, uuid=_uuid(3)))
+    assert reservas.reservas_de(seeded, TG_USER) == ("XYZ987",)
+
+
+def test_reservation_expires_24h_after_initial_record_and_keeps_history(seeded):
+    _con_segundo_conductor(seeded)
+    vehiculo, extracto = _ids(seeded)
+    service.submit(seeded, IDENTITY, _payload(vehiculo, extracto, uuid=_uuid(1)))
+    with seeded.session() as s:
+        inicio = s.scalar(select(reservas.ReservaVehiculo.reservado_at))
+    inicio = inicio if inicio.tzinfo else inicio.replace(tzinfo=UTC)
+    with seeded.session() as s:  # 23 h después sigue reservada
+        assert reservas.liberar_vencidas(s, inicio + timedelta(hours=23)) == 0
+    with seeded.session() as s:  # a las 24 h se libera sola
+        assert reservas.liberar_vencidas(s, inicio + timedelta(hours=24, seconds=1)) == 1
+    with seeded.session() as s:
+        [h] = s.scalars(select(reservas.ReservaHistorial)).all()
+        fin = h.liberado_at if h.liberado_at.tzinfo else h.liberado_at.replace(tzinfo=UTC)
+        assert (h.motivo, h.placa, h.conductor, h.preoperacionales) == ("vencida", "ABC123", "Ana Conductora", 1)
+        assert fin == inicio + timedelta(hours=24)
+    beto, _ = service.submit(seeded, SEGUNDO, _payload(vehiculo, extracto, uuid=_uuid(2)))
+    assert reservas.reservas_de(seeded, SEGUNDO.user_id) == ("ABC123",)
+
+
+def test_finalizar_keeps_history_and_returns_boss_telegram(seeded):
+    vehiculo, extracto = _ids(seeded)
+    service.submit(seeded, IDENTITY, _payload(vehiculo, extracto, uuid=_uuid(1)))
+    service.submit(seeded, IDENTITY, _payload(vehiculo, extracto, uuid=_uuid(2)))
+    liberacion = reservas.finalizar_jornada(seeded, TG_USER)
+    assert liberacion.placas == ("ABC123",) and liberacion.conductor == "Ana Conductora"
+    assert liberacion.preoperacionales == 2 and liberacion.jefe_telegram_id == 999  # PIN de Jefe Uno
+    with seeded.session() as s:
+        [h] = s.scalars(select(reservas.ReservaHistorial)).all()
+        assert (h.motivo, h.telegram_user_id, h.preoperacionales) == ("finalizar", TG_USER, 2)
+    assert "Jornada finalizada" in formatting.jornada_finalizada_jefe(liberacion)
+    # Liberación manual también queda en el histórico.
+    service.submit(seeded, IDENTITY, _payload(vehiculo, extracto, uuid=_uuid(3)))
+    assert reservas.liberar_placa(seeded, "abc123") == 1
+    with seeded.session() as s:
+        assert [h.motivo for h in s.scalars(select(reservas.ReservaHistorial).order_by(reservas.ReservaHistorial.id))] == [
+            "finalizar", "manual"]
+
+
+def test_workday_date_is_colombia_local():
+    # 03:00 UTC del 24-nov = 22:00 del 23-nov en Colombia.
+    assert str(reservas.fecha_jornada(datetime(2026, 11, 24, 3, 0, tzinfo=UTC))) == "2026-11-23"
+
+
+def test_location_links_to_recent_preop_only(seeded):
+    preop_id = _queue_one(seeded)
+    reciente = service.registrar_ubicacion(seeded, TG_USER, 6.25, -75.56, 12.0)
+    assert reciente.preop_id == preop_id
+    tarde = service.registrar_ubicacion(seeded, TG_USER, 6.25, -75.56, now=utc_now() + timedelta(minutes=11))
+    assert tarde.preop_id is None
+    otro = service.registrar_ubicacion(seeded, 42, 6.0, -75.0)
+    assert otro.preop_id is None
+    with seeded.session() as s:
+        filas = s.scalars(select(Ubicacion).order_by(Ubicacion.id)).all()
+        assert [(u.telegram_user_id, u.empleado_id is not None) for u in filas] == [
+            (TG_USER, True), (TG_USER, True), (42, False)]
 
 
 def test_submit_rejects_contract_not_related(seeded):
@@ -501,9 +891,25 @@ def test_api_context_and_unknown_user(api):
     client, _ = api
     assert client.get("/api/preop/context", headers=_headers(user_id=1)).status_code == 403
     ctx = client.get("/api/preop/context", headers=_headers()).json()
-    assert ctx["empleado"]["nombre"] == "Ana Conductora"
-    assert {v["odoo_id"] for v in ctx["vehiculos"]} == {10, 11, 12}
-    assert [e["vehiculo_odoo_id"] for e in ctx["extractos"]] == [10]
+    assert ctx["empleado"] == {"nombre": "Ana Conductora", "puesto_trabajo": "Conductor", "responsable": "Jefe Uno"}
+    assert ctx["validado"] is True
+    [extracto] = ctx["extractos"]
+    assert extracto["vehiculo"]["odoo_id"] == 10 and extracto["vehiculo"]["matricula"] == "ABC123"
+    assert extracto["contratos"] == [{"id_contrato": 55, "nombre": "Contrato Minera", "labrado_minimo": None}]
+
+
+def test_api_context_not_validated_without_approved_extracto(api, seeded):
+    client, _ = api
+    with seeded.session() as s:
+        s.scalar(select(Extracto)).estado = "pending"
+    ctx = client.get("/api/preop/context", headers=_headers()).json()
+    assert ctx["validado"] is False and ctx["extractos"] == []
+
+
+def test_api_serves_logo(api):
+    client, _ = api
+    response = client.get("/static/viacotur-logo.png")
+    assert response.status_code == 200 and response.content.startswith(b"\x89PNG")
 
 
 def test_api_submit_accepts_and_wakes_worker(api, seeded):
@@ -521,7 +927,7 @@ def test_api_submit_accepts_and_wakes_worker(api, seeded):
 
 def test_api_submit_validates_payload(api, seeded):
     client, _ = api
-    vehiculo, _ = _ids(seeded)
-    body = _payload(vehiculo).model_dump()
+    vehiculo, extracto = _ids(seeded)
+    body = _payload(vehiculo, extracto).model_dump()
     body["checklist"]["soat"] = "<script>"
     assert client.post("/api/preop", json=body, headers=_headers()).status_code == 422

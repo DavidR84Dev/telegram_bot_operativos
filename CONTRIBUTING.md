@@ -71,13 +71,14 @@ Si agregas una variable:
 
 ## Agregar una opción al menú del bot
 
-El menú de @QRLectorBot sale de la tupla `MENU` de `app/telegram_app.py`; el orden de la tupla es el orden en pantalla (hoy: Preoperacional → Escanear QR).
+El teclado principal de @OperativosViacoturBot es fijo: **📋 Formularios**, **📷 Escanear QR** y **📍 Enviar ubicación**. Los formularios salen de la tupla `FORMULARIOS` de `app/telegram_app.py`; el orden de la tupla es el orden de la lista inline (hoy: ✅ Preoperacional).
 
-1. Servir la Mini App desde este servicio (ruta FastAPI + `app/static/<nombre>.html`) y validar `initData` en su API (`app.webapp_auth.validate_init_data_user`).
-2. Agregar una `MenuOption(label, open_text, prompt, help, url)` a `MENU` en la posición deseada. El teclado, `/start`, la ayuda y el manejo del botón se generan solos.
+1. Servir la Mini App desde este servicio (ruta FastAPI + `app/static/<nombre>.html`) y validar `initData` en su API (`app.webapp_auth.validate_init_data_user`). Seguir la identidad visual del preoperacional (cabecera con `/static/viacotur-logo.png`, paleta azul, pasos con barra de progreso).
+2. Agregar una `MenuOption(label, open_text, prompt, help, url)` a `FORMULARIOS` en la posición deseada. La lista, la ayuda de `/start` y el manejo se generan solos.
 3. Opcional: un comando (`CommandHandler` + `BotCommand` en `BOT_COMMANDS`) que llame a `_open_option`.
-4. Las Mini Apps se abren siempre con botón **inline** `web_app`: desde un botón de teclado llegan sin `initData`.
-5. Cubrir el orden y la apertura en `tests/test_handlers.py`.
+4. Tablas nuevas: van en la BD del bot (`app/preop/models.py` o un módulo hermano con la misma `Base`); `create_all` las crea al arrancar. Para **cambiar** columnas de tablas existentes hace falta Alembic.
+5. Las Mini Apps se abren siempre con botón **inline** `web_app`: desde un botón de teclado llegan sin `initData`.
+6. Cubrir el orden y la apertura en `tests/test_handlers.py`.
 
 ## Agregar un nuevo bot operativo al mismo patrón
 

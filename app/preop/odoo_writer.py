@@ -90,7 +90,8 @@ def _odoo_datetime(value: datetime) -> str:
     return value.strftime("%Y-%m-%d %H:%M:%S")
 
 
-def build_odoo_values(preop: Preoperacional, boss_odoo_id: int | None = None) -> dict[str, Any]:
+def build_odoo_values(preop: Preoperacional, boss_odoo_id: int | None = None,
+                      testigos_b64: str | None = None) -> dict[str, Any]:
     """Traduce el registro local a ``vals`` del modelo ``preoperacional`` de Odoo.
 
     Solo se envían campos del catálogo (checklist/llantas): ``extra`` se queda en
@@ -109,10 +110,12 @@ def build_odoo_values(preop: Preoperacional, boss_odoo_id: int | None = None) ->
         vals["contrato_id"] = preop.contrato_odoo_id
     if boss_odoo_id:
         vals["immediate_boss_id"] = boss_odoo_id
-    if preop.observaciones:
-        vals["observaciones"] = preop.observaciones
+    # Solo el texto del conductor; sin texto se envía en blanco.
+    vals["observaciones"] = preop.observaciones or ""
     vals.update({key: value for key, value in preop.checklist.items() if key in CHECKLIST_BY_KEY})
     vals.update({key: float(value) for key, value in preop.llantas.items() if key in MEASURES_BY_KEY})
+    if testigos_b64:
+        vals["testigos_img"] = testigos_b64  # Binary en Odoo: base64 sin prefijo data:
     return vals
 
 
@@ -164,6 +167,28 @@ class OdooWriter:
             if "AccessDenied" in str(exc.faultString):
                 self._uid = None  # contraseña/API key cambiada: re-autenticar en el siguiente intento
             raise error from exc
+
+    # ── lectura auxiliar ───────────────────────────────────────────────────
+    def ultimo_odometro(self, vehicle_odoo_id: int) -> float | None:
+        """Último odómetro del vehículo según Odoo, para sugerirlo y validar el preoperacional.
+
+        Se lee ``fleet.vehicle.odometer_post`` (km_end del último Pos-Operacional). Ese campo
+        es calculado y almacenado sin ``@api.depends``, así que puede quedar en 0 aunque haya
+        Pos-Operacionales; en ese caso se aplica la misma regla que lo define: ``km_end`` del
+        último ``pos.operacional`` del vehículo. None si no hay ninguno o Odoo no responde.
+        """
+        try:
+            with self._lock:
+                rows = self._execute("fleet.vehicle", "read", [[vehicle_odoo_id]], {"fields": ["odometer_post"]})
+                valor = float(rows[0].get("odometer_post") or 0) if rows else 0.0
+                if valor <= 0:
+                    pos = self._execute("pos.operacional", "search_read", [[["vehicle_id", "=", vehicle_odoo_id]]],
+                                        {"fields": ["km_end"], "order": "id desc", "limit": 1})
+                    valor = float(pos[0].get("km_end") or 0) if pos else 0.0
+        except OdooWriteError as exc:
+            logger.warning("No se pudo leer el odómetro del vehículo %s en Odoo: %s", vehicle_odoo_id, exc)
+            return None
+        return valor if valor > 0 else None
 
     # ── idempotencia ───────────────────────────────────────────────────────
     @staticmethod

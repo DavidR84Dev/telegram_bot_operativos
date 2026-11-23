@@ -1,4 +1,4 @@
-"""ETL de tablas maestras: API REST de Odoo -> empleados / flota / extractos (UPSERT).
+"""ETL de tablas maestras: API REST de Odoo -> empleados / flota / extractos / acuerdos (UPSERT).
 
 Por cada entidad y compañía:
 
@@ -34,9 +34,9 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from .db import Database
-from .models import Empleado, Extracto, Flota, MasterMixin, SyncRun, utc_now
+from .models import Acuerdo, Empleado, Extracto, Flota, MasterMixin, SyncRun, utc_now
 from .rest_client import OdooApiError, OdooRestClient
-from .schemas import EmpleadoApi, ExtractoApi, FlotaApi, _ApiRecord
+from .schemas import AcuerdoApi, EmpleadoApi, ExtractoApi, FlotaApi, _ApiRecord
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +56,8 @@ ENTITIES: tuple[Entity, ...] = (
     Entity("flota", "/api/flota", Flota, FlotaApi),
     Entity("empleados", "/api/empleados", Empleado, EmpleadoApi),
     Entity("extractos", "/api/extractos", Extracto, ExtractoApi),
+    # Labrado mínimo de llantas por contrato (labrado_camioneta / labrado_buses).
+    Entity("acuerdos", "/api/acuerdos", Acuerdo, AcuerdoApi),
 )
 
 

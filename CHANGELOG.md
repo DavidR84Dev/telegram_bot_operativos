@@ -6,6 +6,34 @@ Versionado: [SemVer](https://semver.org/lang/es/) (`MAJOR.MINOR.PATCH`).
 ## [Sin publicar]
 
 ### Agregado
+- **Reserva del vehículo por jornada y botón 🔴 Finalizar:** tabla temporal `reservas_vehiculo`: una placa por conductor y un conductor por placa. El preoperacional reserva el vehículo; los demás lo ven como NO DISPONIBLE (rojo) y el servidor rechaza su envío. Se libera con 🔴 Finalizar (con confirmación y aviso al jefe inmediato por Telegram), a las 24 h de su registro inicial o con `python -m app.preop.reservas --liberar PLACA`. Cada liberación queda en `reservas_historial`.
+
+### Cambiado
+- **Preoperacional, ajustes del 2026-11-23 (tarde):**
+  - Sugerencia "Último registrado" del odómetro leída en vivo de `fleet.vehicle.odometer_post`; si está en 0 (campo sin `@api.depends`), `km_end` del último Pos-Operacional. La misma cifra valida el envío.
+  - "Testigos del tablero" pasa a casilla, como "Medidor de aire".
+  - Los ítems de 3 opciones (con "No aplica") son obligatorios: "Siguiente" no pasa a Evidencia sin ellos y el servidor los exige.
+  - Foto de testigos desde la cámara o la galería del celular.
+  - Observaciones visibles en el Resumen, debajo de la información general.
+- **Formulario Preoperacional reorganizado según el recorrido de `@viacoturform_bot` (2026-11-23, `docs/mapa_viacotur_form.md` §8–9):**
+  - Catálogo (`app/preop/checklist.py`) con pestañas **Documentos · Rines/Llantas · Equipo · Vehículo**, el orden real de los ítems, el criterio de no conforme como dato y las llantas agrupadas por posición (5 y 6 solo con llantas internas). Mismos campos y opciones de Odoo que antes.
+  - "Testigos del tablero" pasa a la pestaña Equipo; "Odómetro actual" y número interno visibles en el paso 1.
+  - Se permite enviar con ítems sin marcar o no conformes y sin la foto de testigos: el resumen los muestra como alertas (✔ / ! / N/A, 0/1) y permite saltar al ítem para corregir.
+  - Diseño móvil: pestañas fijas, un solo scroll, áreas táctiles de 44 px y teclado numérico (`inputmode`) en odómetro, labrado y presión.
+- **Parámetros del Preoperacional (definidos por el usuario):**
+  - Paso 1 como la referencia: contrato → vehículo (tarjetas de los extractos aprobados, uno o varios) → odómetro, que debe ser **mayor o igual** al último registrado en Odoo (validado en la Mini App y en el servidor).
+  - Casillas y radios como `@viacoturform_bot`: casilla sin marcar = `no conforme`; cámaras con 3 opciones al campo `camaras`; sin las preguntas `llanta_rep_pre_act` ni `camaras_new`.
+  - Alerta de labrado con el mínimo del acuerdo (`labrado_camioneta` / `labrado_buses` según el tipo de vehículo); nueva tabla `acuerdos` sincronizada desde `/api/acuerdos`.
+  - Observaciones sin texto se envían en blanco; ya no se anotan ítems sin responder.
+  - Aviso por Telegram al jefe inmediato cuando hay no conformes o labrado bajo el mínimo.
+
+### Agregado
+- **Preoperacional como bot de referencia (`@viacoturform_bot`)**:
+  - Menú de @OperativosViacoturBot: **📋 Formularios** (lista inline, ✅ Preoperacional primero), **📷 Escanear QR** y **📍 Enviar ubicación**; comando `/formularios`.
+  - Mini App por pasos (Información → Verificación → Evidencia → Resumen) con barra de progreso e identidad VIACOTUR (logo y paleta).
+  - Vehículo tomado y bloqueado desde el **extracto aprobado** del conductor; sin extracto aprobado, pantalla de bloqueo con instrucciones.
+  - Foto de testigos del tablero (comprimida en el teléfono), guardada en `preop_fotos` y enviada a `testigos_img` de Odoo.
+  - Tabla `ubicaciones` en la BD del bot: ubicación compartida desde el chat, asociada al preoperacional de los últimos 10 minutos.
 - **Preoperacional vehicular** (`app/preop/`, documentación en `docs/PREOPERACIONAL.md`):
   - Mini App `/preoperacional` (botón 📝 y comando `/preoperacional`) con autocompletado de vehículo, extracto y contrato desde tablas locales.
   - Tablas `empleados`, `flota`, `extractos` sincronizadas desde la API REST de Odoo (`viacotur_api`, JWT) con UPSERT por `odoo_id`, desactivación de los que desaparecen y bitácora `sync_runs`.
@@ -18,7 +46,17 @@ Versionado: [SemVer](https://semver.org/lang/es/) (`MAJOR.MINOR.PATCH`).
   - 30 pruebas nuevas (96 en total); verificadas también contra PostgreSQL 16 real (`PREOP_TEST_DATABASE_URL`).
 - Dependencia `tenacity`.
 
+### Agregado
+- **Reserva del vehículo por jornada y botón 🔴 Finalizar:** tabla temporal `reservas_vehiculo`: una placa por conductor y un conductor por placa. El preoperacional reserva el vehículo; los demás lo ven como NO DISPONIBLE (rojo) y el servidor rechaza su envío. Se libera con 🔴 Finalizar (con confirmación y aviso al jefe inmediato por Telegram), a las 24 h de su registro inicial o con `python -m app.preop.reservas --liberar PLACA`. Cada liberación queda en `reservas_historial`.
+
 ### Cambiado
+- **Preoperacional, ajustes del 2026-11-23 (tarde):**
+  - Sugerencia "Último registrado" del odómetro leída en vivo de `fleet.vehicle.odometer_post`; si está en 0 (campo sin `@api.depends`), `km_end` del último Pos-Operacional. La misma cifra valida el envío.
+  - "Testigos del tablero" pasa a casilla, como "Medidor de aire".
+  - Los ítems de 3 opciones (con "No aplica") son obligatorios: "Siguiente" no pasa a Evidencia sin ellos y el servidor los exige.
+  - Foto de testigos desde la cámara o la galería del celular.
+  - Observaciones visibles en el Resumen, debajo de la información general.
+- El servicio pasa a responder como **@OperativosViacoturBot** (nuevo `TELEGRAM_BOT_TOKEN`), en lugar de @QRLectorBot, para que el nombre coincida con su función de bot operativo.
 - Menú principal de @QRLectorBot como registro ordenado (`MENU`): **📝 Preoperacional** primero y **📷 Escanear QR** después, una opción por fila; `/start` muestra los botones inline en el mismo orden. Nuevo comando `/escanear`.
 - `webapp_auth.validate_init_data_user()` devuelve el usuario completo de Telegram (`validate_init_data()` se mantiene igual).
 - El servicio deja de ser estrictamente de solo lectura en Odoo: la única escritura es `create` de `preoperacional` (`OdooWriter`); `OdooClient` sigue siendo solo lectura.
@@ -40,7 +78,16 @@ Versionado: [SemVer](https://semver.org/lang/es/) (`MAJOR.MINOR.PATCH`).
 - Validación de arranque: `TELEGRAM_MODE=webhook` sin `TELEGRAM_WEBHOOK_SECRET` ahora falla rápido con un mensaje claro en vez de un `AttributeError` críptico.
 - `CHANGELOG.md` y política de versionado semántico (ver `CONTRIBUTING.md`).
 
+### Agregado
+- **Reserva del vehículo por jornada y botón 🔴 Finalizar:** tabla temporal `reservas_vehiculo`: una placa por conductor y un conductor por placa. El preoperacional reserva el vehículo; los demás lo ven como NO DISPONIBLE (rojo) y el servidor rechaza su envío. Se libera con 🔴 Finalizar (con confirmación y aviso al jefe inmediato por Telegram), a las 24 h de su registro inicial o con `python -m app.preop.reservas --liberar PLACA`. Cada liberación queda en `reservas_historial`.
+
 ### Cambiado
+- **Preoperacional, ajustes del 2026-11-23 (tarde):**
+  - Sugerencia "Último registrado" del odómetro leída en vivo de `fleet.vehicle.odometer_post`; si está en 0 (campo sin `@api.depends`), `km_end` del último Pos-Operacional. La misma cifra valida el envío.
+  - "Testigos del tablero" pasa a casilla, como "Medidor de aire".
+  - Los ítems de 3 opciones (con "No aplica") son obligatorios: "Siguiente" no pasa a Evidencia sin ellos y el servidor los exige.
+  - Foto de testigos desde la cámara o la galería del celular.
+  - Observaciones visibles en el Resumen, debajo de la información general.
 - Renombrado el proyecto: `telegram_qr_validator` → `telegram_bot_operativos`.
 - `Settings.db_path` → `Settings.database_url` (variable de entorno `DB_PATH` → `DATABASE_URL`). Por defecto sigue siendo SQLite (`sqlite:///run/watches.sqlite3`): no es un cambio disruptivo para quien ya corría el bot sin Docker, solo cambia el nombre de la variable.
 

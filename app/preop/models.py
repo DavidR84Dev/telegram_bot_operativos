@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import enum
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
 from sqlalchemy import (
@@ -27,14 +27,18 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     CheckConstraint,
+    Date,
     DateTime,
     Enum,
     ForeignKey,
     Index,
+    Float,
     Integer,
+    LargeBinary,
     Numeric,
     String,
     Text,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -109,6 +113,17 @@ class Flota(MasterMixin, Base):
     tipo_solicitud: Mapped[str | None] = mapped_column(String(64))
 
     __table_args__ = (Index("ix_flota_nombre", "nombre"),)
+
+
+class Acuerdo(MasterMixin, Base):
+    """Contrato (``agreement`` en Odoo): define el labrado mínimo de las llantas por tipo de vehículo."""
+
+    __tablename__ = "acuerdos"
+
+    nombre: Mapped[str] = mapped_column(String(255), nullable=False)
+    cliente: Mapped[str | None] = mapped_column(String(255))
+    labrado_camioneta: Mapped[float | None] = mapped_column(Numeric(6, 2, asdecimal=False))
+    labrado_buses: Mapped[float | None] = mapped_column(Numeric(6, 2, asdecimal=False))
 
 
 class Extracto(MasterMixin, Base):
@@ -215,6 +230,110 @@ class Preoperacional(TimestampMixin, Base):
         Index("ix_preop_cola", "sync_status", "next_attempt_at"),
         Index("ix_preop_vehiculo_fecha", "vehiculo_id", "fecha"),
         Index("ix_preop_checklist_gin", "checklist", postgresql_using="gin"),
+    )
+
+
+class PreopFoto(TimestampMixin, Base):
+    """Fotos de evidencia de un preoperacional (hoy solo ``testigos`` -> ``testigos_img`` en Odoo).
+
+    Tabla aparte: el binario no se carga al leer la cola y se pueden sumar tipos sin migrar.
+    """
+
+    __tablename__ = "preop_fotos"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    preop_id: Mapped[int] = mapped_column(ForeignKey("preoperacional.id", ondelete="CASCADE"), nullable=False)
+    tipo: Mapped[str] = mapped_column(String(32), nullable=False)
+    mime: Mapped[str] = mapped_column(String(32), nullable=False)
+    contenido: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    tamano: Mapped[int] = mapped_column(Integer, nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    __table_args__ = (UniqueConstraint("preop_id", "tipo", name="uq_preop_fotos_tipo"),)
+
+
+class Ubicacion(TimestampMixin, Base):
+    """Ubicación compartida desde el chat (botón 📍 Enviar ubicación).
+
+    Se asocia al preoperacional que el mismo usuario envió en los últimos minutos
+    (``service.UBICACION_VENTANA``); si no hay ninguno, queda suelta.
+    """
+
+    __tablename__ = "ubicaciones"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    telegram_user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    empleado_id: Mapped[int | None] = mapped_column(ForeignKey("empleados.id", ondelete="SET NULL"))
+    preop_id: Mapped[int | None] = mapped_column(ForeignKey("preoperacional.id", ondelete="SET NULL"))
+    latitud: Mapped[float] = mapped_column(Float, nullable=False)
+    longitud: Mapped[float] = mapped_column(Float, nullable=False)
+    precision_m: Mapped[float | None] = mapped_column(Float)
+    recibido_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+
+    __table_args__ = (
+        CheckConstraint("latitud BETWEEN -90 AND 90", name="ck_ubicaciones_latitud"),
+        CheckConstraint("longitud BETWEEN -180 AND 180", name="ck_ubicaciones_longitud"),
+        Index("ix_ubicaciones_usuario_fecha", "telegram_user_id", "recibido_at"),
+    )
+
+
+class ReservaVehiculo(TimestampMixin, Base):
+    """Tabla temporal: vehículo reservado al conductor que hizo su preoperacional.
+
+    Un extracto puede tener varios conductores, pero solo uno puede tener el vehículo
+    a la vez: la reserva se crea al enviar el preoperacional y se borra cuando ese
+    conductor toca 🔴 Finalizar (fin de su jornada) o a las ``reservas.RESERVA_HORAS``
+    de creada. ``vehiculo_id`` y ``telegram_user_id`` son únicos: una placa tiene un solo
+    conductor y un conductor tiene un solo vehículo a la vez. Al liberarse, la fila pasa
+    a ``reservas_historial``.
+    """
+
+    __tablename__ = "reservas_vehiculo"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    vehiculo_id: Mapped[int] = mapped_column(ForeignKey("flota.id", ondelete="CASCADE"), nullable=False)
+    empleado_id: Mapped[int] = mapped_column(ForeignKey("empleados.id", ondelete="CASCADE"), nullable=False)
+    telegram_user_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    extracto_id: Mapped[int | None] = mapped_column(ForeignKey("extractos.id", ondelete="SET NULL"))
+    # Último preoperacional del conductor con este vehículo (puede hacer varios en el día).
+    preop_id: Mapped[int | None] = mapped_column(ForeignKey("preoperacional.id", ondelete="SET NULL"))
+    fecha_jornada: Mapped[date] = mapped_column(Date, nullable=False)  # fecha local (Colombia) de inicio
+    reservado_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+    ultimo_preop_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+
+    vehiculo: Mapped[Flota] = relationship(lazy="joined")
+    empleado: Mapped[Empleado] = relationship(lazy="joined")
+
+    __table_args__ = (
+        UniqueConstraint("vehiculo_id", name="uq_reservas_vehiculo_vehiculo"),
+        UniqueConstraint("telegram_user_id", name="uq_reservas_vehiculo_conductor"),
+    )
+
+
+class ReservaHistorial(TimestampMixin, Base):
+    """Histórico permanente de jornadas: cada reserva liberada (finalizar, vencida o manual)."""
+
+    __tablename__ = "reservas_historial"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    vehiculo_id: Mapped[int | None] = mapped_column(ForeignKey("flota.id", ondelete="SET NULL"))
+    placa: Mapped[str] = mapped_column(String(255), nullable=False)
+    empleado_id: Mapped[int | None] = mapped_column(ForeignKey("empleados.id", ondelete="SET NULL"))
+    conductor: Mapped[str] = mapped_column(String(255), nullable=False)
+    telegram_user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    extracto_id: Mapped[int | None] = mapped_column(ForeignKey("extractos.id", ondelete="SET NULL"))
+    ultimo_preop_id: Mapped[int | None] = mapped_column(ForeignKey("preoperacional.id", ondelete="SET NULL"))
+    preoperacionales: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    fecha_jornada: Mapped[date] = mapped_column(Date, nullable=False)
+    reservado_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    ultimo_preop_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    liberado_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    motivo: Mapped[str] = mapped_column(String(16), nullable=False)  # finalizar | vencida | manual
+
+    __table_args__ = (
+        CheckConstraint("motivo IN ('finalizar', 'vencida', 'manual')", name="ck_reservas_historial_motivo"),
+        Index("ix_reservas_historial_conductor_fecha", "telegram_user_id", "reservado_at"),
+        Index("ix_reservas_historial_vehiculo_fecha", "vehiculo_id", "reservado_at"),
     )
 
 

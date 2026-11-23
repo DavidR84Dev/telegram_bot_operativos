@@ -5,8 +5,9 @@ Seguridad: todas las rutas ``/api/preop/*`` exigen la cabecera
 válida del bot y antigüedad acotada. La identidad sale de ahí, nunca del cuerpo.
 
 * ``GET  /preoperacional``        página HTML de la Mini App (pública; no tiene datos)
+* ``GET  /static/viacotur-logo.png`` logo de la cabecera (público)
 * ``GET  /api/preop/form``        catálogo de ítems (secciones, opciones, medidas)
-* ``GET  /api/preop/context``     empleado + vehículos + extractos vigentes (autocompletado)
+* ``GET  /api/preop/context``     conductor, responsable y extractos aprobados con su vehículo
 * ``POST /api/preop``             recibe el formulario -> 202 + estado ``pendiente``
 * ``GET  /api/preop/{uuid}``      estado de sincronización de un envío propio
 """
@@ -19,7 +20,7 @@ from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from sqlalchemy import select
 
 from ..webapp_auth import InitDataError, validate_init_data_user
@@ -31,7 +32,9 @@ from .schemas import PreoperacionalIn, PreoperacionalOut
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-_HTML = Path(__file__).resolve().parent.parent / "static" / "preoperacional.html"
+_STATIC = Path(__file__).resolve().parent.parent / "static"
+_HTML = _STATIC / "preoperacional.html"
+_LOGO = _STATIC / "viacotur-logo.png"
 
 
 @dataclass
@@ -42,6 +45,8 @@ class PreopServices:
     bot_token: str
     max_age_seconds: int
     wake_worker: Any = None  # callable sin argumentos: despierta el worker tras un envío
+    # Lee el último odómetro del vehículo en Odoo (id de Odoo -> km | None). None = solo datos locales.
+    odometro: Any = None
 
 
 def _services(request: Request) -> PreopServices:
@@ -79,6 +84,11 @@ def preop_page() -> str:
     return _HTML.read_text(encoding="utf-8")
 
 
+@router.get("/static/viacotur-logo.png", include_in_schema=False)
+def logo() -> FileResponse:
+    return FileResponse(_LOGO, media_type="image/png", headers={"Cache-Control": "public, max-age=86400"})
+
+
 @router.get("/api/preop/form")
 def preop_form(_identity: Identity) -> dict[str, Any]:
     return form_definition()
@@ -93,7 +103,7 @@ async def preop_context(request: Request, identity: Identity) -> dict[str, Any]:
             status.HTTP_403_FORBIDDEN,
             f"Tu ID de Telegram ({identity.user_id}) no está registrado como PIN de un empleado activo",
         )
-    return await asyncio.to_thread(service.form_context, svc.db, empleado)
+    return await asyncio.to_thread(service.form_context, svc.db, empleado, None, svc.odometro)
 
 
 def _out(preop: Preoperacional, duplicated: bool = False) -> PreoperacionalOut:
@@ -108,7 +118,7 @@ async def preop_submit(body: PreoperacionalIn, request: Request, identity: Ident
     """Guarda y responde de inmediato (202). El envío a Odoo lo hace el worker en segundo plano."""
     svc = _services(request)
     try:
-        preop, duplicated = await asyncio.to_thread(service.submit, svc.db, identity, body)
+        preop, duplicated = await asyncio.to_thread(service.submit, svc.db, identity, body, svc.odometro)
     except service.SubmissionError as exc:
         raise HTTPException(exc.status_code, str(exc)) from exc
     if not duplicated and svc.wake_worker is not None:

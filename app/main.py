@@ -16,7 +16,7 @@ from .preop.router import PreopServices
 from .preop.router import router as preop_router
 from .preop.service import SendOutcome
 from .preop.worker import MasterSync, PreopSender, build_writer
-from .telegram_app import BOT_COMMANDS, SERVICES_KEY, build_application
+from .telegram_app import BOT_COMMANDS, PREOP_DB_KEY, SERVICES_KEY, build_application
 from .watch_store import WatchStore
 from .web import router as web_router
 
@@ -38,16 +38,28 @@ def _start_preop(app: FastAPI, application) -> list:
         await application.bot.send_message(
             chat_id=outcome.telegram_user_id, text=formatting.preop_result(outcome), parse_mode="HTML"
         )
+        if outcome.aviso_jefe is not None:
+            try:
+                await application.bot.send_message(
+                    chat_id=outcome.aviso_jefe.telegram_id,
+                    text=formatting.preop_aviso_jefe(outcome.aviso_jefe, outcome.odoo_name), parse_mode="HTML",
+                )
+            except Exception:  # p. ej. el jefe nunca abrió el bot: Telegram no permite escribirle
+                logger.exception("No se pudo avisar al jefe (Telegram %s)", outcome.aviso_jefe.telegram_id)
 
+    writer = build_writer(settings)
     sender = PreopSender(
-        db, build_writer(settings), settings.preop_worker_interval_seconds, settings.preop_max_attempts,
+        db, writer, settings.preop_worker_interval_seconds, settings.preop_max_attempts,
         settings.preop_sending_lease_seconds, notify=notify,
     )
     sender.start()
     tasks: list = [sender]
+    # El handler de 📍 Enviar ubicación guarda en esta misma BD.
+    application.bot_data[PREOP_DB_KEY] = db
     app.state.preop = PreopServices(
         db=db, bot_token=settings.telegram_bot_token.get_secret_value(),
         max_age_seconds=settings.preop_auth_max_age_seconds, wake_worker=sender.wake,
+        odometro=writer.ultimo_odometro,
     )
     if settings.master_sync_enabled:
         master = MasterSync(settings.master_sync_interval_seconds, lambda: run_from_settings(db))

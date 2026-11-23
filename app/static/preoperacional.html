@@ -3,97 +3,316 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Preoperacional</title>
+<title>Inspección Preoperacional</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
   :root {
     color-scheme: light dark;
-    --bg: var(--tg-theme-bg-color, #fff);
-    --fg: var(--tg-theme-text-color, #111);
-    --hint: var(--tg-theme-hint-color, #777);
-    --card: var(--tg-theme-secondary-bg-color, #f2f2f4);
-    --accent: var(--tg-theme-button-color, #2481cc);
-    --accent-fg: var(--tg-theme-button-text-color, #fff);
-    --ok: #2e9d57; --bad: #d64545; --na: #8a8a8a;
+    /* Identidad VIACOTUR: azul marino del logo + azul de acción. */
+    --brand: #1b1f5e;
+    --brand-2: #1f6fb8;
+    --brand-soft: color-mix(in srgb, var(--brand-2) 12%, transparent);
+    --bg: var(--tg-theme-secondary-bg-color, #eef2f8);
+    --surface: var(--tg-theme-bg-color, #ffffff);
+    --fg: var(--tg-theme-text-color, #14172f);
+    --hint: var(--tg-theme-hint-color, #6b7085);
+    --line: color-mix(in srgb, var(--hint) 28%, transparent);
+    --ok: #1f9d55; --bad: #d64545; --na: #7d8296; --warn: #c27a12;
+    --radius: 14px;
+    --tap: 44px; /* área táctil mínima */
   }
   * { box-sizing: border-box; }
-  body { margin: 0; padding: 16px 16px 96px; font: 15px/1.4 system-ui, sans-serif; background: var(--bg); color: var(--fg); }
-  h1 { font-size: 20px; margin: 0 0 4px; }
-  h2 { font-size: 16px; margin: 0; }
+  html, body { margin: 0; }
+  body {
+    font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg); color: var(--fg);
+    padding-bottom: calc(88px + env(safe-area-inset-bottom));
+    -webkit-text-size-adjust: 100%;
+  }
+  header.brand { background: #fff; padding: 12px 16px 8px; text-align: center; border-bottom: 3px solid var(--brand); }
+  header.brand img { height: 52px; width: auto; display: block; margin: 0 auto 4px; }
+  header.brand h1 { margin: 0; font-size: 17px; color: var(--brand); letter-spacing: .2px; }
+
+  /* Barra de progreso */
+  .stepper { display: grid; grid-template-columns: repeat(4, 1fr); padding: 12px 8px 2px; position: relative; }
+  .stepper::before { content: ""; position: absolute; left: 12.5%; right: 12.5%; top: 27px; height: 3px; background: var(--line); }
+  .stepper .bar { position: absolute; left: 12.5%; top: 27px; height: 3px; width: 0; background: var(--brand-2); transition: width .25s; }
+  .step { position: relative; text-align: center; font-size: 12px; color: var(--hint); }
+  .step .dot {
+    width: 32px; height: 32px; margin: 0 auto 4px; border-radius: 50%; display: grid; place-items: center;
+    background: var(--surface); border: 3px solid var(--line); font-weight: 700; color: var(--hint); position: relative; z-index: 1;
+  }
+  .step.active .dot { border-color: var(--brand-2); color: var(--brand-2); }
+  .step.done .dot { background: var(--brand-2); border-color: var(--brand-2); color: #fff; }
+  .step.active, .step.done { color: var(--fg); font-weight: 600; }
+
+  main { padding: 4px 16px 16px; max-width: 640px; margin: 0 auto; }
+  .card { background: var(--surface); border-radius: var(--radius); padding: 14px; margin: 12px 0; box-shadow: 0 1px 2px rgb(0 0 0 / 6%); }
+  .card h2 { font-size: 16px; margin: 0 0 4px; color: var(--brand-2); }
+  .card h3 { font-size: 13px; margin: 14px 0 2px; color: var(--hint); text-transform: uppercase; letter-spacing: .4px; }
   .hint { color: var(--hint); font-size: 13px; }
-  .card { background: var(--card); border-radius: 12px; padding: 12px; margin: 12px 0; }
-  label.field { display: block; margin: 10px 0 4px; font-weight: 600; }
-  select, input, textarea {
-    width: 100%; padding: 10px; border-radius: 8px; border: 1px solid color-mix(in srgb, var(--hint) 40%, transparent);
-    background: var(--bg); color: var(--fg); font: inherit;
+  label.field { display: block; margin: 12px 0 4px; font-weight: 600; font-size: 14px; }
+  .req { color: var(--bad); }
+  select, input[type=text], textarea {
+    width: 100%; min-height: var(--tap); padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line);
+    background: var(--surface); color: var(--fg); font: inherit; font-size: 16px; /* 16px evita el zoom en iOS */
   }
-  textarea { min-height: 80px; resize: vertical; }
-  .section-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; cursor: pointer; }
-  .section-head .count { font-size: 12px; color: var(--hint); }
-  .section-body { margin-top: 8px; }
-  .item { padding: 8px 0; border-top: 1px solid color-mix(in srgb, var(--hint) 20%, transparent); }
-  .item:first-child { border-top: 0; }
-  .item .name { margin-bottom: 6px; }
-  .opts { display: flex; gap: 6px; flex-wrap: wrap; }
+  input[readonly], select:disabled { background: color-mix(in srgb, var(--hint) 10%, var(--surface)); color: var(--fg); opacity: 1; }
+  input.invalid { border-color: var(--bad); }
+  textarea { min-height: 110px; resize: vertical; }
+  .banner { display: flex; gap: 8px; align-items: flex-start; padding: 10px 12px; border-radius: 10px; font-size: 14px; margin-top: 12px; }
+  .banner.ok { background: color-mix(in srgb, var(--ok) 14%, transparent); color: var(--ok); }
+  .banner.warn { background: color-mix(in srgb, var(--warn) 16%, transparent); color: var(--warn); }
+  .banner.bad { background: color-mix(in srgb, var(--bad) 12%, transparent); color: var(--bad); }
+  .veh-list { display: grid; gap: 8px; }
+  .veh-card {
+    display: flex; gap: 12px; align-items: center; width: 100%; min-height: 64px; padding: 10px 12px; text-align: left;
+    border-radius: 12px; border: 2px solid var(--line); background: var(--surface); color: var(--fg); font: inherit;
+  }
+  .veh-card[aria-pressed="true"] { border-color: var(--brand-2); background: var(--brand-soft); }
+  .veh-card .ico { font-size: 26px; }
+  .veh-card strong { display: block; font-size: 16px; }
+  .veh-card .tag { margin-left: auto; font-size: 11px; font-weight: 700; color: var(--ok); background: color-mix(in srgb, var(--ok) 14%, transparent); padding: 3px 8px; border-radius: 999px; text-align: center; }
+  .veh-card .tag.propia { color: var(--brand-2); background: var(--brand-soft); }
+  .veh-card .tag.ocupado { color: var(--bad); background: color-mix(in srgb, var(--bad) 12%, transparent); }
+  .veh-card:disabled { opacity: .6; }
+  .veh-card .ocupado-por { display: block; font-size: 12px; color: var(--bad); }
+  .field-hint { font-size: 13px; color: var(--hint); margin-top: 4px; }
+  .field-hint.warn { color: var(--warn); font-weight: 600; }
+  .field-hint.bad { color: var(--bad); font-weight: 600; }
+  .grid2 .field-hint { font-size: 12px; }
+
+  /* Pestañas del paso 2: fijas arriba, un solo scroll (sin paneles con scroll interno). */
+  .tabs {
+    position: sticky; top: 0; z-index: 5; display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px;
+    margin: 8px -16px 0; padding: 8px 12px; background: var(--bg); border-bottom: 1px solid var(--line);
+  }
+  .tabs button {
+    min-height: var(--tap); border: 0; border-radius: 10px; background: var(--surface); color: var(--fg);
+    font: inherit; font-size: 12px; font-weight: 600; line-height: 1.15; padding: 4px 2px; position: relative;
+  }
+  .tabs button[aria-selected="true"] { background: var(--brand-2); color: #fff; }
+  .tabs .badge { display: block; font-size: 11px; font-weight: 500; opacity: .85; }
+  .toolbar { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .progress-pill { font-size: 13px; color: var(--hint); }
+  .item { padding: 10px 0; border-top: 1px solid var(--line); scroll-margin-top: 80px; }
+  .item:first-of-type { border-top: 0; }
+  .item .name { font-size: 15px; }
+  .item .crit { font-size: 12px; color: var(--hint); margin: 2px 0 8px; }
+  .item.missing .name { color: var(--bad); font-weight: 600; }
+  .item.flash { animation: flash 1.6s ease-out; }
+  @keyframes flash { 0%, 40% { background: color-mix(in srgb, var(--warn) 22%, transparent); } 100% { background: transparent; } }
+  label.check { display: flex; gap: 12px; align-items: flex-start; cursor: pointer; min-height: var(--tap); }
+  label.check input { flex: 0 0 26px; width: 26px; height: 26px; margin: 0; accent-color: var(--ok); }
+  label.check .crit { margin-bottom: 0; }
+  .opts { display: flex; gap: 6px; margin-top: 8px; }
   .opts button {
-    flex: 1 1 0; min-width: 70px; padding: 8px 6px; border-radius: 8px; border: 1px solid color-mix(in srgb, var(--hint) 40%, transparent);
-    background: var(--bg); color: var(--fg); font: inherit; font-size: 13px;
+    flex: 1 1 0; min-height: var(--tap); padding: 6px 4px; border-radius: 10px; border: 1px solid var(--line);
+    background: var(--surface); color: var(--fg); font: inherit; font-size: 14px;
   }
-  .opts button[aria-pressed="true"][data-v="conforme"], .opts button[aria-pressed="true"][data-v="si"], .opts button[aria-pressed="true"][data-v="s"] { background: var(--ok); color: #fff; border-color: var(--ok); }
-  .opts button[aria-pressed="true"][data-v="no conforme"], .opts button[aria-pressed="true"][data-v="no"], .opts button[aria-pressed="true"][data-v="n"] { background: var(--bad); color: #fff; border-color: var(--bad); }
-  .opts button[aria-pressed="true"][data-v="no aplica"] { background: var(--na); color: #fff; border-color: var(--na); }
-  .item.missing .name { color: var(--bad); }
-  .link { background: none; border: 0; color: var(--accent); font: inherit; font-size: 13px; padding: 0; }
-  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-  .grid2 label { font-size: 13px; color: var(--hint); }
-  .primary { display: block; width: 100%; padding: 14px; border: 0; border-radius: 10px; font-size: 16px; background: var(--accent); color: var(--accent-fg); }
-  #msg { white-space: pre-line; }
-  #msg.error { color: var(--bad); }
+  .opts button[aria-pressed="true"].v-good { background: var(--ok); border-color: var(--ok); color: #fff; }
+  .opts button[aria-pressed="true"].v-bad { background: var(--bad); border-color: var(--bad); color: #fff; }
+  .opts button[aria-pressed="true"].v-na { background: var(--na); border-color: var(--na); color: #fff; }
+  .opts button[aria-pressed="true"].v-info { background: var(--brand-2); border-color: var(--brand-2); color: #fff; }
+  .link { background: none; border: 0; color: var(--brand-2); font: inherit; font-size: 14px; font-weight: 600; padding: 10px 0; min-height: var(--tap); }
+
+  /* Llantas */
+  .tire { padding: 10px 0; border-top: 1px solid var(--line); }
+  .tire-title { font-weight: 600; font-size: 14px; }
+  .tire-title .hint { font-weight: 400; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 6px; }
+  .grid2 label { font-size: 12px; color: var(--hint); display: block; margin-bottom: 3px; }
+  .toggle-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 12px; }
+  .toggle-row .opts { margin: 0; flex: 0 0 150px; }
+
+  /* Foto */
+  .photo-zone {
+    display: grid; place-items: center; gap: 6px; min-height: 170px; border: 2px dashed color-mix(in srgb, var(--brand-2) 55%, transparent);
+    border-radius: var(--radius); background: var(--brand-soft); color: var(--brand-2); text-align: center; padding: 16px; cursor: pointer; margin-top: 10px;
+  }
+  .photo-zone .big { font-size: 38px; }
+  .photo-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; width: 100%; margin-top: 8px; }
+  .btn-photo {
+    min-height: var(--tap); border-radius: 10px; border: 1px solid var(--brand-2); background: var(--surface);
+    color: var(--brand-2); font: inherit; font-size: 14px; font-weight: 600; padding: 6px;
+  }
+  .photo-preview { width: 100%; max-height: 340px; object-fit: contain; border-radius: var(--radius); background: #000; margin-top: 10px; }
+
+  /* Resumen */
+  dl.summary { display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; margin: 8px 0 0; font-size: 14px; }
+  dl.summary dt { color: var(--hint); }
+  dl.summary dd { margin: 0; font-weight: 600; overflow-wrap: anywhere; }
+  .sum-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 10px; margin-top: 8px; }
+  @media (max-width: 360px) { .sum-grid { grid-template-columns: 1fr; } }
+  .sum-item {
+    display: flex; gap: 6px; align-items: flex-start; font-size: 13px; padding: 6px 4px; border: 0; background: none;
+    color: var(--fg); text-align: left; font: inherit; font-size: 13px; border-radius: 8px; min-height: 32px;
+  }
+  button.sum-item { cursor: pointer; }
+  button.sum-item:active { background: var(--brand-soft); }
+  .ic { flex: 0 0 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; font-weight: 700; color: #fff; }
+  .ic.ok { background: var(--ok); }
+  .ic.bad { background: var(--bad); }
+  .ic.na { background: none; color: var(--na); font-size: 10px; flex-basis: 26px; }
+  .ic.info { background: var(--brand-2); }
+  .ic.warn { background: var(--warn); }
+  table.tires { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 13px; }
+  table.tires th, table.tires td { padding: 6px 4px; text-align: center; border-bottom: 1px solid var(--line); }
+  table.tires th:first-child, table.tires td:first-child { text-align: left; }
+  table.tires td.bad { color: var(--bad); font-weight: 700; }
+  .thumb { width: 96px; height: 96px; object-fit: cover; border-radius: 10px; margin-top: 10px; }
+
+  /* Pie fijo */
+  footer.actions {
+    position: fixed; left: 0; right: 0; bottom: 0; display: flex; gap: 10px; z-index: 10;
+    padding: 12px 16px calc(12px + env(safe-area-inset-bottom)); background: var(--surface);
+    box-shadow: 0 -2px 10px rgb(0 0 0 / 8%);
+  }
+  footer.actions button { flex: 1; min-height: 50px; padding: 12px; border-radius: 12px; font: inherit; font-size: 16px; font-weight: 600; border: 0; }
+  .btn-primary { background: var(--brand-2); color: #fff; }
+  .btn-primary.finish { background: var(--ok); }
+  .btn-primary:disabled { opacity: .45; }
+  .btn-secondary { background: color-mix(in srgb, var(--hint) 16%, transparent); color: var(--fg); flex: 0 0 34% !important; }
+
+  #msg { white-space: pre-line; margin: 10px 0 0; }
+  #msg.error { color: var(--bad); font-weight: 600; }
+  .center { text-align: center; }
+  .state-icon { font-size: 52px; text-align: center; margin: 8px 0; }
+  #done-text, #blocked-text { white-space: pre-line; }
   [hidden] { display: none !important; }
 </style>
 </head>
 <body>
-<h1>📝 Inspección preoperacional</h1>
-<p id="msg" class="hint">Cargando…</p>
+<header class="brand">
+  <img src="/static/viacotur-logo.png" alt="VIACOTUR S.A. — Transporte especial y de carga">
+  <h1>Inspección Preoperacional</h1>
+</header>
 
-<form id="form" hidden novalidate>
-  <section class="card" id="header-card">
-    <div id="empleado" class="hint"></div>
-    <label class="field" for="vehiculo">Vehículo</label>
-    <input id="vehiculo-buscar" type="search" placeholder="Buscar por número interno, placa o nombre" autocomplete="off">
-    <select id="vehiculo" required></select>
-    <div id="odometro-hint" class="hint"></div>
+<nav class="stepper" id="stepper" aria-label="Progreso" hidden>
+  <div class="bar" id="bar"></div>
+  <div class="step" data-n="1"><div class="dot">1</div>Información</div>
+  <div class="step" data-n="2"><div class="dot">2</div>Verificación</div>
+  <div class="step" data-n="3"><div class="dot">3</div>Evidencia</div>
+  <div class="step" data-n="4"><div class="dot">4</div>Resumen</div>
+</nav>
 
-    <label class="field" for="extracto">Extracto (opcional)</label>
-    <select id="extracto"></select>
+<main>
+  <p id="msg" class="hint center">Cargando…</p>
 
-    <label class="field" for="contrato">Contrato (opcional)</label>
-    <select id="contrato"></select>
-
-    <label class="field" for="km">Kilometraje actual</label>
-    <input id="km" type="number" inputmode="decimal" min="0" step="0.1" required>
+  <!-- Paso 1: Información General -->
+  <section data-step="1" hidden>
+    <div class="card">
+      <h2>Información General</h2>
+      <label class="field" for="conductor">Conductor</label>
+      <input id="conductor" type="text" readonly>
+      <label class="field" for="responsable">Responsable jefe</label>
+      <input id="responsable" type="text" readonly>
+      <div class="banner ok">✔ <span>Conductor validado con extractos aprobados</span></div>
+    </div>
+    <div class="card">
+      <h2>Contrato y vehículo</h2>
+      <label class="field" for="contrato">Contrato <span class="req">*</span></label>
+      <select id="contrato"></select>
+      <div id="veh-box" hidden>
+        <label class="field">Vehículo <span class="req">*</span></label>
+        <div class="hint">Vehículos de tus extractos aprobados para este contrato.</div>
+        <div class="veh-list" id="veh-list" style="margin-top:8px"></div>
+      </div>
+      <div id="veh-datos" hidden>
+        <label class="field" for="numero-interno">Número interno del vehículo</label>
+        <input id="numero-interno" type="text" readonly>
+        <label class="field" for="km">Odómetro actual (km) <span class="req">*</span></label>
+        <input id="km" type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="off" enterkeyhint="done">
+        <div class="field-hint" id="km-hint"></div>
+      </div>
+    </div>
   </section>
 
-  <div id="sections"></div>
-
-  <section class="card">
-    <div class="section-head" data-toggle="medidas"><h2>Labrado y presión de llantas</h2><span class="count">opcional</span></div>
-    <div class="section-body" id="medidas" hidden><div class="grid2" id="measures"></div></div>
+  <!-- Paso 2: Verificación de Elementos (pestañas) -->
+  <section data-step="2" hidden>
+    <div class="tabs" id="tabs" role="tablist"></div>
+    <div class="card">
+      <div class="toolbar">
+        <span class="progress-pill" id="tab-count"></span>
+        <button type="button" class="link" id="tab-conforme">✔ Marcar pestaña conforme</button>
+      </div>
+      <div class="hint">Marca cada ítem. Lo que quede sin marcar o «No conforme» aparecerá como alerta en el resumen.
+        Los ítems con <span class="req">*</span> (Conforme / No conforme / No aplica) son obligatorios para continuar.</div>
+      <div id="req-pending" class="banner bad" hidden></div>
+    </div>
+    <div id="tab-panels"></div>
   </section>
 
-  <section class="card">
-    <label class="field" for="observaciones">Observaciones</label>
-    <textarea id="observaciones" maxlength="2000"></textarea>
+  <!-- Paso 3: Observaciones y Evidencia Fotográfica -->
+  <section data-step="3" hidden>
+    <div class="card">
+      <h2>Observaciones y estado final</h2>
+      <textarea id="observaciones" maxlength="2000" placeholder="Ingrese cualquier observación adicional sobre el estado del vehículo…"></textarea>
+    </div>
+    <div class="card">
+      <h2>Imagen de testigos</h2>
+      <div class="hint">Foto del tablero con el vehículo encendido, donde se vean los testigos (luces de advertencia).</div>
+      <!-- Dos entradas: con "capture" abre la cámara; sin él, la galería del celular. -->
+      <input id="foto-camara" type="file" accept="image/*" capture="environment" hidden>
+      <input id="foto-galeria" type="file" accept="image/*" hidden>
+      <div class="photo-zone" id="foto-zone">
+        <span class="big">📷</span><strong>+ Agregar foto</strong><span class="hint">Se comprime antes de enviarla</span>
+        <div class="photo-actions">
+          <button type="button" class="btn-photo" data-pick="foto-camara">📷 Tomar foto</button>
+          <button type="button" class="btn-photo" data-pick="foto-galeria">🖼️ Elegir de la galería</button>
+        </div>
+      </div>
+      <img id="foto-preview" class="photo-preview" alt="Foto de testigos" hidden>
+      <div class="photo-actions" id="foto-cambiar" hidden>
+        <button type="button" class="btn-photo" data-pick="foto-camara">📷 Tomar otra</button>
+        <button type="button" class="btn-photo" data-pick="foto-galeria">🖼️ Cambiar de la galería</button>
+      </div>
+    </div>
   </section>
 
-  <button class="primary" id="enviar" type="submit">Enviar preoperacional</button>
-</form>
+  <!-- Paso 4: Resumen de la Inspección -->
+  <section data-step="4" hidden>
+    <div id="alerts-box" class="banner warn" hidden>⚠️ <span id="alerts-text"></span></div>
+    <div id="alerts-ok" class="banner ok" hidden>✔ <span>Sin alertas: todos los ítems están conformes.</span></div>
+    <div class="card">
+      <h2>Información General</h2>
+      <dl class="summary" id="summary"></dl>
+    </div>
+    <div class="card" id="sum-obs-card" hidden>
+      <h2>Observaciones</h2>
+      <p id="sum-obs" style="white-space: pre-line; margin: 4px 0 0;"></p>
+    </div>
+    <div id="summary-sections"></div>
+    <div class="card">
+      <h2>Labrado y presión</h2>
+      <table class="tires"><thead><tr><th>Llanta</th><th>Labrado (mm)</th><th>Presión (PSI)</th></tr></thead><tbody id="sum-tires"></tbody></table>
+    </div>
+    <div class="card">
+      <h2>Imagen testigo</h2>
+      <button type="button" class="sum-item" id="sum-foto"></button>
+      <img id="foto-thumb" class="thumb" alt="Foto de testigos" hidden>
+    </div>
+  </section>
 
-<section id="done" class="card" hidden>
-  <h2 id="done-title"></h2>
-  <p id="done-text" class="hint"></p>
-  <button class="primary" id="cerrar" type="button">Cerrar</button>
-</section>
+  <!-- Bloqueo (sin empleado o sin extracto aprobado) -->
+  <section id="blocked" class="card" hidden>
+    <div class="state-icon">🚫</div>
+    <h2 class="center" id="blocked-title"></h2>
+    <p class="hint center" id="blocked-text"></p>
+  </section>
+
+  <!-- Enviado -->
+  <section id="done" class="card" hidden>
+    <div class="state-icon">✅</div>
+    <h2 class="center" id="done-title"></h2>
+    <p class="hint center" id="done-text"></p>
+  </section>
+</main>
+
+<footer class="actions" id="actions" hidden>
+  <button type="button" class="btn-secondary" id="prev">← Atrás</button>
+  <button type="button" class="btn-primary" id="next">Siguiente →</button>
+</footer>
 
 <script>
 (() => {
@@ -105,17 +324,34 @@
     for (const [k, v] of Object.entries(props)) {
       if (k === "text") n.textContent = v;
       else if (k === "dataset") Object.assign(n.dataset, v);
+      else if (k === "class") n.className = v;
       else n.setAttribute(k, v);
     }
     for (const c of children) n.append(c);
     return n;
   };
 
-  const state = { form: null, ctx: null, answers: {}, uuid: null, sending: false };
+  const STEPS = 4;
+  const PHOTO_MAX_SIDE = 1600;
+  const OPTION_LABEL = { "conforme": "Conforme", "no conforme": "No conforme", "no aplica": "No aplica", "si": "Sí", "no": "No" };
+  const OPTION_CLASS = { "conforme": "v-good", "no conforme": "v-bad", "no aplica": "v-na" };
+  // Casilla: marcada = conforme; sin marcar = no conforme (así llega a Odoo). Radio: sin elegir = vacío.
+  const CASILLA = "casilla";
+
+  const state = {
+    step: 1, tab: 0, form: null, ctx: null, extracto: null, answers: {}, foto: null, uuid: null,
+    internas: false, sending: false, finished: false, dirty: false,
+  };
 
   function setMsg(text, isError = false) {
     $("msg").textContent = text;
-    $("msg").className = isError ? "error" : "hint";
+    $("msg").className = isError ? "error" : "hint center";
+    $("msg").hidden = !text;
+  }
+
+  function markDirty() {
+    if (!state.dirty && tg && tg.enableClosingConfirmation) tg.enableClosingConfirmation();
+    state.dirty = true;
   }
 
   function newUuid() {
@@ -132,219 +368,647 @@
       headers: { "Content-Type": "application/json", "X-Telegram-Init-Data": tg ? tg.initData : "", ...(options.headers || {}) },
     });
     let body = null;
-    try { body = await res.json(); } catch (_) { /* respuesta sin JSON */ }
+    try { body = await res.json(); } catch (_) { /* sin JSON */ }
     if (!res.ok) {
       let detail = body && body.detail;
       if (Array.isArray(detail)) detail = detail.map((d) => d.msg).join("\n");
-      throw new Error(detail || `Error ${res.status}`);
+      const err = new Error(detail || `Error ${res.status}`);
+      err.status = res.status;
+      throw err;
     }
     return body;
   }
 
-  // ── encabezado ───────────────────────────────────────────────────────────
-  function fillVehiculos(filter = "") {
-    const sel = $("vehiculo");
-    const current = sel.value;
-    const f = filter.trim().toLowerCase();
-    sel.replaceChildren(el("option", { value: "", text: "— Selecciona —" }));
-    for (const v of state.ctx.vehiculos) {
-      const label = [v.numero_interno, v.matricula, v.nombre].filter(Boolean).join(" · ");
-      if (f && !label.toLowerCase().includes(f)) continue;
-      sel.append(el("option", { value: String(v.id), text: label }));
-    }
-    sel.value = current;
+  function confirmAsync(text) {
+    return new Promise((resolve) => {
+      if (tg && tg.showConfirm) tg.showConfirm(text, (ok) => resolve(Boolean(ok)));
+      else resolve(window.confirm(text));
+    });
   }
 
-  function selectedVehiculo() {
-    return state.ctx.vehiculos.find((v) => String(v.id) === $("vehiculo").value) || null;
-  }
+  const fmtNum = (n) => Number(n).toLocaleString("es-CO");
+  // Acepta coma o punto decimal (teclados en español) y devuelve NaN si está vacío.
+  const parseNum = (text) => (String(text).trim() === "" ? NaN : Number(String(text).trim().replace(",", ".")));
 
-  function fillExtractos() {
-    const v = selectedVehiculo();
-    const sel = $("extracto");
-    sel.replaceChildren(el("option", { value: "", text: "— Sin extracto —" }));
-    if (!v) return fillContratos();
-    const items = state.ctx.extractos.filter((e) => e.vehiculo_odoo_id === v.odoo_id);
-    for (const e of items) {
-      const fecha = e.fecha_hora_inicio ? new Date(e.fecha_hora_inicio).toLocaleString() : "";
-      sel.append(el("option", { value: String(e.id), text: [e.codigo, fecha, e.conductor].filter(Boolean).join(" · ") }));
+  // ── Paso 1: Información General ───────────────────────────────────────────
+  // Contrato (unión de los contratos de los extractos aprobados) → vehículos de los
+  // extractos que incluyen ese contrato → número interno y último odómetro.
+  function contratosDisponibles() {
+    const map = new Map();
+    for (const e of state.ctx.extractos) {
+      for (const c of e.contratos) if (!map.has(c.id_contrato)) map.set(c.id_contrato, c);
     }
-    if (items.length === 1) sel.value = String(items[0].id);
-    $("odometro-hint").textContent = v.odometer_post ? `Último odómetro registrado: ${v.odometer_post}` : "";
-    fillContratos();
+    return [...map.values()];
   }
 
   function fillContratos() {
+    const contratos = contratosDisponibles();
     const sel = $("contrato");
-    sel.replaceChildren(el("option", { value: "", text: "— Automático —" }));
-    const ext = state.ctx.extractos.find((e) => String(e.id) === $("extracto").value);
-    const seen = new Set();
-    for (const c of [...(ext ? ext.contratos : []), ...state.ctx.empleado.contratos]) {
-      if (seen.has(c.id_contrato)) continue;
-      seen.add(c.id_contrato);
-      sel.append(el("option", { value: String(c.id_contrato), text: c.nombre || `Contrato ${c.id_contrato}` }));
-    }
+    sel.replaceChildren();
+    if (contratos.length !== 1) sel.append(el("option", { value: "", text: contratos.length ? "Selecciona un contrato…" : "Sin contrato asociado" }));
+    for (const c of contratos) sel.append(el("option", { value: String(c.id_contrato), text: c.nombre || `Contrato ${c.id_contrato}` }));
+    sel.disabled = contratos.length <= 1;
+    if (contratos.length === 1) sel.value = String(contratos[0].id_contrato);
+    onContrato();
   }
 
-  // ── checklist ────────────────────────────────────────────────────────────
-  const OPTION_LABEL = { "conforme": "Conforme", "no conforme": "No conforme", "no aplica": "N/A", "si": "Sí", "no": "No", "s": "Sí", "n": "No" };
+  const contratoId = () => ($("contrato").value ? Number($("contrato").value) : null);
+
+  function extractosDelContrato() {
+    const id = contratoId();
+    if (id === null) return contratosDisponibles().length ? [] : state.ctx.extractos;
+    return state.ctx.extractos.filter((e) => e.contratos.some((c) => c.id_contrato === id));
+  }
+
+  // Reserva del vehículo durante la jornada: si otro conductor lo tiene (no ha tocado
+  // 🔴 Finalizar), la tarjeta aparece bloqueada; el servidor también lo valida.
+  const reservaDe = (e) => (e.vehiculo.reserva && e.vehiculo.reserva.estado) || "disponible";
+  const seleccionable = (e) => !BLOQUEADO.includes(reservaDe(e));
+  // ocupado: lo tiene otro conductor; otro_propio: este conductor ya tiene otro vehículo reservado.
+  const BLOQUEADO = ["ocupado", "otro_propio"];
+  const TAG = { disponible: "DISPONIBLE", propia: "RESERVADO POR TI", ocupado: "NO DISPONIBLE", otro_propio: "NO DISPONIBLE" };
+
+  function onContrato() {
+    const opciones = extractosDelContrato();
+    if (state.extracto && (!opciones.includes(state.extracto) || !seleccionable(state.extracto))) state.extracto = null;
+    const libres = opciones.filter(seleccionable);
+    if (libres.length === 1) state.extracto = libres[0];
+    const list = $("veh-list");
+    list.replaceChildren(...opciones.map((e) => {
+      const v = e.vehiculo;
+      const estado = reservaDe(e);
+      const info = el("span", {}, [
+        el("strong", { text: v.matricula || v.nombre || "Vehículo" }),
+        el("span", { class: "hint", text: [v.nombre, v.numero_interno && `N.º interno ${v.numero_interno}`, e.codigo].filter(Boolean).join(" · ") }),
+      ]);
+      if (estado === "ocupado") {
+        info.append(el("span", { class: "ocupado-por", text: `En uso por ${v.reserva.conductor || "otro conductor"} (no ha finalizado su jornada)` }));
+      } else if (estado === "otro_propio") {
+        info.append(el("span", { class: "ocupado-por", text: `Ya tienes reservado ${v.reserva.placa_propia}. Toca 🔴 Finalizar para cambiar de vehículo.` }));
+      }
+      const bloqueado = BLOQUEADO.includes(estado);
+      const card = el("button", { type: "button", class: "veh-card", "aria-pressed": String(e === state.extracto) }, [
+        el("span", { class: "ico", text: "🚌" }), info,
+        el("span", { class: `tag ${bloqueado ? "ocupado" : estado}`, text: TAG[estado] || TAG.disponible }),
+      ]);
+      if (bloqueado) card.disabled = true;
+      else card.addEventListener("click", () => { markDirty(); state.extracto = e; onContrato(); });
+      return card;
+    }));
+    $("veh-box").hidden = opciones.length === 0;
+    onVehiculo();
+  }
+
+  function onVehiculo() {
+    const v = state.extracto ? state.extracto.vehiculo : null;
+    $("veh-datos").hidden = !v;
+    $("numero-interno").value = (v && v.numero_interno) || "—";
+    const last = lastOdometer();
+    $("km").placeholder = last ? `Último registrado: ${fmtNum(last)} km` : "Ej. 125430";
+    refreshTireHints();
+    onKm();
+  }
+
+  function lastOdometer() {
+    const v = state.extracto && state.extracto.vehiculo;
+    return v && v.odometer_post ? Number(v.odometer_post) : null;
+  }
+
+  // El odómetro debe ser mayor o igual al último registrado en Odoo (Pos-Operacional).
+  function odometerTooLow() {
+    const km = parseNum($("km").value), last = lastOdometer();
+    return Boolean(last && Number.isFinite(km) && km < last);
+  }
+
+  function onKm() {
+    const input = $("km");
+    const digits = input.value.replace(/\D/g, "");
+    if (digits !== input.value) input.value = digits;
+    const last = lastOdometer();
+    const low = odometerTooLow();
+    const hint = $("km-hint");
+    hint.textContent = low
+      ? `Debe ser mayor o igual al último odómetro registrado (${fmtNum(last)} km).`
+      : last ? `El último odómetro registrado fue ${fmtNum(last)} km.` : "";
+    hint.classList.toggle("bad", low);
+    input.classList.toggle("invalid", low);
+    refreshNext();
+  }
+
+  function step1Errors() {
+    const errors = [];
+    if (contratosDisponibles().length && !contratoId()) errors.push("Selecciona el contrato.");
+    else if (!state.extracto) errors.push("Selecciona el vehículo.");
+    else if (!state.extracto.vehiculo.id) errors.push("El vehículo aún no está sincronizado. Intenta en unos minutos.");
+    if (!Number.isFinite(parseNum($("km").value))) errors.push("Ingresa el odómetro actual.");
+    else if (odometerTooLow()) errors.push(`El odómetro debe ser mayor o igual a ${fmtNum(lastOdometer())} km.`);
+    return errors;
+  }
+
+  // ── Paso 2: Verificación de Elementos ─────────────────────────────────────
+  const allItems = () => state.form.sections.flatMap((s) => s.items);
+  const tabItems = (t) => state.form.tabs[t].sections.flatMap((s) => s.items);
+  const isAlert = (item) => !state.answers[item.key] || state.answers[item.key] === "no conforme";
 
   function setAnswer(key, value) {
-    state.answers[key] = value;
+    if (value) state.answers[key] = value; else delete state.answers[key];
+    markDirty();
     document.querySelectorAll(`[data-item="${CSS.escape(key)}"] button`).forEach((b) => {
       b.setAttribute("aria-pressed", String(b.dataset.v === value));
     });
+    const box = document.querySelector(`input[data-check="${CSS.escape(key)}"]`);
+    if (box) box.checked = value === "conforme";
     const row = document.querySelector(`.item[data-row="${CSS.escape(key)}"]`);
     if (row) row.classList.remove("missing");
     updateCounts();
   }
 
-  function updateCounts() {
-    for (const s of state.form.sections) {
-      const done = s.items.filter((i) => state.answers[i.key]).length;
-      const node = document.querySelector(`[data-count="${CSS.escape(s.title)}"]`);
-      if (node) node.textContent = `${done}/${s.items.length}`;
+  function markAllPositive(items) {
+    for (const i of items) setAnswer(i.key, "conforme");
+    setMsg("");
+  }
+
+  function checkRow(item, tabIndex) {
+    const box = el("input", { type: "checkbox", dataset: { check: item.key } });
+    box.addEventListener("change", () => setAnswer(item.key, box.checked ? "conforme" : null));
+    const text = el("span", {}, [el("div", { class: "name", text: item.label })]);
+    if (item.criterio) text.append(el("div", { class: "crit", text: `No conforme si: ${item.criterio}` }));
+    return el("div", { class: "item", dataset: { row: item.key, tabOf: String(tabIndex) } }, [el("label", { class: "check" }, [box, text])]);
+  }
+
+  function radioRow(item, tabIndex) {
+    const name = el("div", { class: "name", text: item.label });
+    if (item.obligatorio) name.append(el("span", { class: "req", text: " *" }));
+    const row = el("div", { class: "item", dataset: { row: item.key, tabOf: String(tabIndex) } }, [name]);
+    if (item.criterio) row.append(el("div", { class: "crit", text: `No conforme si: ${item.criterio}` }));
+    row.append(optionButtons(item));
+    return row;
+  }
+
+  function optionButtons(item) {
+    const opts = el("div", { class: "opts", dataset: { item: item.key } });
+    for (const o of item.options) {
+      const b = el("button", {
+        type: "button", "aria-pressed": "false", class: OPTION_CLASS[o] || "v-good",
+        text: OPTION_LABEL[o] || o, dataset: { v: o },
+      });
+      b.addEventListener("click", () => setAnswer(item.key, o));
+      opts.append(b);
+    }
+    return opts;
+  }
+
+  function numberInput(key, label, decimal, max) {
+    const input = el("input", {
+      id: `m-${key}`, type: "text", inputmode: decimal ? "decimal" : "numeric", autocomplete: "off",
+      placeholder: decimal ? "0.0" : "0", enterkeyhint: "next", dataset: { measure: key, label, max: String(max) },
+    });
+    input.addEventListener("input", () => { markDirty(); validateMeasure(input); refreshTireHints(); });
+    return el("div", {}, [el("label", { for: input.id, text: label }), input, el("div", { class: "field-hint", dataset: { hintFor: key } })]);
+  }
+
+  function tireBlock(ll) {
+    return el("div", { class: "tire", dataset: { tire: ll.codigo, interna: String(ll.interna) } }, [
+      el("div", { class: "tire-title" }, [ll.nombre, el("span", { class: "hint", text: ` · ${ll.posicion}` })]),
+      el("div", { class: "grid2" }, [
+        numberInput(ll.labrado, "Labrado (mm)", true, measureMax(ll.labrado)),
+        numberInput(ll.presion, "Presión de aire (PSI)", false, measureMax(ll.presion)),
+      ]),
+    ]);
+  }
+
+  const measureMax = (key) => state.form.measures.find((m) => m.key === key).max;
+
+  // Mínimo de labrado: el del acuerdo (contrato) según el tipo de vehículo; si el
+  // acuerdo no lo define, el de Odoo (1,6 mm; 2,0 mm en llantas internas).
+  function minimoLabrado(ll) {
+    const c = state.extracto && state.extracto.contratos.find((x) => x.id_contrato === contratoId());
+    return (c && c.labrado_minimo) || ll.labrado_minimo;
+  }
+
+  function refreshTireHints() {
+    if (!state.form) return;
+    for (const ll of state.form.llantas) {
+      const input = $(`m-${ll.labrado}`);
+      const hint = document.querySelector(`[data-hint-for="${CSS.escape(ll.labrado)}"]`);
+      if (!input || !hint) continue;
+      const v = parseNum(input.value), min = minimoLabrado(ll);
+      const low = Number.isFinite(v) && v > 0 && v < min;
+      hint.textContent = low ? `⚠ Bajo el mínimo (${fmtNum(min)} mm)` : `Mínimo ${fmtNum(min)} mm`;
+      hint.classList.toggle("warn", low);
     }
   }
 
-  function renderSections() {
-    const root = $("sections");
-    root.replaceChildren();
-    state.form.sections.forEach((s, idx) => {
-      const bodyId = `sec-${idx}`;
-      const allOk = el("button", { type: "button", class: "link", text: "Marcar todo conforme" });
-      allOk.addEventListener("click", () => s.items.forEach((i) => i.options.includes("conforme") && setAnswer(i.key, "conforme")));
-      const body = el("div", { class: "section-body", id: bodyId }, [allOk]);
-      for (const item of s.items) {
-        const opts = el("div", { class: "opts", dataset: { item: item.key } });
-        for (const o of item.options) {
-          const b = el("button", { type: "button", "aria-pressed": "false", text: OPTION_LABEL[o] || o, dataset: { v: o } });
-          b.addEventListener("click", () => setAnswer(item.key, o));
-          opts.append(b);
-        }
-        body.append(el("div", { class: "item", dataset: { row: item.key } }, [el("div", { class: "name", text: item.label }), opts]));
-      }
-      const head = el("div", { class: "section-head", dataset: { toggle: bodyId } }, [
-        el("h2", { text: s.title }), el("span", { class: "count", dataset: { count: s.title } }),
+  function tiresCard() {
+    const normales = state.form.llantas.filter((l) => !l.interna && l.codigo !== "R");
+    const internas = state.form.llantas.filter((l) => l.interna);
+    const repuesto = state.form.llantas.filter((l) => l.codigo === "R");
+    const toggle = el("div", { class: "opts", dataset: { item: "_internas" } }, ["si", "no"].map((v) => {
+      const b = el("button", { type: "button", "aria-pressed": String(v === "no"), class: "v-info", text: OPTION_LABEL[v], dataset: { v } });
+      b.addEventListener("click", () => setInternas(v === "si"));
+      return b;
+    }));
+    return el("div", { class: "card" }, [
+      el("h2", { text: "Labrado y presión de llantas" }),
+      ...normales.map(tireBlock),
+      el("div", { class: "banner warn toggle-row" }, [el("span", { text: "¿El vehículo tiene llantas internas?" }), toggle]),
+      el("div", { id: "internas" }, internas.map(tireBlock)),
+      ...repuesto.map(tireBlock),
+    ]);
+  }
+
+  function setInternas(on, byUser = true) {
+    state.internas = on;
+    if (byUser) markDirty();
+    document.querySelectorAll('[data-item="_internas"] button').forEach((b) => b.setAttribute("aria-pressed", String((b.dataset.v === "si") === on)));
+    $("internas").hidden = !on;
+  }
+
+  function renderTabs() {
+    const bar = $("tabs");
+    const panels = $("tab-panels");
+    bar.replaceChildren();
+    panels.replaceChildren();
+    state.form.tabs.forEach((tab, t) => {
+      const btn = el("button", { type: "button", role: "tab", "aria-selected": "false", dataset: { tab: String(t) } }, [
+        tab.title, el("span", { class: "badge", dataset: { tabBadge: String(t) } }),
       ]);
-      root.append(el("section", { class: "card" }, [head, body]));
+      btn.addEventListener("click", () => showTab(t));
+      bar.append(btn);
+      const panel = el("div", { role: "tabpanel", dataset: { panel: String(t) } });
+      for (const s of tab.sections) {
+        const card = el("div", { class: "card" }, [el("h2", { text: s.title })]);
+        for (const item of s.items) card.append(item.control === CASILLA ? checkRow(item, t) : radioRow(item, t));
+        panel.append(card);
+      }
+      if (tab.title === "Rines/Llantas") panel.append(tiresCard());
+      panels.append(panel);
     });
+    setInternas(false, false);
     updateCounts();
   }
 
-  function renderMeasures() {
-    const root = $("measures");
-    root.replaceChildren();
-    for (const m of state.form.measures) {
-      const id = `m-${m.key}`;
-      root.append(el("div", {}, [
-        el("label", { for: id, text: `${m.label} (${m.unit})` }),
-        el("input", { id, type: "number", inputmode: "decimal", min: "0", max: String(m.max), step: "0.1", dataset: { measure: m.key } }),
-      ]));
-    }
+  function showTab(t) {
+    state.tab = t;
+    document.querySelectorAll("[data-tab]").forEach((b) => b.setAttribute("aria-selected", String(Number(b.dataset.tab) === t)));
+    document.querySelectorAll("[data-panel]").forEach((p) => { p.hidden = Number(p.dataset.panel) !== t; });
+    updateCounts();
+    setMsg("");
+    window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
-  document.addEventListener("click", (ev) => {
-    const head = ev.target.closest("[data-toggle]");
-    if (!head || ev.target.closest("button")) return;
-    const body = document.getElementById(head.dataset.toggle);
-    if (body) body.hidden = !body.hidden;
-  });
-
-  // ── envío ────────────────────────────────────────────────────────────────
-  function collect() {
-    const errors = [];
-    const vehiculo = selectedVehiculo();
-    if (!vehiculo) errors.push("Selecciona el vehículo.");
-    const km = parseFloat($("km").value);
-    if (!Number.isFinite(km) || km < 0) errors.push("Ingresa el kilometraje actual.");
-    const missing = [];
-    for (const s of state.form.sections) for (const i of s.items) if (!state.answers[i.key]) missing.push(i);
-    document.querySelectorAll(".item.missing").forEach((n) => n.classList.remove("missing"));
-    for (const i of missing) {
-      const row = document.querySelector(`.item[data-row="${CSS.escape(i.key)}"]`);
-      if (row) { row.classList.add("missing"); row.parentElement.hidden = false; }
-    }
-    if (missing.length) errors.push(`Faltan ${missing.length} ítem(s) por responder (marcados en rojo).`);
-    const llantas = {};
-    document.querySelectorAll("[data-measure]").forEach((input) => {
-      if (input.value === "") return;
-      const n = parseFloat(input.value);
-      if (Number.isFinite(n)) llantas[input.dataset.measure] = n;
+  function updateCounts() {
+    if (!state.form) return;
+    state.form.tabs.forEach((_, t) => {
+      const items = tabItems(t);
+      const n = items.filter((i) => state.answers[i.key]).length;
+      const badge = document.querySelector(`[data-tab-badge="${t}"]`);
+      if (badge) badge.textContent = `${n}/${items.length}`;
     });
-    if (errors.length) return { errors };
-    const extracto = $("extracto").value ? Number($("extracto").value) : null;
-    const contrato = $("contrato").value ? Number($("contrato").value) : null;
-    return {
-      payload: {
-        uuid: state.uuid, vehiculo_id: vehiculo.id, extracto_id: extracto, contrato_odoo_id: contrato,
-        kilometraje: km, observaciones: $("observaciones").value.trim() || null,
-        checklist: { ...state.answers }, llantas, extra: {},
-      },
-    };
+    const items = tabItems(state.tab);
+    const n = items.filter((i) => state.answers[i.key]).length;
+    $("tab-count").textContent = `${n} de ${items.length} ítems marcados`;
+    refreshNext();
   }
 
-  async function submit(ev) {
-    ev.preventDefault();
-    if (state.sending) return;
-    const { errors, payload } = collect();
-    if (errors) { setMsg(errors.join("\n"), true); window.scrollTo({ top: 0, behavior: "smooth" }); return; }
-    state.sending = true;
-    $("enviar").disabled = true;
-    setMsg("Enviando…");
+  function validateMeasure(input) {
+    const n = parseNum(input.value);
+    const bad = input.value.trim() !== "" && (!Number.isFinite(n) || n < 0 || n > Number(input.dataset.max));
+    input.classList.toggle("invalid", bad);
+    return !bad;
+  }
+
+  function visibleMeasureInputs() {
+    return [...document.querySelectorAll("[data-measure]")].filter((i) => state.internas || i.closest('[data-interna="true"]') === null);
+  }
+
+  function collectMeasures() {
+    const llantas = {};
+    const errors = [];
+    for (const input of visibleMeasureInputs()) {
+      if (input.value.trim() === "") continue;
+      if (!validateMeasure(input)) errors.push(`${input.dataset.label} (${input.id.slice(2)}): valor fuera de rango (0–${input.dataset.max}).`);
+      else llantas[input.dataset.measure] = parseNum(input.value);
+    }
+    return { llantas, errors };
+  }
+
+  // Se puede continuar con casillas sin marcar, pero los ítems de 3 opciones son obligatorios.
+  const pendientesObligatorios = () => allItems().filter((i) => i.obligatorio && !state.answers[i.key]);
+  const lastTab = () => state.tab === state.form.tabs.length - 1;
+
+  function step2Errors() {
+    const faltan = pendientesObligatorios();
+    const errors = faltan.length ? [`Responde los ítems obligatorios: ${faltan.map((i) => i.label).join(", ")}.`] : [];
+    return errors.concat(collectMeasures().errors);
+  }
+
+  function renderPending() {
+    const box = $("req-pending");
+    const faltan = pendientesObligatorios();
+    box.hidden = state.step !== 2 || faltan.length === 0;
+    if (box.hidden) return;
+    const tabTitle = (i) => state.form.tabs[Number(document.querySelector(`.item[data-row="${CSS.escape(i.key)}"]`).dataset.tabOf)].title;
+    box.replaceChildren(el("span", {}, [
+      `Para continuar a Evidencia faltan ${faltan.length} obligatorio(s): `,
+      ...faltan.flatMap((i, n) => {
+        const b = el("button", { type: "button", class: "link", style: "padding:0;min-height:0;display:inline;text-align:left", text: `${i.label} (${tabTitle(i)})` });
+        b.addEventListener("click", () => jumpToItem(i.key));
+        return n ? [", ", b] : [b];
+      }),
+    ]));
+  }
+
+  function jumpToItem(key) {
+    const row = document.querySelector(`.item[data-row="${CSS.escape(key)}"]`);
+    if (!row) return;
+    goTo(2);
+    showTab(Number(row.dataset.tabOf));
+    if (!state.answers[key]) row.classList.add("missing");
+    setTimeout(() => {
+      row.scrollIntoView({ behavior: "smooth", block: "center" });
+      row.classList.remove("flash"); void row.offsetWidth; row.classList.add("flash");
+    }, 80);
+  }
+
+  // ── Paso 3: foto de testigos ─────────────────────────────────────────────
+  function loadImage(file) {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
+      img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("No se pudo leer la imagen. Intenta de nuevo.")); };
+      img.src = url;
+    });
+  }
+
+  async function compress(file) {
+    const img = await loadImage(file);
+    const scale = Math.min(1, PHOTO_MAX_SIDE / Math.max(img.naturalWidth, img.naturalHeight));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(img.naturalWidth * scale);
+    canvas.height = Math.round(img.naturalHeight * scale);
+    canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+    let data = canvas.toDataURL("image/jpeg", 0.8);
+    if (data.length > 1_400_000) data = canvas.toDataURL("image/jpeg", 0.6);
+    return data;
+  }
+
+  async function onPhoto(ev) {
+    const file = ev.target.files && ev.target.files[0];
+    ev.target.value = "";
+    if (!file) return;
+    setMsg("Procesando foto…");
     try {
-      // El mismo uuid en un reintento evita duplicados (idempotencia del servidor).
+      state.foto = await compress(file);
+      markDirty();
+      $("foto-preview").src = state.foto;
+      $("foto-preview").hidden = false;
+      $("foto-cambiar").hidden = false;
+      $("foto-zone").hidden = true;
+      setMsg("");
+    } catch (err) {
+      setMsg(err.message, true);
+    }
+  }
+
+  // ── Paso 4: Resumen de la Inspección ─────────────────────────────────────
+  function summaryIcon(item) {
+    const v = state.answers[item.key];
+    if (v === "conforme") return el("span", { class: "ic ok", text: "✓" });
+    if (v === "no aplica") return el("span", { class: "ic na", text: "N/A" });
+    return el("span", { class: "ic bad", text: "!" });
+  }
+
+  function alerts() {
+    // Casilla sin marcar = no conforme; radio sin elegir = sin responder.
+    const noConformes = allItems().filter((i) => state.answers[i.key] === "no conforme" || (i.control === CASILLA && !state.answers[i.key]));
+    const sinResponder = allItems().filter((i) => i.control !== CASILLA && !state.answers[i.key]);
+    const medidas = collectMeasures().llantas;
+    const llantasBajas = state.form.llantas.filter((ll) => {
+      const v = medidas[ll.labrado];
+      return (state.internas || !ll.interna) && v > 0 && v < minimoLabrado(ll);
+    });
+    return { sinResponder, noConformes, llantasBajas, sinFoto: !state.foto };
+  }
+
+  function renderSummary() {
+    const e = state.extracto, v = e.vehiculo;
+    const contratoSel = $("contrato");
+    const contrato = contratoSel.value ? contratoSel.options[contratoSel.selectedIndex].text : "—";
+    const rows = [
+      ["Conductor", state.ctx.empleado.nombre],
+      ["Contrato", contrato],
+      ["Responsable jefe", state.ctx.empleado.responsable || "—"],
+      ["Vehículo", [v.nombre, v.matricula].filter(Boolean).join(" · ")],
+      ["Número interno", v.numero_interno || "—"],
+      ["Odómetro", `${fmtNum(parseNum($("km").value))} km`],
+    ];
+    if (e.codigo) rows.splice(1, 0, ["Extracto", e.codigo]);
+    $("summary").replaceChildren(...rows.flatMap(([k, val]) => [el("dt", { text: k }), el("dd", { text: val })]));
+
+    const cards = state.form.sections.map((s) => el("div", { class: "card" }, [
+      el("h2", { text: s.title }),
+      el("div", { class: "sum-grid" }, s.items.map((item) => {
+        const alert = isAlert(item);
+        const node = el(alert ? "button" : "div", alert ? { type: "button", class: "sum-item" } : { class: "sum-item" },
+          [summaryIcon(item), el("span", { text: item.label })]);
+        if (alert) node.addEventListener("click", () => jumpToItem(item.key));
+        return node;
+      })),
+    ]));
+    $("summary-sections").replaceChildren(...cards);
+
+    const medidas = collectMeasures().llantas;
+    const llantas = state.form.llantas.filter((ll) => state.internas || !ll.interna);
+    $("sum-tires").replaceChildren(...llantas.map((ll) => {
+      const lab = medidas[ll.labrado], pre = medidas[ll.presion];
+      const low = lab > 0 && lab < minimoLabrado(ll);
+      return el("tr", {}, [
+        el("td", { text: ll.codigo === "R" ? "Repuesto" : `L${ll.codigo}` }),
+        el("td", { class: low ? "bad" : "", text: lab === undefined ? "-" : `${fmtNum(lab)}${low ? " ⚠" : ""}` }),
+        el("td", { text: pre === undefined ? "-" : fmtNum(pre) }),
+      ]);
+    }));
+
+    const foto = $("sum-foto");
+    foto.replaceChildren(el("span", { class: state.foto ? "ic ok" : "ic warn", text: state.foto ? "✓" : "!" }),
+      el("span", { text: `Imagen subida: ${state.foto ? 1 : 0}/1` }));
+    $("foto-thumb").hidden = !state.foto;
+    if (state.foto) $("foto-thumb").src = state.foto;
+
+    const obs = $("observaciones").value.trim();
+    $("sum-obs-card").hidden = !obs;
+    $("sum-obs").textContent = obs;
+
+    const a = alerts();
+    const parts = [
+      a.noConformes.length && `${a.noConformes.length} no conforme(s) o sin marcar`,
+      a.sinResponder.length && `${a.sinResponder.length} sin responder`,
+      a.llantasBajas.length && `${a.llantasBajas.length} llanta(s) con labrado bajo el mínimo`,
+      a.sinFoto && "falta la imagen de testigos",
+    ].filter(Boolean);
+    $("alerts-box").hidden = parts.length === 0;
+    $("alerts-ok").hidden = parts.length > 0;
+    $("alerts-text").textContent = `Alertas: ${parts.join(", ")}. Toca un ítem con ⚠ para corregirlo. Puedes enviar de todos modos.`;
+  }
+
+  // ── Navegación ───────────────────────────────────────────────────────────
+  const VALIDATORS = { 1: step1Errors, 2: step2Errors, 3: () => [], 4: () => [] };
+
+  function refreshNext() {
+    if (state.finished) return;
+    if (state.step === 1) $("next").disabled = step1Errors().length > 0;
+    // En Verificación, "Siguiente" recorre las pestañas; desde la última solo pasa a
+    // Evidencia cuando los ítems obligatorios están respondidos.
+    else if (state.step === 2) $("next").disabled = lastTab() && step2Errors().length > 0;
+    else $("next").disabled = state.sending;
+    renderPending();
+  }
+
+  function goTo(n) {
+    state.step = n;
+    document.querySelectorAll("section[data-step]").forEach((s) => { s.hidden = Number(s.dataset.step) !== n; });
+    document.querySelectorAll(".step").forEach((s) => {
+      const k = Number(s.dataset.n);
+      s.classList.toggle("active", k === n);
+      s.classList.toggle("done", k < n);
+    });
+    $("bar").style.width = `${((n - 1) / (STEPS - 1)) * 75}%`;
+    $("prev").hidden = n === 1;
+    $("next").textContent = n === STEPS ? "Completar inspección" : "Siguiente →";
+    $("next").classList.toggle("finish", n === STEPS);
+    if (tg && tg.BackButton) { if (n > 1) tg.BackButton.show(); else tg.BackButton.hide(); }
+    if (n === 2) showTab(state.tab);
+    if (n === STEPS) renderSummary();
+    setMsg("");
+    refreshNext();
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  async function next() {
+    if (state.finished) { tg.close(); return; }
+    // En el paso 2, "Siguiente" recorre las pestañas antes de pasar a la evidencia.
+    if (state.step === 2 && !lastTab()) { showTab(state.tab + 1); return; }
+    const errors = VALIDATORS[state.step]();
+    if (errors.length) {
+      setMsg(errors.join("\n"), true);
+      if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("error");
+      return;
+    }
+    if (state.step < STEPS) { goTo(state.step + 1); return; }
+    const a = alerts();
+    const total = a.noConformes.length + a.sinResponder.length + a.llantasBajas.length + (a.sinFoto ? 1 : 0);
+    if (total && !(await confirmAsync(`La inspección tiene ${total} alerta(s). ¿Deseas enviarla de todos modos?`))) return;
+    await submit();
+  }
+
+  function prev() {
+    if (state.finished) return;
+    if (state.step === 2 && state.tab > 0) { showTab(state.tab - 1); return; }
+    if (state.step > 1) goTo(state.step - 1);
+  }
+
+  // ── Envío ────────────────────────────────────────────────────────────────
+  async function submit() {
+    if (state.sending) return;
+    state.sending = true;
+    $("next").disabled = true;
+    $("next").textContent = "Enviando…";
+    const payload = {
+      uuid: state.uuid,
+      extracto_id: state.extracto.id,
+      vehiculo_id: state.extracto.vehiculo.id,
+      contrato_odoo_id: $("contrato").value ? Number($("contrato").value) : null,
+      kilometraje: parseNum($("km").value),
+      observaciones: $("observaciones").value.trim() || null,
+      checklist: Object.fromEntries(allItems().filter((i) => state.answers[i.key] || i.control === CASILLA)
+        .map((i) => [i.key, state.answers[i.key] || "no conforme"])),
+      llantas: collectMeasures().llantas,
+      extra: { llantas_internas: state.internas },
+      testigos_img: state.foto,
+    };
+    try {
+      // Reintentar con el mismo uuid no duplica (idempotencia del servidor).
       const out = await api("/api/preop", { method: "POST", body: JSON.stringify(payload) });
       showDone(out);
     } catch (err) {
       setMsg(`No se pudo enviar: ${err.message}\nPuedes reintentar: no se duplicará.`, true);
-      $("enviar").disabled = false;
-    } finally {
+      $("next").textContent = "Reintentar envío";
       state.sending = false;
+      $("next").disabled = false;
     }
   }
 
   function showDone(out) {
-    $("form").hidden = true;
-    $("done").hidden = false;
+    state.finished = true;
+    if (tg && tg.disableClosingConfirmation) tg.disableClosingConfirmation();
+    if (tg && tg.BackButton) tg.BackButton.hide();
+    document.querySelectorAll("section[data-step]").forEach((s) => { s.hidden = true; });
+    $("stepper").hidden = true;
+    $("prev").hidden = true;
+    $("next").textContent = "Cerrar";
+    $("next").classList.remove("finish");
+    $("next").disabled = false;
     setMsg("");
-    $("done-title").textContent = out.duplicado ? "Este formulario ya había sido recibido" : "✅ Preoperacional recibido";
-    const nc = out.no_conformes ? `\n⚠️ ${out.no_conformes} ítem(s) no conforme(s).` : "";
+    $("done").hidden = false;
+    $("done-title").textContent = out.duplicado ? "Este formulario ya había sido recibido" : "Preoperacional recibido";
+    const nc = out.no_conformes ? ` Se registraron ${out.no_conformes} ítem(s) no conforme(s).` : "";
     $("done-text").textContent =
-      `Se está registrando en Odoo. Te llegará la confirmación en el chat del bot.${nc}`;
+      `Se está registrando en Odoo y te llegará la confirmación en el chat.${nc}\n\n` +
+      "📍 Regresa al chat y toca «Enviar ubicación» en los próximos 10 minutos para asociar tu ubicación.\n\n" +
+      "🔒 El vehículo quedó reservado a tu nombre por 24 horas. Al terminar tu jornada toca «🔴 Finalizar» en el chat para liberarlo.";
     if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
   }
 
-  // ── arranque ─────────────────────────────────────────────────────────────
+  function block(title, text) {
+    $("blocked").hidden = false;
+    $("blocked-title").textContent = title;
+    $("blocked-text").textContent = text;
+    setMsg("");
+  }
+
+  // ── Arranque ─────────────────────────────────────────────────────────────
   async function init() {
     if (!tg || !tg.initData) {
-      setMsg("Abre este formulario desde el botón «📝 Preoperacional» del bot en Telegram.", true);
+      block("Abre el formulario desde Telegram", "Usa el botón «📋 Formularios» del bot y elige «✅ Preoperacional».");
       return;
     }
     tg.ready();
     tg.expand();
+    if (tg.setHeaderColor) { try { tg.setHeaderColor("#ffffff"); } catch (_) { /* versión antigua */ } }
     try {
       const [form, ctx] = await Promise.all([api("/api/preop/form"), api("/api/preop/context")]);
       state.form = form;
       state.ctx = ctx;
     } catch (err) {
-      setMsg(err.message, true);
+      if (err.status === 403) block("Usuario no registrado", `${err.message}.\nPide a Recursos Humanos que lo registre.`);
+      else block("No se pudo cargar el formulario", err.message);
+      return;
+    }
+    if (!state.ctx.validado) {
+      block("Sin extracto aprobado",
+        "No tienes un extracto aprobado y vigente como conductor.\nPide a tu responsable que apruebe tu extracto y vuelve a abrir el formulario.");
       return;
     }
     state.uuid = newUuid();
-    const e = state.ctx.empleado;
-    $("empleado").textContent = `👤 ${e.nombre}${e.puesto_trabajo ? " · " + e.puesto_trabajo : ""}`;
-    fillVehiculos();
-    fillExtractos();
-    renderSections();
-    renderMeasures();
-    $("vehiculo-buscar").addEventListener("input", (ev) => fillVehiculos(ev.target.value));
-    $("vehiculo").addEventListener("change", fillExtractos);
-    $("extracto").addEventListener("change", fillContratos);
-    $("form").addEventListener("submit", submit);
-    $("cerrar").addEventListener("click", () => tg.close());
-    $("form").hidden = false;
-    setMsg(state.ctx.vehiculos.length ? "Responde todos los ítems y envía." : "No hay vehículos sincronizados para tu compañía.", !state.ctx.vehiculos.length);
+    $("conductor").value = state.ctx.empleado.nombre;
+    $("responsable").value = state.ctx.empleado.responsable || "—";
+    renderTabs();
+    fillContratos();
+    $("contrato").addEventListener("change", () => { markDirty(); onContrato(); });
+    $("km").addEventListener("input", () => { markDirty(); onKm(); });
+    $("observaciones").addEventListener("input", markDirty);
+    $("tab-conforme").addEventListener("click", () => markAllPositive(tabItems(state.tab)));
+    for (const id of ["foto-camara", "foto-galeria"]) $(id).addEventListener("change", onPhoto);
+    document.querySelectorAll("[data-pick]").forEach((b) => b.addEventListener("click", () => $(b.dataset.pick).click()));
+    $("sum-foto").addEventListener("click", () => { if (!state.foto) goTo(3); });
+    $("next").addEventListener("click", next);
+    $("prev").addEventListener("click", prev);
+    if (tg.BackButton) tg.BackButton.onClick(prev);
+    $("stepper").hidden = false;
+    $("actions").hidden = false;
+    goTo(1);
   }
 
   init();
