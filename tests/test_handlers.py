@@ -66,13 +66,14 @@ def test_non_qr_text_points_to_scanner_button():
     assert "Escanear QR" in upd.message.reply_text.await_args.args[0]
 
 
-def test_main_keyboard_formularios_scanner_location():
+def test_main_keyboard_only_formularios_and_location_collapsible():
     kb = tga.main_keyboard()
-    assert [[b.text for b in row] for row in kb.keyboard] == [
-        [tga.BTN_FORMULARIOS], [tga.BTN_ESCANEAR], [tga.BTN_UBICACION], [tga.BTN_FINALIZAR]]
+    assert [[b.text for b in row] for row in kb.keyboard] == [[tga.BTN_FORMULARIOS], [tga.BTN_UBICACION]]
     # Botones de texto: las Mini Apps se abren con botones inline (initData).
     assert all(b.web_app is None for row in kb.keyboard for b in row)
-    assert kb.keyboard[2][0].request_location is True
+    assert kb.keyboard[1][0].request_location is True
+    # No persistente: Telegram lo pliega detrás de su botón de teclado (toggle-reply-markup).
+    assert kb.is_persistent is False
 
 
 def test_start_shows_welcome_and_keyboard():
@@ -89,8 +90,11 @@ def test_formularios_lists_preoperacional_first():
     call = upd.message.reply_text.await_args
     assert call.args[0] == "📂 Formularios disponibles:"
     rows = call.kwargs["reply_markup"].inline_keyboard
-    assert rows[0][0].text == tga.BTN_PREOP
+    # Formularios -> Preoperacional -> Escanear QR -> Finalizar.
+    assert [row[0].text for row in rows] == [tga.BTN_PREOP, tga.BTN_ESCANEAR, tga.BTN_FINALIZAR]
     assert rows[0][0].web_app.url == "https://scan.example.com/preoperacional"
+    assert rows[1][0].web_app.url == "https://scan.example.com/scanner"
+    assert rows[2][0].web_app is None and rows[2][0].callback_data == tga.CB_FINALIZAR_PEDIR
 
 
 def test_scanner_button_opens_scanner():
@@ -185,3 +189,21 @@ def test_finalizar_cancel_returns_to_forms_panel(monkeypatch):
     call = upd.callback_query.edit_message_text.await_args
     assert call.args[0] == "📂 Formularios disponibles:"
     assert call.kwargs["reply_markup"].inline_keyboard[0][0].text == tga.BTN_PREOP
+
+
+def test_finalizar_from_forms_panel_asks_confirmation():
+    ctx = _ctx(_services())
+    upd = _callback(tga.CB_FINALIZAR_PEDIR)
+    asyncio.run(tga.on_finalizar_confirm(upd, ctx))
+    call = upd.callback_query.edit_message_text.await_args
+    assert call.args[0] == tga.FINALIZAR_PREGUNTA
+    assert [b.callback_data for b in call.kwargs["reply_markup"].inline_keyboard[0]] == [
+        tga.CB_FINALIZAR_SI, tga.CB_FINALIZAR_NO]
+
+
+def test_finalizar_from_forms_panel_requires_authorization():
+    ctx = _ctx(_services(pin_ok=False))
+    upd = _callback(tga.CB_FINALIZAR_PEDIR, user_id=111)
+    asyncio.run(tga.on_finalizar_confirm(upd, ctx))
+    assert upd.callback_query.answer.await_args.kwargs["show_alert"] is True
+    upd.callback_query.edit_message_text.assert_not_awaited()

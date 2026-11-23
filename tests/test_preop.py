@@ -914,6 +914,18 @@ def test_api_serves_logo(api):
     assert response.status_code == 200 and response.content.startswith(b"\x89PNG")
 
 
+def test_page_is_not_cached_and_logo_url_is_versioned(api):
+    client, _ = api
+    import hashlib
+    import re
+
+    page = client.get("/preoperacional")
+    assert page.headers["cache-control"] == "no-cache"
+    [version] = re.findall(r'src="/static/viacotur-logo\.png\?v=([0-9a-f]{12})"', page.text)
+    logo = client.get(f"/static/viacotur-logo.png?v={version}")
+    assert logo.status_code == 200 and hashlib.sha256(logo.content).hexdigest()[:12] == version
+
+
 def test_api_submit_accepts_and_wakes_worker(api, seeded):
     client, woke = api
     vehiculo, extracto = _ids(seeded)
