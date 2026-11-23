@@ -17,7 +17,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from .checklist import CHECKLIST, CHECKLIST_BY_KEY, MEASURES_BY_KEY, completar_casillas
+from .checklist import CHECKLIST, CHECKLIST_BY_KEY, MEASURES_BY_KEY, OBLIGATORIOS, completar_casillas
 
 # ─────────────────────────────── Normalización de la API ───────────────────────────────
 
@@ -273,6 +273,10 @@ class PreoperacionalIn(BaseModel):
         unknown = set(value) - _KNOWN_ITEMS
         if unknown:
             raise ValueError(f"Ítems desconocidos: {', '.join(sorted(unknown))}")
+        # Los ítems con "No aplica" (3 opciones) deben tener una respuesta.
+        faltan = [item.label for item in CHECKLIST if item.key in OBLIGATORIOS and not value.get(item.key)]
+        if faltan:
+            raise ValueError(f"Responde: {', '.join(faltan)}")
         for key, option in value.items():
             if option not in CHECKLIST_BY_KEY[key].options:
                 raise ValueError(f"Valor inválido para {key}: {option!r}")

@@ -11,7 +11,7 @@ import logging
 import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, Callable
 
 from sqlalchemy import and_, or_, select, update
 from sqlalchemy.exc import IntegrityError
@@ -122,7 +122,20 @@ def minimo_acuerdo(session: Session, contrato_odoo_id: int | None, tipo_vehiculo
     return labrado_minimo_acuerdo(tipo_vehiculo, acuerdo.labrado_camioneta, acuerdo.labrado_buses)
 
 
-def form_context(db: Database, empleado: Empleado, now: datetime | None = None) -> dict[str, Any]:
+# Lector del último odómetro en Odoo (``OdooWriter.ultimo_odometro``): id de Odoo del vehículo -> km.
+OdometroReader = Callable[[int], "float | None"]
+
+
+def ultimo_odometro(vehiculo: Flota, odometro: OdometroReader | None) -> float | None:
+    """Último odómetro registrado: en vivo desde Odoo; si no responde, el sincronizado por la API."""
+    valor = odometro(vehiculo.odoo_id) if odometro is not None else None
+    if valor is None and vehiculo.odometer_post and vehiculo.odometer_post > 0:
+        valor = float(vehiculo.odometer_post)
+    return valor
+
+
+def form_context(db: Database, empleado: Empleado, now: datetime | None = None,
+                 odometro: OdometroReader | None = None) -> dict[str, Any]:
     """Datos del paso 1 de la Mini App: conductor, responsable y extractos aprobados con su vehículo.
 
     La Mini App muestra la unión de los contratos y, al elegir uno, los vehículos de los
@@ -150,7 +163,8 @@ def form_context(db: Database, empleado: Empleado, now: datetime | None = None) 
                     "nombre": v.nombre if v else e.vehiculo,
                     "matricula": v.matricula if v else None,
                     "numero_interno": v.numero_interno if v else None,
-                    "odometer_post": v.odometer_post if v else None,
+                    # Sugerencia "Último registrado" (fleet.vehicle.odometer_post en Odoo).
+                    "odometer_post": ultimo_odometro(v, odometro) if v else None,
                 },
             })
     return {
@@ -165,7 +179,8 @@ def form_context(db: Database, empleado: Empleado, now: datetime | None = None) 
 
 # ───────────────────────────────────── recepción ──────────────────────────────────────
 
-def submit(db: Database, identity: TelegramIdentity, data: PreoperacionalIn) -> tuple[Preoperacional, bool]:
+def submit(db: Database, identity: TelegramIdentity, data: PreoperacionalIn,
+           odometro: OdometroReader | None = None) -> tuple[Preoperacional, bool]:
     """Guarda el formulario como ``pendiente``. Devuelve (registro, era_duplicado).
 
     Idempotente por ``uuid``: un reenvío (doble toque, red inestable) devuelve el original.
@@ -203,7 +218,7 @@ def submit(db: Database, identity: TelegramIdentity, data: PreoperacionalIn) -> 
         if contrato is None and len(permitidos) > 1:
             raise SubmissionError("Selecciona el contrato")
 
-        ultimo = vehiculo.odometer_post
+        ultimo = ultimo_odometro(vehiculo, odometro)
         if ultimo is not None and data.kilometraje < ultimo:
             raise SubmissionError(
                 f"El odómetro ({data.kilometraje:,.0f} km) debe ser mayor o igual al último registrado "

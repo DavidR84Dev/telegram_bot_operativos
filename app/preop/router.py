@@ -45,6 +45,8 @@ class PreopServices:
     bot_token: str
     max_age_seconds: int
     wake_worker: Any = None  # callable sin argumentos: despierta el worker tras un envío
+    # Lee el último odómetro del vehículo en Odoo (id de Odoo -> km | None). None = solo datos locales.
+    odometro: Any = None
 
 
 def _services(request: Request) -> PreopServices:
@@ -101,7 +103,7 @@ async def preop_context(request: Request, identity: Identity) -> dict[str, Any]:
             status.HTTP_403_FORBIDDEN,
             f"Tu ID de Telegram ({identity.user_id}) no está registrado como PIN de un empleado activo",
         )
-    return await asyncio.to_thread(service.form_context, svc.db, empleado)
+    return await asyncio.to_thread(service.form_context, svc.db, empleado, None, svc.odometro)
 
 
 def _out(preop: Preoperacional, duplicated: bool = False) -> PreoperacionalOut:
@@ -116,7 +118,7 @@ async def preop_submit(body: PreoperacionalIn, request: Request, identity: Ident
     """Guarda y responde de inmediato (202). El envío a Odoo lo hace el worker en segundo plano."""
     svc = _services(request)
     try:
-        preop, duplicated = await asyncio.to_thread(service.submit, svc.db, identity, body)
+        preop, duplicated = await asyncio.to_thread(service.submit, svc.db, identity, body, svc.odometro)
     except service.SubmissionError as exc:
         raise HTTPException(exc.status_code, str(exc)) from exc
     if not duplicated and svc.wake_worker is not None:

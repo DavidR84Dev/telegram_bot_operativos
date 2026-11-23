@@ -152,13 +152,19 @@ def test_extracto_maps_nested_vehicle_and_client_mobile():
 
 
 def test_preop_input_unchecked_box_is_no_conforme_and_unanswered_radio_is_empty():
+    obligatorios = {"pico_pala": "no aplica", "eslingas": "conforme", "cables_de_arranque": "conforme",
+                    "camaras": "conforme", "barra": "conforme", "extintor_2": "no aplica"}
     # Se permite enviar con ítems sin marcar (decisión del 2026-11-23); solo se alertan.
-    checklist = _payload(1, 1, checklist={"soat": "conforme"}).checklist
+    checklist = _payload(1, 1, checklist={"soat": "conforme", **obligatorios}).checklist
     assert checklist["soat"] == "conforme"
     assert checklist["licencia_conduccion"] == NO_CONFORME  # casilla sin marcar
-    assert "pico_pala" not in checklist and "camaras" not in checklist  # radios sin elegir
+    assert checklist["testigos"] == NO_CONFORME  # testigos ahora es casilla
+    assert "chaleco_reflectivo" not in checklist  # radio de 2 opciones sin elegir
+    # Los radios con "No aplica" son obligatorios.
+    with pytest.raises(ValueError, match="Responde: Pico y pala"):
+        _payload(1, 1, checklist={k: v for k, v in obligatorios.items() if k != "pico_pala"})
     with pytest.raises(ValueError, match="Valor inválido"):
-        _payload(1, 1, checklist={"soat": "no aplica"})  # una casilla no tiene "no aplica"
+        _payload(1, 1, checklist={**obligatorios, "soat": "no aplica"})  # una casilla no tiene "no aplica"
     with pytest.raises(ValueError, match="Ítems desconocidos"):
         _payload(1, 1, checklist={"no_existe": "conforme"})
     bad = {item.key: item.options[0] for item in CHECKLIST} | {"soat": "regular"}
@@ -188,7 +194,9 @@ def test_form_definition_lists_every_item():
     # Controles como el formulario de referencia.
     radios = {k for k, i in items.items() if i["control"] == "radio"}
     assert radios == {"chaleco_reflectivo", "pico_pala", "eslingas", "kit_derrames", "cables_de_arranque",
-                      "camaras", "barra", "testigos", "extintor_2"}
+                      "camaras", "barra", "extintor_2"}
+    assert items["testigos"]["control"] == "casilla"
+    assert {k for k, i in items.items() if i["obligatorio"]} == radios - {"chaleco_reflectivo", "kit_derrames"}
     assert items["camaras"]["options"] == ["conforme", "no conforme", "no aplica"]
     assert "camaras_new" not in items and "llanta_rep_pre_act" not in items
 
@@ -418,7 +426,7 @@ def test_photo_is_stored_and_sent_as_testigos_img(seeded):
 
 def test_submit_without_photo_and_with_unanswered_items(seeded):
     vehiculo, extracto = _ids(seeded)
-    parcial = {item.key: item.options[0] for item in CHECKLIST if item.key not in {"soat", "pico_pala"}}
+    parcial = {item.key: item.options[0] for item in CHECKLIST if item.key not in {"soat", "chaleco_reflectivo"}}
     preop, _ = service.submit(seeded, IDENTITY, _payload(
         vehiculo, extracto, checklist=parcial, testigos_img=None, observaciones="Rayón en puerta"))
     with seeded.session() as s:
@@ -427,7 +435,7 @@ def test_submit_without_photo_and_with_unanswered_items(seeded):
     writer = FakeWriter([(78, "PRE-0078", False)])
     service.send_one(seeded, writer, preop.id, 8)
     vals = writer.calls[0][1]
-    assert "testigos_img" not in vals and "pico_pala" not in vals
+    assert "testigos_img" not in vals and "chaleco_reflectivo" not in vals
     assert vals["soat"] == NO_CONFORME  # casilla sin marcar
     assert vals["observaciones"] == "Rayón en puerta"
 
@@ -441,6 +449,50 @@ def test_odometer_below_last_registered_is_rejected(seeded):
     # Varios preoperacionales del mismo conductor son válidos.
     otro, dup = service.submit(seeded, IDENTITY, _payload(vehiculo, extracto, uuid=UUID.replace("0b", "1c", 1)))
     assert not dup and otro.id != preop.id
+
+
+def test_odometer_is_read_live_from_odoo_with_local_fallback(seeded):
+    vehiculo, extracto = _ids(seeded)
+    with seeded.session() as s:
+        empleado = s.scalar(select(Empleado).where(Empleado.odoo_id == 100))
+    leidos: list[int] = []
+
+    def odoo(vehicle_odoo_id: int) -> float | None:
+        leidos.append(vehicle_odoo_id)
+        return 20000.0
+
+    [ext] = service.form_context(seeded, empleado, odometro=odoo)["extractos"]
+    assert ext["vehiculo"]["odometer_post"] == 20000.0 and leidos == [10]
+    with pytest.raises(service.SubmissionError, match="20.000"):
+        service.submit(seeded, IDENTITY, _payload(vehiculo, extracto, kilometraje=19999), odometro=odoo)
+    # Odoo no responde: se usa el valor sincronizado (1500.5).
+    [ext] = service.form_context(seeded, empleado, odometro=lambda _id: None)["extractos"]
+    assert ext["vehiculo"]["odometer_post"] == 1500.5
+
+
+@pytest.mark.parametrize("post, pos, esperado", [(253600.0, [], 253600.0), (0.0, [{"km_end": 12000.0}], 12000.0),
+                                                 (0.0, [], None)])
+def test_writer_last_odometer_uses_odometer_post_then_last_pos(post, pos, esperado):
+    writer = OdooWriter("http://odoo.local", "db", "u", "p")
+    calls = []
+
+    def fake_execute(model, method, args, kwargs=None):
+        calls.append(model)
+        return [{"odometer_post": post}] if model == "fleet.vehicle" else pos
+
+    writer._execute = fake_execute  # type: ignore[method-assign]
+    assert writer.ultimo_odometro(2051) == esperado
+    assert calls == (["fleet.vehicle"] if post else ["fleet.vehicle", "pos.operacional"])
+
+
+def test_writer_last_odometer_returns_none_when_odoo_fails():
+    writer = OdooWriter("http://odoo.local", "db", "u", "p")
+
+    def boom(*_a, **_k):
+        raise OdooTransientError("timeout")
+
+    writer._execute = boom  # type: ignore[method-assign]
+    assert writer.ultimo_odometro(2051) is None
 
 
 def _sync_acuerdo(db, tipo: str, camioneta: float, buses: float) -> None:

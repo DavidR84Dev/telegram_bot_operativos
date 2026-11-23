@@ -47,8 +47,9 @@ def _start_preop(app: FastAPI, application) -> list:
             except Exception:  # p. ej. el jefe nunca abrió el bot: Telegram no permite escribirle
                 logger.exception("No se pudo avisar al jefe (Telegram %s)", outcome.aviso_jefe.telegram_id)
 
+    writer = build_writer(settings)
     sender = PreopSender(
-        db, build_writer(settings), settings.preop_worker_interval_seconds, settings.preop_max_attempts,
+        db, writer, settings.preop_worker_interval_seconds, settings.preop_max_attempts,
         settings.preop_sending_lease_seconds, notify=notify,
     )
     sender.start()
@@ -58,6 +59,7 @@ def _start_preop(app: FastAPI, application) -> list:
     app.state.preop = PreopServices(
         db=db, bot_token=settings.telegram_bot_token.get_secret_value(),
         max_age_seconds=settings.preop_auth_max_age_seconds, wake_worker=sender.wake,
+        odometro=writer.ultimo_odometro,
     )
     if settings.master_sync_enabled:
         master = MasterSync(settings.master_sync_interval_seconds, lambda: run_from_settings(db))

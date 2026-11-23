@@ -168,6 +168,28 @@ class OdooWriter:
                 self._uid = None  # contraseña/API key cambiada: re-autenticar en el siguiente intento
             raise error from exc
 
+    # ── lectura auxiliar ───────────────────────────────────────────────────
+    def ultimo_odometro(self, vehicle_odoo_id: int) -> float | None:
+        """Último odómetro del vehículo según Odoo, para sugerirlo y validar el preoperacional.
+
+        Se lee ``fleet.vehicle.odometer_post`` (km_end del último Pos-Operacional). Ese campo
+        es calculado y almacenado sin ``@api.depends``, así que puede quedar en 0 aunque haya
+        Pos-Operacionales; en ese caso se aplica la misma regla que lo define: ``km_end`` del
+        último ``pos.operacional`` del vehículo. None si no hay ninguno o Odoo no responde.
+        """
+        try:
+            with self._lock:
+                rows = self._execute("fleet.vehicle", "read", [[vehicle_odoo_id]], {"fields": ["odometer_post"]})
+                valor = float(rows[0].get("odometer_post") or 0) if rows else 0.0
+                if valor <= 0:
+                    pos = self._execute("pos.operacional", "search_read", [[["vehicle_id", "=", vehicle_odoo_id]]],
+                                        {"fields": ["km_end"], "order": "id desc", "limit": 1})
+                    valor = float(pos[0].get("km_end") or 0) if pos else 0.0
+        except OdooWriteError as exc:
+            logger.warning("No se pudo leer el odómetro del vehículo %s en Odoo: %s", vehicle_odoo_id, exc)
+            return None
+        return valor if valor > 0 else None
+
     # ── idempotencia ───────────────────────────────────────────────────────
     @staticmethod
     def xmlid_name(external_ref: str) -> str:

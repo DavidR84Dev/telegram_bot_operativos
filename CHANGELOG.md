@@ -6,6 +6,12 @@ Versionado: [SemVer](https://semver.org/lang/es/) (`MAJOR.MINOR.PATCH`).
 ## [Sin publicar]
 
 ### Cambiado
+- **Preoperacional, ajustes del 2026-11-23 (tarde):**
+  - Sugerencia "Último registrado" del odómetro leída en vivo de `fleet.vehicle.odometer_post`; si está en 0 (campo sin `@api.depends`), `km_end` del último Pos-Operacional. La misma cifra valida el envío.
+  - "Testigos del tablero" pasa a casilla, como "Medidor de aire".
+  - Los ítems de 3 opciones (con "No aplica") son obligatorios: "Siguiente" no pasa a Evidencia sin ellos y el servidor los exige.
+  - Foto de testigos desde la cámara o la galería del celular.
+  - Observaciones visibles en el Resumen, debajo de la información general.
 - **Formulario Preoperacional reorganizado según el recorrido de `@viacoturform_bot` (2026-11-23, `docs/mapa_viacotur_form.md` §8–9):**
   - Catálogo (`app/preop/checklist.py`) con pestañas **Documentos · Rines/Llantas · Equipo · Vehículo**, el orden real de los ítems, el criterio de no conforme como dato y las llantas agrupadas por posición (5 y 6 solo con llantas internas). Mismos campos y opciones de Odoo que antes.
   - "Testigos del tablero" pasa a la pestaña Equipo; "Odómetro actual" y número interno visibles en el paso 1.
@@ -38,6 +44,12 @@ Versionado: [SemVer](https://semver.org/lang/es/) (`MAJOR.MINOR.PATCH`).
 - Dependencia `tenacity`.
 
 ### Cambiado
+- **Preoperacional, ajustes del 2026-11-23 (tarde):**
+  - Sugerencia "Último registrado" del odómetro leída en vivo de `fleet.vehicle.odometer_post`; si está en 0 (campo sin `@api.depends`), `km_end` del último Pos-Operacional. La misma cifra valida el envío.
+  - "Testigos del tablero" pasa a casilla, como "Medidor de aire".
+  - Los ítems de 3 opciones (con "No aplica") son obligatorios: "Siguiente" no pasa a Evidencia sin ellos y el servidor los exige.
+  - Foto de testigos desde la cámara o la galería del celular.
+  - Observaciones visibles en el Resumen, debajo de la información general.
 - El servicio pasa a responder como **@OperativosViacoturBot** (nuevo `TELEGRAM_BOT_TOKEN`), en lugar de @QRLectorBot, para que el nombre coincida con su función de bot operativo.
 - Menú principal de @QRLectorBot como registro ordenado (`MENU`): **📝 Preoperacional** primero y **📷 Escanear QR** después, una opción por fila; `/start` muestra los botones inline en el mismo orden. Nuevo comando `/escanear`.
 - `webapp_auth.validate_init_data_user()` devuelve el usuario completo de Telegram (`validate_init_data()` se mantiene igual).
@@ -61,6 +73,12 @@ Versionado: [SemVer](https://semver.org/lang/es/) (`MAJOR.MINOR.PATCH`).
 - `CHANGELOG.md` y política de versionado semántico (ver `CONTRIBUTING.md`).
 
 ### Cambiado
+- **Preoperacional, ajustes del 2026-11-23 (tarde):**
+  - Sugerencia "Último registrado" del odómetro leída en vivo de `fleet.vehicle.odometer_post`; si está en 0 (campo sin `@api.depends`), `km_end` del último Pos-Operacional. La misma cifra valida el envío.
+  - "Testigos del tablero" pasa a casilla, como "Medidor de aire".
+  - Los ítems de 3 opciones (con "No aplica") son obligatorios: "Siguiente" no pasa a Evidencia sin ellos y el servidor los exige.
+  - Foto de testigos desde la cámara o la galería del celular.
+  - Observaciones visibles en el Resumen, debajo de la información general.
 - Renombrado el proyecto: `telegram_qr_validator` → `telegram_bot_operativos`.
 - `Settings.db_path` → `Settings.database_url` (variable de entorno `DB_PATH` → `DATABASE_URL`). Por defecto sigue siendo SQLite (`sqlite:///run/watches.sqlite3`): no es un cambio disruptivo para quien ya corría el bot sin Docker, solo cambia el nombre de la variable.
 

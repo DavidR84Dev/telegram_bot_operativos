@@ -130,7 +130,7 @@ CHECKLIST: tuple[ChecklistItem, ...] = (
         ("cruceta", "Cruceta", _SIN_DANADO),
         ("profundimetro", "Profundímetro"),
         ("medidor_aire", "Medidor de aire"),
-        ("testigos", "Testigos del tablero", "Algún testigo de advertencia encendido", OPC_BASICA),
+        ("testigos", "Testigos del tablero", "Algún testigo de advertencia encendido"),
     ),
     *_items(TAB_VEHICULO, EXTINTORES,
         ("extintor_1", "Extintor N.º 1"),
@@ -227,6 +227,12 @@ def llantas_bajo_minimo(llantas: dict[str, float], minimo_acuerdo: float | None)
     ]
 
 
+# Radios con "No aplica": obligatorios para pasar a Evidencia (y validados en el servidor).
+OBLIGATORIOS: frozenset[str] = frozenset(
+    item.key for item in CHECKLIST if item.control == RADIO and NO_APLICA in item.options
+)
+
+
 def completar_casillas(checklist: dict[str, str]) -> dict[str, str]:
     """Una casilla sin marcar es "no conforme" (patrón del formulario de referencia)."""
     return {**{item.key: NO_CONFORME for item in CHECKLIST if item.control == CASILLA}, **checklist}
@@ -255,7 +261,7 @@ def form_definition() -> dict[str, object]:
         sec = sections.setdefault(item.section, {"title": item.section, "tab": item.tab, "items": []})
         sec["items"].append(  # type: ignore[attr-defined]
             {"key": item.key, "label": item.label, "criterio": item.criterio, "control": item.control,
-             "options": list(item.options)}
+             "options": list(item.options), "obligatorio": item.key in OBLIGATORIOS}
         )
     secciones = list(sections.values())
     return {

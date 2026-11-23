@@ -127,6 +127,11 @@
     border-radius: var(--radius); background: var(--brand-soft); color: var(--brand-2); text-align: center; padding: 16px; cursor: pointer; margin-top: 10px;
   }
   .photo-zone .big { font-size: 38px; }
+  .photo-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; width: 100%; margin-top: 8px; }
+  .btn-photo {
+    min-height: var(--tap); border-radius: 10px; border: 1px solid var(--brand-2); background: var(--surface);
+    color: var(--brand-2); font: inherit; font-size: 14px; font-weight: 600; padding: 6px;
+  }
   .photo-preview { width: 100%; max-height: 340px; object-fit: contain; border-radius: var(--radius); background: #000; margin-top: 10px; }
 
   /* Resumen */
@@ -227,7 +232,9 @@
         <span class="progress-pill" id="tab-count"></span>
         <button type="button" class="link" id="tab-conforme">✔ Marcar pestaña conforme</button>
       </div>
-      <div class="hint">Marca cada ítem. Lo que quede sin marcar o «No conforme» aparecerá como alerta en el resumen.</div>
+      <div class="hint">Marca cada ítem. Lo que quede sin marcar o «No conforme» aparecerá como alerta en el resumen.
+        Los ítems con <span class="req">*</span> (Conforme / No conforme / No aplica) son obligatorios para continuar.</div>
+      <div id="req-pending" class="banner bad" hidden></div>
     </div>
     <div id="tab-panels"></div>
   </section>
@@ -241,12 +248,21 @@
     <div class="card">
       <h2>Imagen de testigos</h2>
       <div class="hint">Foto del tablero con el vehículo encendido, donde se vean los testigos (luces de advertencia).</div>
-      <input id="foto-input" type="file" accept="image/*" capture="environment" hidden>
-      <div class="photo-zone" id="foto-zone" role="button" tabindex="0">
+      <!-- Dos entradas: con "capture" abre la cámara; sin él, la galería del celular. -->
+      <input id="foto-camara" type="file" accept="image/*" capture="environment" hidden>
+      <input id="foto-galeria" type="file" accept="image/*" hidden>
+      <div class="photo-zone" id="foto-zone">
         <span class="big">📷</span><strong>+ Agregar foto</strong><span class="hint">Se comprime antes de enviarla</span>
+        <div class="photo-actions">
+          <button type="button" class="btn-photo" data-pick="foto-camara">📷 Tomar foto</button>
+          <button type="button" class="btn-photo" data-pick="foto-galeria">🖼️ Elegir de la galería</button>
+        </div>
       </div>
       <img id="foto-preview" class="photo-preview" alt="Foto de testigos" hidden>
-      <button type="button" class="link" id="foto-cambiar" hidden>↺ Tomar otra foto</button>
+      <div class="photo-actions" id="foto-cambiar" hidden>
+        <button type="button" class="btn-photo" data-pick="foto-camara">📷 Tomar otra</button>
+        <button type="button" class="btn-photo" data-pick="foto-galeria">🖼️ Cambiar de la galería</button>
+      </div>
     </div>
   </section>
 
@@ -258,6 +274,10 @@
       <h2>Información General</h2>
       <dl class="summary" id="summary"></dl>
     </div>
+    <div class="card" id="sum-obs-card" hidden>
+      <h2>Observaciones</h2>
+      <p id="sum-obs" style="white-space: pre-line; margin: 4px 0 0;"></p>
+    </div>
     <div id="summary-sections"></div>
     <div class="card">
       <h2>Labrado y presión</h2>
@@ -267,10 +287,6 @@
       <h2>Imagen testigo</h2>
       <button type="button" class="sum-item" id="sum-foto"></button>
       <img id="foto-thumb" class="thumb" alt="Foto de testigos" hidden>
-    </div>
-    <div class="card" id="sum-obs-card" hidden>
-      <h2>Observaciones</h2>
-      <p id="sum-obs" style="white-space: pre-line; margin: 4px 0 0;"></p>
     </div>
   </section>
 
@@ -500,7 +516,9 @@
   }
 
   function radioRow(item, tabIndex) {
-    const row = el("div", { class: "item", dataset: { row: item.key, tabOf: String(tabIndex) } }, [el("div", { class: "name", text: item.label })]);
+    const name = el("div", { class: "name", text: item.label });
+    if (item.obligatorio) name.append(el("span", { class: "req", text: " *" }));
+    const row = el("div", { class: "item", dataset: { row: item.key, tabOf: String(tabIndex) } }, [name]);
     if (item.criterio) row.append(el("div", { class: "crit", text: `No conforme si: ${item.criterio}` }));
     row.append(optionButtons(item));
     return row;
@@ -654,8 +672,31 @@
     return { llantas, errors };
   }
 
-  // No se exige marcar todo (decisión del 2026-11-23): solo se bloquean medidas inválidas.
-  function step2Errors() { return collectMeasures().errors; }
+  // Se puede continuar con casillas sin marcar, pero los ítems de 3 opciones son obligatorios.
+  const pendientesObligatorios = () => allItems().filter((i) => i.obligatorio && !state.answers[i.key]);
+  const lastTab = () => state.tab === state.form.tabs.length - 1;
+
+  function step2Errors() {
+    const faltan = pendientesObligatorios();
+    const errors = faltan.length ? [`Responde los ítems obligatorios: ${faltan.map((i) => i.label).join(", ")}.`] : [];
+    return errors.concat(collectMeasures().errors);
+  }
+
+  function renderPending() {
+    const box = $("req-pending");
+    const faltan = pendientesObligatorios();
+    box.hidden = state.step !== 2 || faltan.length === 0;
+    if (box.hidden) return;
+    const tabTitle = (i) => state.form.tabs[Number(document.querySelector(`.item[data-row="${CSS.escape(i.key)}"]`).dataset.tabOf)].title;
+    box.replaceChildren(el("span", {}, [
+      `Para continuar a Evidencia faltan ${faltan.length} obligatorio(s): `,
+      ...faltan.flatMap((i, n) => {
+        const b = el("button", { type: "button", class: "link", style: "padding:0;min-height:0;display:inline;text-align:left", text: `${i.label} (${tabTitle(i)})` });
+        b.addEventListener("click", () => jumpToItem(i.key));
+        return n ? [", ", b] : [b];
+      }),
+    ]));
+  }
 
   function jumpToItem(key) {
     const row = document.querySelector(`.item[data-row="${CSS.escape(key)}"]`);
@@ -796,7 +837,12 @@
 
   function refreshNext() {
     if (state.finished) return;
-    $("next").disabled = state.step === 1 ? step1Errors().length > 0 : state.sending;
+    if (state.step === 1) $("next").disabled = step1Errors().length > 0;
+    // En Verificación, "Siguiente" recorre las pestañas; desde la última solo pasa a
+    // Evidencia cuando los ítems obligatorios están respondidos.
+    else if (state.step === 2) $("next").disabled = lastTab() && step2Errors().length > 0;
+    else $("next").disabled = state.sending;
+    renderPending();
   }
 
   function goTo(n) {
@@ -821,14 +867,14 @@
 
   async function next() {
     if (state.finished) { tg.close(); return; }
+    // En el paso 2, "Siguiente" recorre las pestañas antes de pasar a la evidencia.
+    if (state.step === 2 && !lastTab()) { showTab(state.tab + 1); return; }
     const errors = VALIDATORS[state.step]();
     if (errors.length) {
       setMsg(errors.join("\n"), true);
       if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("error");
       return;
     }
-    // En el paso 2, "Siguiente" recorre las pestañas antes de pasar a la evidencia.
-    if (state.step === 2 && state.tab < state.form.tabs.length - 1) { showTab(state.tab + 1); return; }
     if (state.step < STEPS) { goTo(state.step + 1); return; }
     const a = alerts();
     const total = a.noConformes.length + a.sinResponder.length + a.llantasBajas.length + (a.sinFoto ? 1 : 0);
@@ -932,9 +978,8 @@
     $("km").addEventListener("input", () => { markDirty(); onKm(); });
     $("observaciones").addEventListener("input", markDirty);
     $("tab-conforme").addEventListener("click", () => markAllPositive(tabItems(state.tab)));
-    $("foto-input").addEventListener("change", onPhoto);
-    for (const id of ["foto-zone", "foto-cambiar"]) $(id).addEventListener("click", () => $("foto-input").click());
-    $("foto-zone").addEventListener("keydown", (ev) => { if (ev.key === "Enter" || ev.key === " ") $("foto-input").click(); });
+    for (const id of ["foto-camara", "foto-galeria"]) $(id).addEventListener("change", onPhoto);
+    document.querySelectorAll("[data-pick]").forEach((b) => b.addEventListener("click", () => $(b.dataset.pick).click()));
     $("sum-foto").addEventListener("click", () => { if (!state.foto) goTo(3); });
     $("next").addEventListener("click", next);
     $("prev").addEventListener("click", prev);
