@@ -65,7 +65,7 @@ BTN_FINALIZAR = "🔴 Finalizar"
 CB_FINALIZAR_SI = "finalizar:si"
 CB_FINALIZAR_NO = "finalizar:no"
 FINALIZAR_PREGUNTA = "¿Confirmas que ya terminaste tu jornada laboral?"
-BTN_FINALIZAR_SI = "✔ Sí, finalizar"
+BTN_FINALIZAR_SI = "✅ Sí, finalizar"
 BTN_FINALIZAR_NO = "❌ Cancelar"
 
 

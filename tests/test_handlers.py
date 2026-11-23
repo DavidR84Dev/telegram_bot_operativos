@@ -141,7 +141,7 @@ def test_finalizar_asks_if_workday_is_over_with_two_options():
     assert call.args[0] == "¿Confirmas que ya terminaste tu jornada laboral?"
     botones = call.kwargs["reply_markup"].inline_keyboard[0]
     assert [(b.text, b.callback_data) for b in botones] == [
-        ("✔ Sí, finalizar", tga.CB_FINALIZAR_SI), ("❌ Cancelar", tga.CB_FINALIZAR_NO)]
+        ("✅ Sí, finalizar", tga.CB_FINALIZAR_SI), ("❌ Cancelar", tga.CB_FINALIZAR_NO)]
 
 
 def test_finalizar_requires_authorization():

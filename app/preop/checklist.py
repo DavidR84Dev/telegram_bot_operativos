@@ -77,11 +77,12 @@ CABINA = "Chasis y cabina"
 NIVELES = "Niveles, sistemas de dirección, motor y frenos"
 ELECTRICO = "Sistema eléctrico"
 
-_DOC_INEXISTENTE = "Documento inexistente"
+_DOC_CEDULA = "Cédula de ciudadanía vencida o inexistente"
 _DOC_VENCIDO = "Documento vencido o inexistente"
 _SIN_DANADO = "Sin existencia, dañado"
 _FALLAS = "Con fallas, dañado"
 _NIVEL_BAJO = "Nivel bajo"
+_EXTINTORES = "Extintores con presión baja, vencidos o inexistentes"
 
 
 def _items(tab: str, section: str, *rows: tuple) -> tuple[ChecklistItem, ...]:
@@ -97,20 +98,20 @@ def _items(tab: str, section: str, *rows: tuple) -> tuple[ChecklistItem, ...]:
 
 CHECKLIST: tuple[ChecklistItem, ...] = (
     *_items(TAB_DOCUMENTOS, DOCUMENTOS,
-        ("licencia_conduccion", "Licencia de conducción", _DOC_INEXISTENTE),
-        ("licencia_transito", "Licencia de tránsito", _DOC_INEXISTENTE),
+        ("licencia_conduccion", "Licencia de conducción", _DOC_VENCIDO),
+        ("licencia_transito", "Licencia de tránsito", _DOC_VENCIDO),
         ("soat", "SOAT", _DOC_VENCIDO),
         ("rtm", "Revisión técnico-mecánica", _DOC_VENCIDO),
         ("extracto", "Extracto de contrato", _DOC_VENCIDO),
         ("tarjeta_operacion", "Tarjeta de operación", _DOC_VENCIDO),
-        ("cedula", "Cédula de ciudadanía"),
+        ("cedula", "Cédula de ciudadanía", _DOC_CEDULA),
     ),
     *_items(TAB_LLANTAS, LLANTAS,
         ("rin_1", "Estado de los rines",
-         "Falta de una o más tuercas, espárragos, tornillos o pernos; deformaciones o fisuras en los rines"),
+         "Falta de una o más tuercas, espárragos, tornillos o pernos; deformaciones o fisuras en cualquiera de los rines"),
         ("llanta_v", "Estado de las llantas",
          "Despegue o rotura en las bandas laterales; protuberancias, deformaciones, despegue "
-         "o rotura en la banda de rodamiento"),
+         "o rotura en la banda de rodamiento, llantas lisas, con cortes o fisuras en cualquiera de las llantas"),
     ),
     *_items(TAB_EQUIPO, SEGURIDAD,
         ("conos", "Conos", "Sin existencia, dañado, solo una unidad"),
@@ -120,21 +121,22 @@ CHECKLIST: tuple[ChecklistItem, ...] = (
         ("linterna", "Linterna", "Sin existencia, sin baterías o baterías en mal estado"),
         ("herramientas", "Herramientas básicas (alicate, destornilladores, llave de expansión y llaves fijas)",
          _SIN_DANADO),
-        ("chaleco_reflectivo", "Chaleco reflectivo", _SIN_DANADO, OPC_BASICA),
+        ("chaleco_reflectivo", "Chaleco reflectivo", _SIN_DANADO),
+        ("kit_derrames", "Kit control derrames químicos", _SIN_DANADO),
+        ("cruceta", "Cruceta", _SIN_DANADO),
+        ("profundimetro", "Profundímetro", _SIN_DANADO),
+        ("medidor_aire", "Medidor de aire", _SIN_DANADO),
+        ("testigos", "Testigos del tablero", "No conforme: Sí hay algún testigo de advertencia encendido"),
+        # Con «No aplica»: obligatorios para pasar a Evidencia.
         ("pico_pala", "Pico y pala", _SIN_DANADO, OPC_CON_NA),
         ("eslingas", "Eslingas", "Sin existencia, en mal estado", OPC_CON_NA),
-        ("kit_derrames", "Kit control derrames químicos", _SIN_DANADO, OPC_BASICA),
         ("cables_de_arranque", "Cables de arranque", _SIN_DANADO, OPC_CON_NA),
-        ("camaras", "Cámaras del vehículo (delantera y trasera)", "", OPC_CON_NA),
+        ("camaras", "Cámaras del vehículo (delantera y trasera)", "(No Conforme: si el indicador led no enciende)", OPC_CON_NA),
         ("barra", "Estado de la barra antivuelco", "Dañada, con fisuras o defectos", OPC_CON_NA),
-        ("cruceta", "Cruceta", _SIN_DANADO),
-        ("profundimetro", "Profundímetro"),
-        ("medidor_aire", "Medidor de aire"),
-        ("testigos", "Testigos del tablero", "Algún testigo de advertencia encendido"),
     ),
     *_items(TAB_VEHICULO, EXTINTORES,
-        ("extintor_1", "Extintor N.º 1"),
-        ("extintor_2", "Extintor N.º 2", "", OPC_CON_NA),
+        ("extintor_1", "Extintor N.º 1", _EXTINTORES),
+        ("extintor_2", "Extintor N.º 2", _EXTINTORES, OPC_CON_NA),
     ),
     *_items(TAB_VEHICULO, CABINA,
         ("orden_aseo", "Orden y aseo dentro y fuera del vehículo"),

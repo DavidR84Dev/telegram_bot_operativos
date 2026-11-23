@@ -236,7 +236,7 @@
         <span class="progress-pill" id="tab-count"></span>
         <button type="button" class="link" id="tab-conforme">✔ Marcar pestaña conforme</button>
       </div>
-      <div class="hint">Marca cada ítem. Lo que quede sin marcar o «No conforme» aparecerá como alerta en el resumen.
+      <div class="hint">Selecciona cada ítem. Las opciones no marcadas o «No conforme» aparecerá como alertas en el resumen antes del envió.
         Los ítems con <span class="req">*</span> (Conforme / No conforme / No aplica) son obligatorios para continuar.</div>
       <div id="req-pending" class="banner bad" hidden></div>
     </div>
@@ -532,7 +532,7 @@
     const box = el("input", { type: "checkbox", dataset: { check: item.key } });
     box.addEventListener("change", () => setAnswer(item.key, box.checked ? "conforme" : null));
     const text = el("span", {}, [el("div", { class: "name", text: item.label })]);
-    if (item.criterio) text.append(el("div", { class: "crit", text: `No conforme si: ${item.criterio}` }));
+    if (item.criterio) text.append(el("div", { class: "crit", text: ` ${item.criterio}` }));
     return el("div", { class: "item", dataset: { row: item.key, tabOf: String(tabIndex) } }, [el("label", { class: "check" }, [box, text])]);
   }
 
