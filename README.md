@@ -1,11 +1,10 @@
 # Telegram Bot Operativos — Validador de QR de abordaje y Preoperacional
 
-Servicio independiente (FastAPI + `python-telegram-bot`) detrás de **@OperativosViacoturBot**, el punto de entrada de las funcionalidades operativas. Su diseño sigue al bot de referencia `@viacoturform_bot` ([docs/mapa_viacotur_form.md](docs/mapa_viacotur_form.md)). Menú principal (teclado persistente, una opción por fila):
+Servicio independiente (FastAPI + `python-telegram-bot`) detrás de **@OperativosViacoturBot**, el punto de entrada de las funcionalidades operativas. Su diseño sigue al bot de referencia `@viacoturform_bot` ([docs/mapa_viacotur_form.md](docs/mapa_viacotur_form.md)). Menú principal: como el bot de referencia, un teclado de respuesta **plegable** (Telegram lo abre y cierra con su botón de teclado ⌨️, `toggle-reply-markup`) con dos opciones:
 
 | Botón | Comando | Qué hace |
 |---|---|---|
-| 📋 Formularios | `/formularios` | Lista inline de formularios (Mini Apps), en orden: **✅ Preoperacional** (`/preoperacional`) |
-| 📷 Escanear QR | `/escanear` | Abre la Mini App del escáner (`SCANNER_BASE_URL/scanner`) |
+| 📋 Formularios | `/formularios` | Panel inline, en orden: los formularios de `FORMULARIOS` (hoy **✅ Preoperacional**, `/preoperacional`), **📷 Escanear QR** (`/escanear`, Mini App del escáner) y **🔴 Finalizar** (`/finalizar`, fin de jornada) |
 | 📍 Enviar ubicación | — | Comparte la ubicación (`request_location`); se guarda en la BD del bot y se asocia al preoperacional de los últimos 10 min |
 
 `/start` (y `/ayuda`) muestra la bienvenida y el teclado. Para agregar un formulario, ver CONTRIBUTING.md → *Agregar una opción al menú del bot*.
@@ -44,7 +43,7 @@ telegram_boarding_bot ◄──HTTPS POST /internal/notify-boarding (Bearer)─�
 
 ## Flujo de validación de abordaje
 
-1. El validador pulsa **📷 Escanear QR** (segunda opción del menú) o envía `/escanear`; el bot responde con el botón inline que abre el escáner.
+1. El validador abre **📋 Formularios** y pulsa **📷 Escanear QR**, que abre el escáner directamente, o envía `/escanear`; el bot responde con el botón inline que abre el escáner.
 2. Se abre la Mini App `SCANNER_BASE_URL/scanner`, que usa el escáner **nativo** de Telegram (`Telegram.WebApp.showScanQrPopup()`). No se procesan fotos ni hay OpenCV: la Mini App exige dispositivos móviles con Telegram actualizado (Bot API ≥ 6.4).
 3. La página envía el texto leído a `POST /api/scan`, firmado con el `initData` de Telegram (cabecera `X-Telegram-Init-Data`).
 4. El servidor:

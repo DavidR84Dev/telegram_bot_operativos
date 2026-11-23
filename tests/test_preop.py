@@ -161,7 +161,7 @@ def test_preop_input_unchecked_box_is_no_conforme_and_unanswered_radio_is_empty(
     assert checklist["soat"] == "conforme"
     assert checklist["licencia_conduccion"] == NO_CONFORME  # casilla sin marcar
     assert checklist["testigos"] == NO_CONFORME  # testigos ahora es casilla
-    assert "chaleco_reflectivo" not in checklist  # radio de 2 opciones sin elegir
+    assert checklist["chaleco_reflectivo"] == NO_CONFORME  # ahora es casilla, como Cruceta
     # Los radios con "No aplica" son obligatorios.
     with pytest.raises(ValueError, match="Responde: Pico y pala"):
         _payload(1, 1, checklist={k: v for k, v in obligatorios.items() if k != "pico_pala"})
@@ -174,6 +174,9 @@ def test_preop_input_unchecked_box_is_no_conforme_and_unanswered_radio_is_empty(
         _payload(1, 1, checklist=bad)
     with pytest.raises(ValueError, match="fuera de rango"):
         _payload(1, 1, llantas={"llanta_1_pre": 900})
+    with pytest.raises(ValueError, match="no puede ser 0 mm"):
+        _payload(1, 1, llantas={"llanta_1": 0})
+    assert _payload(1, 1, llantas={"llanta_1": 0.5, "llanta_1_pre": 0}).llantas["llanta_1_pre"] == 0
     with pytest.raises(ValueError):
         PreoperacionalIn.model_validate({**_payload(1, 1).model_dump(), "telegram_user_id": 1})  # extra=forbid
 
@@ -190,15 +193,17 @@ def test_form_definition_lists_every_item():
     assert [t["title"] for t in form["tabs"]] == ["Documentos", "Rines/Llantas", "Equipo", "Vehículo"]
     assert sum(len(s["items"]) for t in form["tabs"] for s in t["sections"]) == len(CHECKLIST)
     equipo = [i["key"] for s in form["tabs"][2]["sections"] for i in s["items"]]
-    assert equipo[0] == "conos" and equipo[-1] == "testigos"
+    # Casillas primero (las de Conforme/No conforme quedan debajo de Herramientas básicas) y luego las de 3 opciones.
+    assert equipo == ["conos", "cunas", "botiquin", "gato", "linterna", "herramientas", "chaleco_reflectivo",
+                      "kit_derrames", "cruceta", "profundimetro", "medidor_aire", "testigos",
+                      "pico_pala", "eslingas", "cables_de_arranque", "camaras", "barra"]
     items = {i["key"]: i for s in form["sections"] for i in s["items"]}
     assert items["soat"]["criterio"] == "Documento vencido o inexistente"
     # Controles como el formulario de referencia.
     radios = {k for k, i in items.items() if i["control"] == "radio"}
-    assert radios == {"chaleco_reflectivo", "pico_pala", "eslingas", "kit_derrames", "cables_de_arranque",
-                      "camaras", "barra", "extintor_2"}
-    assert items["testigos"]["control"] == "casilla"
-    assert {k for k, i in items.items() if i["obligatorio"]} == radios - {"chaleco_reflectivo", "kit_derrames"}
+    assert radios == {"pico_pala", "eslingas", "cables_de_arranque", "camaras", "barra", "extintor_2"}
+    assert {items[k]["control"] for k in ("testigos", "chaleco_reflectivo", "kit_derrames")} == {"casilla"}
+    assert {k for k, i in items.items() if i["obligatorio"]} == radios
     assert items["camaras"]["options"] == ["conforme", "no conforme", "no aplica"]
     assert "camaras_new" not in items and "llanta_rep_pre_act" not in items
 
@@ -437,7 +442,7 @@ def test_submit_without_photo_and_with_unanswered_items(seeded):
     writer = FakeWriter([(78, "PRE-0078", False)])
     service.send_one(seeded, writer, preop.id, 8)
     vals = writer.calls[0][1]
-    assert "testigos_img" not in vals and "chaleco_reflectivo" not in vals
+    assert "testigos_img" not in vals and vals["chaleco_reflectivo"] == NO_CONFORME
     assert vals["soat"] == NO_CONFORME  # casilla sin marcar
     assert vals["observaciones"] == "Rayón en puerta"
 
@@ -910,6 +915,18 @@ def test_api_serves_logo(api):
     client, _ = api
     response = client.get("/static/viacotur-logo.png")
     assert response.status_code == 200 and response.content.startswith(b"\x89PNG")
+
+
+def test_page_is_not_cached_and_logo_url_is_versioned(api):
+    client, _ = api
+    import hashlib
+    import re
+
+    page = client.get("/preoperacional")
+    assert page.headers["cache-control"] == "no-cache"
+    [version] = re.findall(r'src="/static/viacotur-logo\.png\?v=([0-9a-f]{12})"', page.text)
+    logo = client.get(f"/static/viacotur-logo.png?v={version}")
+    assert logo.status_code == 200 and hashlib.sha256(logo.content).hexdigest()[:12] == version
 
 
 def test_api_submit_accepts_and_wakes_worker(api, seeded):

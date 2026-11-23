@@ -71,10 +71,10 @@ Si agregas una variable:
 
 ## Agregar una opción al menú del bot
 
-El teclado principal de @OperativosViacoturBot es fijo: **📋 Formularios**, **📷 Escanear QR** y **📍 Enviar ubicación**. Los formularios salen de la tupla `FORMULARIOS` de `app/telegram_app.py`; el orden de la tupla es el orden de la lista inline (hoy: ✅ Preoperacional).
+El teclado principal de @OperativosViacoturBot es plegable (`is_persistent=False`, Telegram lo muestra detrás de su botón de teclado) y solo tiene **📋 Formularios** y **📍 Enviar ubicación**. El panel de 📋 Formularios (`formularios_inline`) lista los formularios de la tupla `FORMULARIOS` de `app/telegram_app.py`, en su orden, y al final siempre **📷 Escanear QR** y **🔴 Finalizar**. Ejemplo: Formularios → ✅ Preoperacional → 📷 Escanear QR → 🔴 Finalizar.
 
 1. Servir la Mini App desde este servicio (ruta FastAPI + `app/static/<nombre>.html`) y validar `initData` en su API (`app.webapp_auth.validate_init_data_user`). Seguir la identidad visual del preoperacional (cabecera con `/static/viacotur-logo.png`, paleta azul, pasos con barra de progreso).
-2. Agregar una `MenuOption(label, open_text, prompt, help, url)` a `FORMULARIOS` en la posición deseada. La lista, la ayuda de `/start` y el manejo se generan solos.
+2. Agregar una `MenuOption(label, open_text, prompt, help, url)` a `FORMULARIOS` en la posición deseada. Aparece sola en el panel (antes de Escanear QR y Finalizar), en la ayuda de `/start` y en el manejo.
 3. Opcional: un comando (`CommandHandler` + `BotCommand` en `BOT_COMMANDS`) que llame a `_open_option`.
 4. Tablas nuevas: van en la BD del bot (`app/preop/models.py` o un módulo hermano con la misma `Base`); `create_all` las crea al arrancar. Para **cambiar** columnas de tablas existentes hace falta Alembic.
 5. Las Mini Apps se abren siempre con botón **inline** `web_app`: desde un botón de teclado llegan sin `initData`.

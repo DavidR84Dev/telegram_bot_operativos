@@ -14,6 +14,7 @@ válida del bot y antigüedad acotada. La identidad sale de ahí, nunca del cuer
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -79,13 +80,24 @@ def telegram_identity(
 Identity = Annotated[service.TelegramIdentity, Depends(telegram_identity)]
 
 
+_LOGO_URL = "/static/viacotur-logo.png"
+
+
+def _logo_version() -> str:
+    """Huella del logo: cambia cuando cambia la imagen, así el celular no usa la anterior en caché."""
+    return hashlib.sha256(_LOGO.read_bytes()).hexdigest()[:12]
+
+
 @router.get("/preoperacional", response_class=HTMLResponse, include_in_schema=False)
-def preop_page() -> str:
-    return _HTML.read_text(encoding="utf-8")
+def preop_page() -> HTMLResponse:
+    # La página nunca se guarda en caché (siempre la versión vigente); el logo lleva su versión en la URL.
+    html = _HTML.read_text(encoding="utf-8").replace(f'"{_LOGO_URL}"', f'"{_LOGO_URL}?v={_logo_version()}"')
+    return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
 
 
-@router.get("/static/viacotur-logo.png", include_in_schema=False)
+@router.get(_LOGO_URL, include_in_schema=False)
 def logo() -> FileResponse:
+    # Con ?v=<huella> la URL cambia al cambiar la imagen, por eso se puede guardar un día en caché.
     return FileResponse(_LOGO, media_type="image/png", headers={"Cache-Control": "public, max-age=86400"})
 
 

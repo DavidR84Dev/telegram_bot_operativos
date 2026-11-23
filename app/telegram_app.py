@@ -1,13 +1,17 @@
 """Handlers de @OperativosViacoturBot: menú principal, formularios (Mini Apps), ubicación y aviso de abordaje.
 
-El bot es el punto de entrada de las funcionalidades operativas. Teclado principal:
+El bot es el punto de entrada de las funcionalidades operativas. Como el bot de
+referencia (@viacoturform_bot), el teclado de respuesta es plegable: Telegram lo
+muestra detrás de su botón de teclado (``toggle-reply-markup``) y solo tiene:
 
-    📋 Formularios      -> lista inline de formularios (``FORMULARIOS``, en orden)
-    📷 Escanear QR      -> Mini App del escáner
+    📋 Formularios      -> panel inline, en este orden:
+                             • formularios de ``FORMULARIOS`` (✅ Preoperacional, …)
+                             • 📷 Escanear QR (Mini App del escáner)
+                             • 🔴 Finalizar   (fin de jornada: libera el vehículo reservado)
     📍 Enviar ubicación -> comparte la ubicación (se guarda en la BD del bot)
-    🔴 Finalizar        -> fin de jornada: libera los vehículos reservados por el conductor
 
-Agregar un formulario nuevo = agregar una ``MenuOption`` a ``FORMULARIOS``.
+Agregar un formulario nuevo = agregar una ``MenuOption`` a ``FORMULARIOS``: aparece
+solo en el panel, antes de Escanear QR y Finalizar.
 
 La lectura del QR la hace el escáner nativo de Telegram dentro de la Mini App
 (``/scanner``). En el chat solo se acepta pegar la URL del QR como respaldo.
@@ -64,8 +68,9 @@ BTN_PREOP = "✅ Preoperacional"
 BTN_FINALIZAR = "🔴 Finalizar"
 CB_FINALIZAR_SI = "finalizar:si"
 CB_FINALIZAR_NO = "finalizar:no"
+CB_FINALIZAR_PEDIR = "finalizar:pedir"  # botón 🔴 Finalizar del panel de formularios
 FINALIZAR_PREGUNTA = "¿Confirmas que ya terminaste tu jornada laboral?"
-BTN_FINALIZAR_SI = "✔ Sí, finalizar"
+BTN_FINALIZAR_SI = "✅ Sí, finalizar"
 BTN_FINALIZAR_NO = "❌ Cancelar"
 
 
@@ -132,7 +137,7 @@ _FORM_BY_LABEL = {option.label: option for option in FORMULARIOS}
 
 ESCANER = MenuOption(
     label=BTN_ESCANEAR,
-    open_text="📷 Abrir escáner",
+    open_text=BTN_ESCANEAR,
     prompt="Toca para abrir el escáner:",
     help=("lee el QR del pasajero, muestra la ficha del ticket y el botón de la página de abordaje. "
           "Cuando se registre el abordaje recibirás aquí la confirmación."),
@@ -141,27 +146,30 @@ ESCANER = MenuOption(
 
 HELP_TEXT = (
     "Bienvenido 👋 Elige una opción:\n\n"
-    f"<b>{BTN_FORMULARIOS}</b>: formularios operativos.\n"
+    f"<b>{BTN_FORMULARIOS}</b>:\n"
     + "".join(f"   • <b>{f.label}</b>: {f.help}\n" for f in FORMULARIOS)
-    + f"\n<b>{BTN_ESCANEAR}</b>: {ESCANER.help}\n\n"
+    + f"   • <b>{BTN_ESCANEAR}</b>: {ESCANER.help}\n"
+    f"   • <b>{BTN_FINALIZAR}</b>: termina tu jornada y libera el vehículo que quedó reservado a tu nombre "
+    "con el preoperacional, para que otro conductor pueda usarlo.\n\n"
     f"<b>{BTN_UBICACION}</b>: comparte tu ubicación actual. Si acabas de enviar un preoperacional "
     "(últimos 10 minutos), queda asociada a él.\n\n"
-    f"<b>{BTN_FINALIZAR}</b>: termina tu jornada y libera el vehículo que quedó reservado a tu nombre "
-    "con el preoperacional, para que otro conductor pueda usarlo."
+    "El menú se abre y se cierra con el botón de teclado ⌨️ junto al campo de mensaje."
 )
 
 
 def main_keyboard() -> ReplyKeyboardMarkup:
-    """Teclado persistente del menú principal (una opción por fila)."""
+    """Teclado del menú principal: solo Formularios y Enviar ubicación.
+
+    No es persistente (``is_persistent=False``): Telegram lo pliega detrás de su botón de
+    teclado (``toggle-reply-markup``), igual que el bot de referencia.
+    """
     return ReplyKeyboardMarkup(
         [
             [KeyboardButton(BTN_FORMULARIOS)],
-            [KeyboardButton(BTN_ESCANEAR)],
             [KeyboardButton(BTN_UBICACION, request_location=True)],
-            [KeyboardButton(BTN_FINALIZAR)],
         ],
         resize_keyboard=True,
-        is_persistent=True,
+        is_persistent=False,
         input_field_placeholder="Elige una opción del menú",
     )
 
@@ -171,10 +179,23 @@ def option_inline(option: MenuOption, settings: Settings) -> InlineKeyboardMarku
 
 
 def formularios_inline(settings: Settings) -> InlineKeyboardMarkup:
-    """Lista de formularios como botones inline ``web_app`` (traen initData), en orden."""
+    """Panel de 📋 Formularios: cada formulario, luego 📷 Escanear QR y al final 🔴 Finalizar.
+
+    Formularios y escáner son botones inline ``web_app`` (traen initData). Finalizar es un
+    botón de callback que pide la confirmación de fin de jornada.
+    """
     return InlineKeyboardMarkup(
         [[InlineKeyboardButton(f.open_text, web_app=WebAppInfo(url=f.url(settings)))] for f in FORMULARIOS]
+        + [[InlineKeyboardButton(ESCANER.open_text, web_app=WebAppInfo(url=ESCANER.url(settings)))]]
+        + [[InlineKeyboardButton(BTN_FINALIZAR, callback_data=CB_FINALIZAR_PEDIR)]]
     )
+
+
+def finalizar_inline() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton(BTN_FINALIZAR_SI, callback_data=CB_FINALIZAR_SI),
+        InlineKeyboardButton(BTN_FINALIZAR_NO, callback_data=CB_FINALIZAR_NO),
+    ]])
 
 
 def build_application(settings: Settings, odoo: OdooClient, store: WatchStore) -> Application:
@@ -223,7 +244,7 @@ def build_application(settings: Settings, odoo: OdooClient, store: WatchStore) -
     application.add_handler(CommandHandler("preoperacional", cmd_preop))
     application.add_handler(CommandHandler("escanear", cmd_escanear))
     application.add_handler(CommandHandler("finalizar", cmd_finalizar))
-    application.add_handler(CallbackQueryHandler(on_finalizar_confirm, pattern=r"^finalizar:(si|no)$"))
+    application.add_handler(CallbackQueryHandler(on_finalizar_confirm, pattern=r"^finalizar:(si|no|pedir)$"))
     application.add_handler(MessageHandler(filters.LOCATION & ~filters.UpdateType.EDITED, on_location))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
     return application
@@ -302,21 +323,27 @@ async def cmd_finalizar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if not await _authorized(update, context):
         return
     assert update.message is not None
-    keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton(BTN_FINALIZAR_SI, callback_data=CB_FINALIZAR_SI),
-        InlineKeyboardButton(BTN_FINALIZAR_NO, callback_data=CB_FINALIZAR_NO),
-    ]])
-    await update.message.reply_text(FINALIZAR_PREGUNTA, reply_markup=keyboard)
+    await update.message.reply_text(FINALIZAR_PREGUNTA, reply_markup=finalizar_inline())
 
 
 async def on_finalizar_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Respuesta a la confirmación.
 
-    ✔ Sí, finalizar: libera el vehículo del id de Telegram que pulsa el botón y avisa al jefe.
+    🔴 Finalizar (panel): muestra la pregunta en lugar del panel.
+    ✅ Sí, finalizar: libera el vehículo del id de Telegram que pulsa el botón y avisa al jefe.
     ❌ Cancelar: no cambia nada y vuelve al panel de formularios.
     """
     query = update.callback_query
     assert query is not None and update.effective_user is not None
+    if query.data == CB_FINALIZAR_PEDIR:
+        # 🔴 Finalizar desde el panel de formularios: misma pregunta que el comando /finalizar.
+        allowed = await asyncio.to_thread(_services(context).access.is_authorized, str(update.effective_user.id))
+        if not allowed:
+            await query.answer("🔒 Acceso no autorizado: tu ID de Telegram no está registrado.", show_alert=True)
+            return
+        await query.answer()
+        await query.edit_message_text(FINALIZAR_PREGUNTA, reply_markup=finalizar_inline())
+        return
     await query.answer()
     if query.data != CB_FINALIZAR_SI:
         await query.edit_message_text("📂 Formularios disponibles:",
@@ -345,6 +372,8 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if text == BTN_FORMULARIOS:
         await cmd_formularios(update, context)
         return
+    # Escanear QR y Finalizar ya no están en el teclado (van en el panel de formularios), pero
+    # se siguen atendiendo para quienes aún tengan el teclado anterior.
     if text == BTN_ESCANEAR:
         await _open_option(update, context, ESCANER)
         return
