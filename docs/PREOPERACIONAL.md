@@ -113,7 +113,7 @@ El conductor puede enviar uno o varios preoperacionales (no hay límite diario).
 - **Un conductor, un vehículo:** mientras tenga una reserva, los demás vehículos le aparecen como **NO DISPONIBLE** ("Ya tienes reservado …") y el servidor rechaza el envío.
 - Ambas reglas las garantizan además índices únicos en la BD (envíos simultáneos).
 - **Vencimiento:** la reserva se libera sola **24 h después de su registro inicial** (`RESERVA_HORAS`); se verifica antes de cada consulta.
-- **🔴 Finalizar** (botón del menú y `/finalizar`): pide confirmación con la placa y libera la reserva del **id de Telegram** que lo toca. Avisa al **jefe inmediato** por Telegram (conductor, placa, inicio, fin y n.º de preoperacionales), si el jefe tiene su id de Telegram en el PIN.
+- **🔴 Finalizar** (botón del menú y `/finalizar`): pregunta *«¿Confirmas que ya terminaste tu jornada laboral?»* con dos opciones: **✔ Sí, finalizar** libera la reserva del **id de Telegram** que lo toca; **❌ Cancelar** no cambia nada y vuelve al panel de formularios. Avisa al **jefe inmediato** por Telegram (conductor, placa, inicio, fin y n.º de preoperacionales), si el jefe tiene su id de Telegram en el PIN.
 - **Histórico:** toda reserva liberada pasa a `reservas_historial` con su motivo (`finalizar`, `vencida`, `manual`).
 - Operación manual: `docker compose exec app python -m app.preop.reservas --listar` y `--liberar PLACA` (queda como `manual`).
 

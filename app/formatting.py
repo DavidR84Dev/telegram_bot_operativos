@@ -80,15 +80,6 @@ def _lista_placas(placas: tuple[str, ...]) -> str:
     return ", ".join(f"<b>{escape(p)}</b>" for p in placas)
 
 
-def finalizar_confirmacion(placas: tuple[str, ...]) -> str:
-    """Pregunta de 🔴 Finalizar: explica su efecto antes de liberar."""
-    return (
-        "🔴 <b>¿Finalizar tu jornada?</b>\n\n"
-        f"Se liberará el vehículo {_lista_placas(placas)} que tienes reservado. "
-        "Después, otro conductor podrá hacer su preoperacional con esa placa."
-    )
-
-
 def jornada_finalizada(placas: tuple[str, ...]) -> str:
     if not placas:
         return "No tenías vehículos reservados. Tu jornada quedó finalizada."

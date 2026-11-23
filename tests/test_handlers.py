@@ -134,25 +134,20 @@ def test_scanner_inline_button_is_web_app():
     assert button.web_app.url == "https://scan.example.com/scanner"
 
 
-def test_finalizar_asks_confirmation_listing_reserved_plates(monkeypatch):
-    monkeypatch.setattr(tga.preop_reservas, "reservas_de", lambda db, uid: ("ABC123",))
+def test_finalizar_asks_if_workday_is_over_with_two_options():
     upd = _update(text=tga.BTN_FINALIZAR)
-    ctx = _ctx(_services())
-    ctx.application.bot_data[tga.PREOP_DB_KEY] = "db"
-    asyncio.run(tga.on_text(upd, ctx))
+    asyncio.run(tga.on_text(upd, _ctx(_services())))
     call = upd.message.reply_text.await_args
-    assert "ABC123" in call.args[0] and "Finalizar" in call.args[0]
-    assert [b.callback_data for b in call.kwargs["reply_markup"].inline_keyboard[0]] == [
-        tga.CB_FINALIZAR_SI, tga.CB_FINALIZAR_NO]
+    assert call.args[0] == "¿Confirmas que ya terminaste tu jornada laboral?"
+    botones = call.kwargs["reply_markup"].inline_keyboard[0]
+    assert [(b.text, b.callback_data) for b in botones] == [
+        ("✔ Sí, finalizar", tga.CB_FINALIZAR_SI), ("❌ Cancelar", tga.CB_FINALIZAR_NO)]
 
 
-def test_finalizar_without_reservations_says_nothing_to_release(monkeypatch):
-    monkeypatch.setattr(tga.preop_reservas, "reservas_de", lambda db, uid: ())
-    upd = _update(text="/finalizar")
-    ctx = _ctx(_services())
-    ctx.application.bot_data[tga.PREOP_DB_KEY] = "db"
-    asyncio.run(tga.cmd_finalizar(upd, ctx))
-    assert "No tienes vehículos reservados" in upd.message.reply_text.await_args.args[0]
+def test_finalizar_requires_authorization():
+    upd = _update(user_id=111, text="/finalizar")
+    asyncio.run(tga.cmd_finalizar(upd, _ctx(_services(pin_ok=False))))
+    assert "no autorizado" in upd.message.reply_text.await_args.args[0].lower()
 
 
 def _callback(data, user_id=7913476225):
@@ -181,10 +176,12 @@ def test_finalizar_confirm_releases_only_own_reservations(monkeypatch):
     assert aviso["chat_id"] == 999 and "Jornada finalizada" in aviso["text"] and "Ana" in aviso["text"]
 
 
-def test_finalizar_cancel_keeps_reservation(monkeypatch):
+def test_finalizar_cancel_returns_to_forms_panel(monkeypatch):
     monkeypatch.setattr(tga.preop_reservas, "finalizar_jornada", lambda *a: (_ for _ in ()).throw(AssertionError))
     ctx = _ctx(_services())
     ctx.application.bot_data[tga.PREOP_DB_KEY] = "db"
     upd = _callback(tga.CB_FINALIZAR_NO)
     asyncio.run(tga.on_finalizar_confirm(upd, ctx))
-    assert "sigue activa" in upd.callback_query.edit_message_text.await_args.args[0]
+    call = upd.callback_query.edit_message_text.await_args
+    assert call.args[0] == "📂 Formularios disponibles:"
+    assert call.kwargs["reply_markup"].inline_keyboard[0][0].text == tga.BTN_PREOP

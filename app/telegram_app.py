@@ -64,6 +64,9 @@ BTN_PREOP = "✅ Preoperacional"
 BTN_FINALIZAR = "🔴 Finalizar"
 CB_FINALIZAR_SI = "finalizar:si"
 CB_FINALIZAR_NO = "finalizar:no"
+FINALIZAR_PREGUNTA = "¿Confirmas que ya terminaste tu jornada laboral?"
+BTN_FINALIZAR_SI = "✔ Sí, finalizar"
+BTN_FINALIZAR_NO = "❌ Cancelar"
 
 
 @dataclass(frozen=True)
@@ -295,34 +298,29 @@ async def on_location(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 async def cmd_finalizar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """🔴 Finalizar: pide confirmación antes de liberar los vehículos reservados."""
+    """🔴 Finalizar: pregunta si terminó la jornada antes de liberar el vehículo reservado."""
     if not await _authorized(update, context):
         return
-    assert update.message is not None and update.effective_user is not None
-    db = context.application.bot_data.get(PREOP_DB_KEY)
-    if db is None:
-        await update.message.reply_text("Finalizar no está disponible en este momento.")
-        return
-    placas = await asyncio.to_thread(preop_reservas.reservas_de, db, update.effective_user.id)
-    if not placas:
-        await update.message.reply_text("No tienes vehículos reservados. No hay nada que finalizar.",
-                                        reply_markup=main_keyboard())
-        return
+    assert update.message is not None
     keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ Sí, finalizar", callback_data=CB_FINALIZAR_SI),
-        InlineKeyboardButton("Cancelar", callback_data=CB_FINALIZAR_NO),
+        InlineKeyboardButton(BTN_FINALIZAR_SI, callback_data=CB_FINALIZAR_SI),
+        InlineKeyboardButton(BTN_FINALIZAR_NO, callback_data=CB_FINALIZAR_NO),
     ]])
-    await update.message.reply_text(formatting.finalizar_confirmacion(placas), parse_mode="HTML",
-                                    reply_markup=keyboard)
+    await update.message.reply_text(FINALIZAR_PREGUNTA, reply_markup=keyboard)
 
 
 async def on_finalizar_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Respuesta a la confirmación: borra las reservas del id de Telegram que pulsa el botón."""
+    """Respuesta a la confirmación.
+
+    ✔ Sí, finalizar: libera el vehículo del id de Telegram que pulsa el botón y avisa al jefe.
+    ❌ Cancelar: no cambia nada y vuelve al panel de formularios.
+    """
     query = update.callback_query
     assert query is not None and update.effective_user is not None
     await query.answer()
     if query.data != CB_FINALIZAR_SI:
-        await query.edit_message_text("Listo, tu jornada sigue activa y el vehículo continúa reservado a tu nombre.")
+        await query.edit_message_text("📂 Formularios disponibles:",
+                                      reply_markup=formularios_inline(_services(context).settings))
         return
     db = context.application.bot_data.get(PREOP_DB_KEY)
     if db is None:
