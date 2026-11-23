@@ -236,7 +236,7 @@
         <span class="progress-pill" id="tab-count"></span>
         <button type="button" class="link" id="tab-conforme">✔ Marcar pestaña conforme</button>
       </div>
-      <div class="hint">Selecciona cada ítem. Las opciones no marcadas o «No conforme» aparecerá como alertas en el resumen antes del envió.
+      <div class="hint">Las opciones no marcadas o marcadas como «No conforme» aparecerá como alertas en el resumen antes del envió.
         Los ítems con <span class="req">*</span> (Conforme / No conforme / No aplica) son obligatorios para continuar.</div>
       <div id="req-pending" class="banner bad" hidden></div>
     </div>
@@ -278,8 +278,8 @@
       <h2>Información General</h2>
       <dl class="summary" id="summary"></dl>
     </div>
-    <div class="card" id="sum-obs-card" hidden>
-      <h2>Observaciones</h2>
+    <div class="card" id="sum-obs-card">
+      <h2>Observaciones y estado final</h2>
       <p id="sum-obs" style="white-space: pre-line; margin: 4px 0 0;"></p>
     </div>
     <div id="summary-sections"></div>
@@ -594,8 +594,10 @@
       if (!input || !hint) continue;
       const v = parseNum(input.value), min = minimoLabrado(ll);
       const low = Number.isFinite(v) && v > 0 && v < min;
-      hint.textContent = low ? `⚠ Bajo el mínimo (${fmtNum(min)} mm)` : `Mínimo ${fmtNum(min)} mm`;
+      const cero = labradoEnCero(input);
+      hint.textContent = cero ? "✖ El labrado no puede ser 0 mm" : low ? `⚠ Bajo el mínimo (${fmtNum(min)} mm)` : `Mínimo ${fmtNum(min)} mm`;
       hint.classList.toggle("warn", low);
+      hint.classList.toggle("bad", cero);
     }
   }
 
@@ -671,9 +673,13 @@
     refreshNext();
   }
 
+  // El labrado (mm) no puede ser 0: si se mide, debe ser mayor que cero. La presión sí admite 0.
+  const isLabrado = (input) => !input.dataset.measure.endsWith("_pre");
+  const labradoEnCero = (input) => isLabrado(input) && input.value.trim() !== "" && parseNum(input.value) === 0;
+
   function validateMeasure(input) {
     const n = parseNum(input.value);
-    const bad = input.value.trim() !== "" && (!Number.isFinite(n) || n < 0 || n > Number(input.dataset.max));
+    const bad = input.value.trim() !== "" && (!Number.isFinite(n) || n < 0 || n > Number(input.dataset.max) || labradoEnCero(input));
     input.classList.toggle("invalid", bad);
     return !bad;
   }
@@ -687,7 +693,8 @@
     const errors = [];
     for (const input of visibleMeasureInputs()) {
       if (input.value.trim() === "") continue;
-      if (!validateMeasure(input)) errors.push(`${input.dataset.label} (${input.id.slice(2)}): valor fuera de rango (0–${input.dataset.max}).`);
+      if (labradoEnCero(input)) { validateMeasure(input); errors.push(`${input.dataset.label} (${input.id.slice(2)}): el labrado no puede ser 0 mm.`); }
+      else if (!validateMeasure(input)) errors.push(`${input.dataset.label} (${input.id.slice(2)}): valor fuera de rango (0–${input.dataset.max}).`);
       else llantas[input.dataset.measure] = parseNum(input.value);
     }
     return { llantas, errors };
@@ -792,6 +799,13 @@
     return { sinResponder, noConformes, llantasBajas, sinFoto: !state.foto };
   }
 
+  // Siempre visible en el resumen: el texto escrito en Evidencia o "Sin observaciones".
+  function renderObservaciones() {
+    const obs = $("observaciones").value.trim();
+    $("sum-obs").textContent = obs || "Sin observaciones.";
+    $("sum-obs").classList.toggle("hint", !obs);
+  }
+
   function renderSummary() {
     const e = state.extracto, v = e.vehiculo;
     const contratoSel = $("contrato");
@@ -837,9 +851,7 @@
     $("foto-thumb").hidden = !state.foto;
     if (state.foto) $("foto-thumb").src = state.foto;
 
-    const obs = $("observaciones").value.trim();
-    $("sum-obs-card").hidden = !obs;
-    $("sum-obs").textContent = obs;
+    renderObservaciones();
 
     const a = alerts();
     const parts = [
@@ -888,6 +900,9 @@
 
   async function next() {
     if (state.finished) { tg.close(); return; }
+    // Cierra el teclado: en Android la última palabra en composición no queda en el
+    // campo (p. ej. las observaciones) hasta que este pierde el foco.
+    if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
     // En el paso 2, "Siguiente" recorre las pestañas antes de pasar a la evidencia.
     if (state.step === 2 && !lastTab()) { showTab(state.tab + 1); return; }
     const errors = VALIDATORS[state.step]();
@@ -998,7 +1013,8 @@
     fillContratos();
     $("contrato").addEventListener("change", () => { markDirty(); onContrato(); });
     $("km").addEventListener("input", () => { markDirty(); onKm(); });
-    $("observaciones").addEventListener("input", markDirty);
+    $("observaciones").addEventListener("input", () => { markDirty(); renderObservaciones(); });
+    $("observaciones").addEventListener("change", renderObservaciones);
     $("tab-conforme").addEventListener("click", () => markAllPositive(tabItems(state.tab)));
     for (const id of ["foto-camara", "foto-galeria"]) $(id).addEventListener("change", onPhoto);
     document.querySelectorAll("[data-pick]").forEach((b) => b.addEventListener("click", () => $(b.dataset.pick).click()));

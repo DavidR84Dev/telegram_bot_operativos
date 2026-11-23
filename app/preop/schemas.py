@@ -291,6 +291,9 @@ class PreoperacionalIn(BaseModel):
                 raise ValueError(f"Medida desconocida: {key}")
             if not 0 <= number <= spec.max_value:
                 raise ValueError(f"{spec.label}: fuera de rango (0–{spec.max_value:g} {spec.unit})")
+            # El labrado medido debe ser mayor que cero (la presión sí admite 0).
+            if spec.unit == "mm" and number == 0:
+                raise ValueError(f"{spec.label}: el labrado no puede ser 0 mm")
         return value
 
     @field_validator("extra")

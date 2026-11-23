@@ -174,6 +174,9 @@ def test_preop_input_unchecked_box_is_no_conforme_and_unanswered_radio_is_empty(
         _payload(1, 1, checklist=bad)
     with pytest.raises(ValueError, match="fuera de rango"):
         _payload(1, 1, llantas={"llanta_1_pre": 900})
+    with pytest.raises(ValueError, match="no puede ser 0 mm"):
+        _payload(1, 1, llantas={"llanta_1": 0})
+    assert _payload(1, 1, llantas={"llanta_1": 0.5, "llanta_1_pre": 0}).llantas["llanta_1_pre"] == 0
     with pytest.raises(ValueError):
         PreoperacionalIn.model_validate({**_payload(1, 1).model_dump(), "telegram_user_id": 1})  # extra=forbid
 
