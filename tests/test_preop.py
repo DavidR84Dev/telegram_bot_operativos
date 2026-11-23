@@ -6,7 +6,7 @@ import base64
 import json
 import os
 import xmlrpc.client
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -14,9 +14,11 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from tenacity import wait_none
 
 from app.preop import etl, service
+from app.preop import reservas
 from app.preop.checklist import CHECKLIST, NO_CONFORME, count_no_conformes, form_definition, llantas_bajo_minimo
 from app.preop.db import Database
 from app import formatting
@@ -548,6 +550,142 @@ def test_boss_not_alerted_without_findings(seeded):
         vehiculo, extracto, checklist={item.key: "conforme" for item in CHECKLIST}))
     service.claim_batch(seeded, 10, 300)
     assert service.send_one(seeded, FakeWriter([(80, "PRE-0080", False)]), preop.id, 8).aviso_jefe is None
+
+
+SEGUNDO = service.TelegramIdentity(555, "beto", "Beto S")
+
+
+def _con_segundo_conductor(db) -> None:
+    """Mismo extracto con dos conductores: Ana (PIN TG_USER) y Beto (PIN 555)."""
+    etl.sync_all(db, FakeRest({
+        "/api/flota": [_flota(), _flota(11, "VAN 02/XYZ987", numero_interno="102"), _flota(12, "OTRA", company=1)],
+        "/api/empleados": [_empleado(), _empleado(101, pin="999", responsable="", nombre="Jefe Uno"),
+                           _empleado(102, pin="555", nombre="Beto Segundo")],
+        "/api/extractos": [_extracto(segundo_conductor="Beto Segundo")],
+    }), [1])
+
+
+def _uuid(n: int) -> str:
+    return f"{n:08x}-3c1d-4f7a-9a2b-1c2d3e4f5a6b"
+
+
+def test_vehicle_is_reserved_to_one_driver_until_finalizar(seeded):
+    _con_segundo_conductor(seeded)
+    vehiculo, extracto = _ids(seeded)
+    preop, _ = service.submit(seeded, IDENTITY, _payload(vehiculo, extracto, uuid=_uuid(1)))
+    # El mismo conductor puede hacer otro preoperacional del vehículo (la reserva se actualiza).
+    otro, _ = service.submit(seeded, IDENTITY, _payload(vehiculo, extracto, uuid=_uuid(2)))
+    with seeded.session() as s:
+        [reserva] = s.scalars(select(reservas.ReservaVehiculo)).all()
+        assert (reserva.telegram_user_id, reserva.preop_id) == (TG_USER, otro.id)
+    # El segundo conductor del mismo extracto no puede mientras Ana no finalice.
+    with pytest.raises(service.SubmissionError, match="lo tiene Ana Conductora") as err:
+        service.submit(seeded, SEGUNDO, _payload(vehiculo, extracto, uuid=_uuid(3)))
+    assert err.value.status_code == 409
+    with seeded.session() as s:  # el rechazo no deja nada guardado
+        assert s.scalar(select(func.count()).select_from(Preoperacional)) == 2
+
+    # Finalizar de otro usuario no libera la reserva de Ana.
+    assert reservas.finalizar_jornada(seeded, SEGUNDO.user_id).placas == ()
+    assert reservas.finalizar_jornada(seeded, TG_USER).placas == ("ABC123",)
+    assert reservas.reservas_de(seeded, TG_USER) == ()
+    beto, _ = service.submit(seeded, SEGUNDO, _payload(vehiculo, extracto, uuid=_uuid(4)))
+    assert reservas.reservas_de(seeded, SEGUNDO.user_id) == ("ABC123",)
+    assert beto.id != preop.id
+
+
+def test_context_shows_reservation_state_per_driver(seeded):
+    _con_segundo_conductor(seeded)
+    vehiculo, extracto = _ids(seeded)
+    with seeded.session() as s:
+        ana = s.scalar(select(Empleado).where(Empleado.odoo_id == 100))
+        beto = s.scalar(select(Empleado).where(Empleado.odoo_id == 102))
+    assert service.form_context(seeded, beto)["extractos"][0]["vehiculo"]["reserva"]["estado"] == "disponible"
+    service.submit(seeded, IDENTITY, _payload(vehiculo, extracto))
+    assert service.form_context(seeded, ana)["extractos"][0]["vehiculo"]["reserva"]["estado"] == "propia"
+    reserva = service.form_context(seeded, beto)["extractos"][0]["vehiculo"]["reserva"]
+    assert reserva == {"estado": "ocupado", "conductor": "Ana Conductora", "placa_propia": None}
+
+
+def test_reservation_race_and_manual_release(seeded):
+    vehiculo, extracto = _ids(seeded)
+    service.submit(seeded, IDENTITY, _payload(vehiculo, extracto))
+    # Dos envíos simultáneos chocan con el índice único: se reconoce como conflicto de reserva.
+    with pytest.raises(IntegrityError) as err, seeded.session() as s:
+        s.add(reservas.ReservaVehiculo(vehiculo_id=vehiculo, empleado_id=1, telegram_user_id=1,
+                                       fecha_jornada=reservas.fecha_jornada()))
+        s.flush()
+    assert reservas.es_conflicto_de_reserva(err.value)
+    assert reservas.liberar_placa(seeded, "abc123") == 1
+    assert reservas.reservas_de(seeded, TG_USER) == ()
+
+
+def test_driver_can_hold_only_one_vehicle(seeded):
+    etl.sync_all(seeded, FakeRest({
+        "/api/flota": [_flota(), _flota(11, "VAN 02/XYZ987", numero_interno="102", matricula="XYZ987"),
+                       _flota(12, "OTRA", company=1)],
+        "/api/empleados": [_empleado(), _empleado(101, pin="999", responsable="", nombre="Jefe Uno")],
+        "/api/extractos": [_extracto(), _extracto(501, vehiculo="VAN 02/XYZ987", codigo="EXT-501")],
+    }), [1])
+    with seeded.session() as s:
+        van = s.scalar(select(Flota.id).where(Flota.odoo_id == 11))
+        ext_van = s.scalar(select(Extracto.id).where(Extracto.odoo_id == 501))
+        ana = s.scalar(select(Empleado).where(Empleado.odoo_id == 100))
+    vehiculo, extracto = _ids(seeded)
+    service.submit(seeded, IDENTITY, _payload(vehiculo, extracto, uuid=_uuid(1)))
+    # El otro vehículo aparece NO DISPONIBLE para ella mientras no finalice.
+    estados = {e["vehiculo"]["matricula"]: e["vehiculo"]["reserva"] for e in service.form_context(seeded, ana)["extractos"]}
+    assert estados["XYZ987"] == {"estado": "otro_propio", "conductor": None, "placa_propia": "ABC123"}
+    assert estados["ABC123"]["estado"] == "propia"
+    with pytest.raises(service.SubmissionError, match="Ya tienes reservado el vehículo ABC123"):
+        service.submit(seeded, IDENTITY, _payload(van, ext_van, uuid=_uuid(2)))
+    reservas.finalizar_jornada(seeded, TG_USER)
+    service.submit(seeded, IDENTITY, _payload(van, ext_van, uuid=_uuid(3)))
+    assert reservas.reservas_de(seeded, TG_USER) == ("XYZ987",)
+
+
+def test_reservation_expires_24h_after_initial_record_and_keeps_history(seeded):
+    _con_segundo_conductor(seeded)
+    vehiculo, extracto = _ids(seeded)
+    service.submit(seeded, IDENTITY, _payload(vehiculo, extracto, uuid=_uuid(1)))
+    with seeded.session() as s:
+        inicio = s.scalar(select(reservas.ReservaVehiculo.reservado_at))
+    inicio = inicio if inicio.tzinfo else inicio.replace(tzinfo=UTC)
+    with seeded.session() as s:  # 23 h después sigue reservada
+        assert reservas.liberar_vencidas(s, inicio + timedelta(hours=23)) == 0
+    with seeded.session() as s:  # a las 24 h se libera sola
+        assert reservas.liberar_vencidas(s, inicio + timedelta(hours=24, seconds=1)) == 1
+    with seeded.session() as s:
+        [h] = s.scalars(select(reservas.ReservaHistorial)).all()
+        fin = h.liberado_at if h.liberado_at.tzinfo else h.liberado_at.replace(tzinfo=UTC)
+        assert (h.motivo, h.placa, h.conductor, h.preoperacionales) == ("vencida", "ABC123", "Ana Conductora", 1)
+        assert fin == inicio + timedelta(hours=24)
+    beto, _ = service.submit(seeded, SEGUNDO, _payload(vehiculo, extracto, uuid=_uuid(2)))
+    assert reservas.reservas_de(seeded, SEGUNDO.user_id) == ("ABC123",)
+
+
+def test_finalizar_keeps_history_and_returns_boss_telegram(seeded):
+    vehiculo, extracto = _ids(seeded)
+    service.submit(seeded, IDENTITY, _payload(vehiculo, extracto, uuid=_uuid(1)))
+    service.submit(seeded, IDENTITY, _payload(vehiculo, extracto, uuid=_uuid(2)))
+    liberacion = reservas.finalizar_jornada(seeded, TG_USER)
+    assert liberacion.placas == ("ABC123",) and liberacion.conductor == "Ana Conductora"
+    assert liberacion.preoperacionales == 2 and liberacion.jefe_telegram_id == 999  # PIN de Jefe Uno
+    with seeded.session() as s:
+        [h] = s.scalars(select(reservas.ReservaHistorial)).all()
+        assert (h.motivo, h.telegram_user_id, h.preoperacionales) == ("finalizar", TG_USER, 2)
+    assert "Jornada finalizada" in formatting.jornada_finalizada_jefe(liberacion)
+    # Liberación manual también queda en el histórico.
+    service.submit(seeded, IDENTITY, _payload(vehiculo, extracto, uuid=_uuid(3)))
+    assert reservas.liberar_placa(seeded, "abc123") == 1
+    with seeded.session() as s:
+        assert [h.motivo for h in s.scalars(select(reservas.ReservaHistorial).order_by(reservas.ReservaHistorial.id))] == [
+            "finalizar", "manual"]
+
+
+def test_workday_date_is_colombia_local():
+    # 03:00 UTC del 24-nov = 22:00 del 23-nov en Colombia.
+    assert str(reservas.fecha_jornada(datetime(2026, 11, 24, 3, 0, tzinfo=UTC))) == "2026-11-23"
 
 
 def test_location_links_to_recent_preop_only(seeded):

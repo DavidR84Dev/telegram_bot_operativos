@@ -5,6 +5,7 @@ El bot es el punto de entrada de las funcionalidades operativas. Teclado princip
     📋 Formularios      -> lista inline de formularios (``FORMULARIOS``, en orden)
     📷 Escanear QR      -> Mini App del escáner
     📍 Enviar ubicación -> comparte la ubicación (se guarda en la BD del bot)
+    🔴 Finalizar        -> fin de jornada: libera los vehículos reservados por el conductor
 
 Agregar un formulario nuevo = agregar una ``MenuOption`` a ``FORMULARIOS``.
 
@@ -29,7 +30,15 @@ from telegram import (
     Update,
     WebAppInfo,
 )
-from telegram.ext import Application, ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import (
+    Application,
+    ApplicationBuilder,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
 
 from . import formatting, ticket_state
 from .access import AccessControl
@@ -37,6 +46,7 @@ from .config import Settings
 from .odoo_client import OdooClient
 from .odoo_queries import find_employee_by_pin, find_internal_token, find_tickets_by_ids
 from .passenger_notifier import PassengerNotifier
+from .preop import reservas as preop_reservas
 from .preop import service as preop_service
 from .scan_service import STATUS_MESSAGES, scan_qr
 from .watch_store import WatchStore
@@ -51,6 +61,9 @@ BTN_FORMULARIOS = "📋 Formularios"
 BTN_ESCANEAR = "📷 Escanear QR"
 BTN_UBICACION = "📍 Enviar ubicación"
 BTN_PREOP = "✅ Preoperacional"
+BTN_FINALIZAR = "🔴 Finalizar"
+CB_FINALIZAR_SI = "finalizar:si"
+CB_FINALIZAR_NO = "finalizar:no"
 
 
 @dataclass(frozen=True)
@@ -82,6 +95,7 @@ BOT_COMMANDS = [
     BotCommand("formularios", "Ver los formularios disponibles"),
     BotCommand("preoperacional", "Diligenciar la inspección preoperacional"),
     BotCommand("escanear", "Abrir el escáner de QR"),
+    BotCommand("finalizar", "Finalizar la jornada y liberar el vehículo reservado"),
     BotCommand("ayuda", "Qué hace cada opción del menú"),
 ]
 
@@ -128,7 +142,9 @@ HELP_TEXT = (
     + "".join(f"   • <b>{f.label}</b>: {f.help}\n" for f in FORMULARIOS)
     + f"\n<b>{BTN_ESCANEAR}</b>: {ESCANER.help}\n\n"
     f"<b>{BTN_UBICACION}</b>: comparte tu ubicación actual. Si acabas de enviar un preoperacional "
-    "(últimos 10 minutos), queda asociada a él."
+    "(últimos 10 minutos), queda asociada a él.\n\n"
+    f"<b>{BTN_FINALIZAR}</b>: termina tu jornada y libera el vehículo que quedó reservado a tu nombre "
+    "con el preoperacional, para que otro conductor pueda usarlo."
 )
 
 
@@ -139,6 +155,7 @@ def main_keyboard() -> ReplyKeyboardMarkup:
             [KeyboardButton(BTN_FORMULARIOS)],
             [KeyboardButton(BTN_ESCANEAR)],
             [KeyboardButton(BTN_UBICACION, request_location=True)],
+            [KeyboardButton(BTN_FINALIZAR)],
         ],
         resize_keyboard=True,
         is_persistent=True,
@@ -202,6 +219,8 @@ def build_application(settings: Settings, odoo: OdooClient, store: WatchStore) -
     application.add_handler(CommandHandler("formularios", cmd_formularios))
     application.add_handler(CommandHandler("preoperacional", cmd_preop))
     application.add_handler(CommandHandler("escanear", cmd_escanear))
+    application.add_handler(CommandHandler("finalizar", cmd_finalizar))
+    application.add_handler(CallbackQueryHandler(on_finalizar_confirm, pattern=r"^finalizar:(si|no)$"))
     application.add_handler(MessageHandler(filters.LOCATION & ~filters.UpdateType.EDITED, on_location))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
     return application
@@ -275,6 +294,53 @@ async def on_location(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                                     reply_markup=main_keyboard())
 
 
+async def cmd_finalizar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """🔴 Finalizar: pide confirmación antes de liberar los vehículos reservados."""
+    if not await _authorized(update, context):
+        return
+    assert update.message is not None and update.effective_user is not None
+    db = context.application.bot_data.get(PREOP_DB_KEY)
+    if db is None:
+        await update.message.reply_text("Finalizar no está disponible en este momento.")
+        return
+    placas = await asyncio.to_thread(preop_reservas.reservas_de, db, update.effective_user.id)
+    if not placas:
+        await update.message.reply_text("No tienes vehículos reservados. No hay nada que finalizar.",
+                                        reply_markup=main_keyboard())
+        return
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Sí, finalizar", callback_data=CB_FINALIZAR_SI),
+        InlineKeyboardButton("Cancelar", callback_data=CB_FINALIZAR_NO),
+    ]])
+    await update.message.reply_text(formatting.finalizar_confirmacion(placas), parse_mode="HTML",
+                                    reply_markup=keyboard)
+
+
+async def on_finalizar_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Respuesta a la confirmación: borra las reservas del id de Telegram que pulsa el botón."""
+    query = update.callback_query
+    assert query is not None and update.effective_user is not None
+    await query.answer()
+    if query.data != CB_FINALIZAR_SI:
+        await query.edit_message_text("Listo, tu jornada sigue activa y el vehículo continúa reservado a tu nombre.")
+        return
+    db = context.application.bot_data.get(PREOP_DB_KEY)
+    if db is None:
+        await query.edit_message_text("Finalizar no está disponible en este momento. Intenta de nuevo.")
+        return
+    liberacion = await asyncio.to_thread(preop_reservas.finalizar_jornada, db, update.effective_user.id)
+    logger.info("Finalizar: usuario %s liberó %s", update.effective_user.id, ", ".join(liberacion.placas) or "nada")
+    await query.edit_message_text(formatting.jornada_finalizada(liberacion.placas), parse_mode="HTML")
+    if liberacion.placas and liberacion.jefe_telegram_id:
+        try:
+            await context.bot.send_message(chat_id=liberacion.jefe_telegram_id,
+                                           text=formatting.jornada_finalizada_jefe(liberacion), parse_mode="HTML")
+        except Exception:  # p. ej. el jefe nunca abrió el bot: Telegram no permite escribirle
+            logger.exception("No se pudo avisar al jefe (Telegram %s) del fin de jornada", liberacion.jefe_telegram_id)
+    elif liberacion.placas:
+        logger.warning("Fin de jornada de %s: su jefe no tiene id de Telegram en el PIN", liberacion.conductor)
+
+
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     assert update.message is not None  # filters.TEXT exige un mensaje de texto
     text = (update.message.text or "").strip()
@@ -283,6 +349,9 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     if text == BTN_ESCANEAR:
         await _open_option(update, context, ESCANER)
+        return
+    if text == BTN_FINALIZAR:
+        await cmd_finalizar(update, context)
         return
     if text == BTN_UBICACION:
         # Clientes sin soporte de ubicación (p. ej. Telegram Desktop) envían el texto del botón.

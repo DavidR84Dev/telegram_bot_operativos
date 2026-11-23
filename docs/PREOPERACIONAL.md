@@ -39,6 +39,8 @@ graph TD
 | `flota` | `odoo_id` | `nombre`, `matricula`, `estado`, `numero_interno`, `parque_automotor`, `odometer_post NUMERIC(14,2)`, `tipo_solicitud` |
 | `extractos` | `odoo_id` | conductores 1-3 con celular y estado de documentos, `contratos_list JSONB`, `estado`, `fecha_hora_inicio/fin TIMESTAMPTZ`, `responsable_cliente`, `responsable_cliente_mobile`, `vehiculo`, `vehiculo_id` |
 | `acuerdos` | `odoo_id` | contrato (`agreement`) desde `/api/acuerdos`: `nombre`, `cliente`, `labrado_camioneta`, `labrado_buses` (labrado mínimo de llantas por tipo de vehículo) |
+| `reservas_vehiculo` | `vehiculo_id` y `telegram_user_id` (únicos) | **tabla temporal**: vehículo reservado al conductor que hizo el preoperacional (`empleado_id`, `telegram_user_id`, `extracto_id`, último `preop_id`, `fecha_jornada` local de Colombia, `reservado_at`, `ultimo_preop_at`). Se libera con 🔴 Finalizar, a las 24 h o a mano |
+| `reservas_historial` | `id` | histórico permanente de jornadas: placa, conductor, extracto, último preoperacional, n.º de preoperacionales, `reservado_at`, `liberado_at` y `motivo` (`finalizar`, `vencida`, `manual`) |
 | `preoperacional` | `uuid` (único, idempotencia) | ver abajo |
 | `preop_fotos` | (`preop_id`, `tipo`) único | foto de evidencia en `BYTEA` (`tipo='testigos'` → `testigos_img` de Odoo), `mime`, `tamano`, `sha256` |
 | `ubicaciones` | — | ubicación compartida desde el chat (📍): `telegram_user_id`, `empleado_id`, `preop_id` (preoperacional de los últimos 10 min, si hay), `latitud`, `longitud`, `precision_m`, `recibido_at` |
@@ -104,6 +106,16 @@ Formulario por pasos con barra de progreso e identidad VIACOTUR (logo y paleta a
 4. **Resumen de la Inspección:** información general, observaciones (si hay texto) y una tarjeta por sección con ✔ (conforme), **!** rojo (casilla sin marcar, no conforme o radio sin elegir) y **N/A**; tabla de labrado/presión con alerta bajo el mínimo; "Imagen subida: 0/1 o 1/1". Al tocar una alerta vuelve al ítem. **Completar inspección** envía aunque haya alertas, previa confirmación.
 
 El conductor puede enviar uno o varios preoperacionales (no hay límite diario).
+
+**Reserva del vehículo durante la jornada (`app/preop/reservas.py`):** un extracto puede tener varios conductores, pero solo uno puede tener el vehículo a la vez.
+- La reserva empieza **al enviar** el preoperacional (tabla temporal `reservas_vehiculo`). Si el conductor envía otro del mismo vehículo, la reserva se actualiza, pero su vencimiento no cambia.
+- **Una placa, un conductor:** los demás conductores ven la tarjeta en rojo como **NO DISPONIBLE** ("En uso por …", no seleccionable) y el servidor rechaza su envío (409). Su dueño la ve como **RESERVADO POR TI**.
+- **Un conductor, un vehículo:** mientras tenga una reserva, los demás vehículos le aparecen como **NO DISPONIBLE** ("Ya tienes reservado …") y el servidor rechaza el envío.
+- Ambas reglas las garantizan además índices únicos en la BD (envíos simultáneos).
+- **Vencimiento:** la reserva se libera sola **24 h después de su registro inicial** (`RESERVA_HORAS`); se verifica antes de cada consulta.
+- **🔴 Finalizar** (botón del menú y `/finalizar`): pide confirmación con la placa y libera la reserva del **id de Telegram** que lo toca. Avisa al **jefe inmediato** por Telegram (conductor, placa, inicio, fin y n.º de preoperacionales), si el jefe tiene su id de Telegram en el PIN.
+- **Histórico:** toda reserva liberada pasa a `reservas_historial` con su motivo (`finalizar`, `vencida`, `manual`).
+- Operación manual: `docker compose exec app python -m app.preop.reservas --listar` y `--liberar PLACA` (queda como `manual`).
 
 **Aviso al jefe por Telegram:** cuando el registro llega a Odoo con ítems no conformes o llantas bajo el mínimo del contrato, el bot avisa al jefe inmediato (conductor, vehículo, PRE-xxxx y lista de hallazgos). El jefe se identifica por el nombre del responsable del empleado y debe tener su **id de Telegram en el PIN** (`hr.employee.pin`) y haber abierto el bot al menos una vez; si no, se registra en el log.
 

@@ -69,7 +69,7 @@ def test_non_qr_text_points_to_scanner_button():
 def test_main_keyboard_formularios_scanner_location():
     kb = tga.main_keyboard()
     assert [[b.text for b in row] for row in kb.keyboard] == [
-        [tga.BTN_FORMULARIOS], [tga.BTN_ESCANEAR], [tga.BTN_UBICACION]]
+        [tga.BTN_FORMULARIOS], [tga.BTN_ESCANEAR], [tga.BTN_UBICACION], [tga.BTN_FINALIZAR]]
     # Botones de texto: las Mini Apps se abren con botones inline (initData).
     assert all(b.web_app is None for row in kb.keyboard for b in row)
     assert kb.keyboard[2][0].request_location is True
@@ -132,3 +132,59 @@ def test_location_text_from_desktop_explains_how():
 def test_scanner_inline_button_is_web_app():
     button = tga.scanner_inline("https://scan.example.com/").inline_keyboard[0][0]
     assert button.web_app.url == "https://scan.example.com/scanner"
+
+
+def test_finalizar_asks_confirmation_listing_reserved_plates(monkeypatch):
+    monkeypatch.setattr(tga.preop_reservas, "reservas_de", lambda db, uid: ("ABC123",))
+    upd = _update(text=tga.BTN_FINALIZAR)
+    ctx = _ctx(_services())
+    ctx.application.bot_data[tga.PREOP_DB_KEY] = "db"
+    asyncio.run(tga.on_text(upd, ctx))
+    call = upd.message.reply_text.await_args
+    assert "ABC123" in call.args[0] and "Finalizar" in call.args[0]
+    assert [b.callback_data for b in call.kwargs["reply_markup"].inline_keyboard[0]] == [
+        tga.CB_FINALIZAR_SI, tga.CB_FINALIZAR_NO]
+
+
+def test_finalizar_without_reservations_says_nothing_to_release(monkeypatch):
+    monkeypatch.setattr(tga.preop_reservas, "reservas_de", lambda db, uid: ())
+    upd = _update(text="/finalizar")
+    ctx = _ctx(_services())
+    ctx.application.bot_data[tga.PREOP_DB_KEY] = "db"
+    asyncio.run(tga.cmd_finalizar(upd, ctx))
+    assert "No tienes vehículos reservados" in upd.message.reply_text.await_args.args[0]
+
+
+def _callback(data, user_id=7913476225):
+    query = SimpleNamespace(data=data, answer=AsyncMock(), edit_message_text=AsyncMock())
+    return SimpleNamespace(callback_query=query, effective_user=SimpleNamespace(id=user_id))
+
+
+def test_finalizar_confirm_releases_only_own_reservations(monkeypatch):
+    liberados = []
+
+    def fake_finalizar(db, user_id):
+        liberados.append((db, user_id))
+        return SimpleNamespace(placas=("ABC123",), conductor="Ana", reservado_at=None, liberado_at=None,
+                               preoperacionales=2, jefe_telegram_id=999)
+
+    monkeypatch.setattr(tga.preop_reservas, "finalizar_jornada", fake_finalizar)
+    ctx = _ctx(_services())
+    ctx.application.bot_data[tga.PREOP_DB_KEY] = "db"
+    ctx.bot = SimpleNamespace(send_message=AsyncMock())
+    upd = _callback(tga.CB_FINALIZAR_SI, user_id=42)
+    asyncio.run(tga.on_finalizar_confirm(upd, ctx))
+    assert liberados == [("db", 42)]
+    assert "ABC123" in upd.callback_query.edit_message_text.await_args.args[0]
+    # Aviso al jefe inmediato por Telegram.
+    aviso = ctx.bot.send_message.await_args.kwargs
+    assert aviso["chat_id"] == 999 and "Jornada finalizada" in aviso["text"] and "Ana" in aviso["text"]
+
+
+def test_finalizar_cancel_keeps_reservation(monkeypatch):
+    monkeypatch.setattr(tga.preop_reservas, "finalizar_jornada", lambda *a: (_ for _ in ()).throw(AssertionError))
+    ctx = _ctx(_services())
+    ctx.application.bot_data[tga.PREOP_DB_KEY] = "db"
+    upd = _callback(tga.CB_FINALIZAR_NO)
+    asyncio.run(tga.on_finalizar_confirm(upd, ctx))
+    assert "sigue activa" in upd.callback_query.edit_message_text.await_args.args[0]

@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 from . import ticket_state
 
 if TYPE_CHECKING:
+    from .preop.reservas import Liberacion
     from .preop.service import AvisoJefe, SendOutcome, UbicacionRegistrada
 
 
@@ -73,6 +74,43 @@ def preop_aviso_jefe(aviso: AvisoJefe, odoo_name: str | None) -> str:
         lines += ["", "<b>Labrado bajo el mínimo del contrato:</b>"]
         lines += [f"• {escape(nombre)}" for nombre in aviso.llantas_bajas]
     return "\n".join(lines)
+
+
+def _lista_placas(placas: tuple[str, ...]) -> str:
+    return ", ".join(f"<b>{escape(p)}</b>" for p in placas)
+
+
+def finalizar_confirmacion(placas: tuple[str, ...]) -> str:
+    """Pregunta de 🔴 Finalizar: explica su efecto antes de liberar."""
+    return (
+        "🔴 <b>¿Finalizar tu jornada?</b>\n\n"
+        f"Se liberará el vehículo {_lista_placas(placas)} que tienes reservado. "
+        "Después, otro conductor podrá hacer su preoperacional con esa placa."
+    )
+
+
+def jornada_finalizada(placas: tuple[str, ...]) -> str:
+    if not placas:
+        return "No tenías vehículos reservados. Tu jornada quedó finalizada."
+    return f"✅ <b>Jornada finalizada.</b>\n\nSe liberó el vehículo {_lista_placas(placas)}. ¡Buen descanso!"
+
+
+def _hora_local(value) -> str:
+    from .preop.reservas import ZONA_JORNADA
+
+    return value.astimezone(ZONA_JORNADA).strftime("%d/%m %I:%M %p") if value else "—"
+
+
+def jornada_finalizada_jefe(liberacion: Liberacion) -> str:
+    """Aviso al jefe inmediato cuando un conductor toca 🔴 Finalizar."""
+    return (
+        "🔴 <b>Jornada finalizada</b>\n\n"
+        f"👤 Conductor: <b>{escape(liberacion.conductor or '—')}</b>\n"
+        f"🚌 Vehículo liberado: {_lista_placas(liberacion.placas)}\n"
+        f"🕒 Reservado desde: {_hora_local(liberacion.reservado_at)}\n"
+        f"🏁 Finalizó: {_hora_local(liberacion.liberado_at)}\n"
+        f"📝 Preoperacionales en la jornada: {liberacion.preoperacionales}"
+    )
 
 
 def ubicacion_registrada(registro: UbicacionRegistrada) -> str:

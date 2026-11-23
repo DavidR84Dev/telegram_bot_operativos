@@ -72,7 +72,11 @@
   .veh-card[aria-pressed="true"] { border-color: var(--brand-2); background: var(--brand-soft); }
   .veh-card .ico { font-size: 26px; }
   .veh-card strong { display: block; font-size: 16px; }
-  .veh-card .tag { margin-left: auto; font-size: 11px; font-weight: 700; color: var(--ok); background: color-mix(in srgb, var(--ok) 14%, transparent); padding: 3px 8px; border-radius: 999px; }
+  .veh-card .tag { margin-left: auto; font-size: 11px; font-weight: 700; color: var(--ok); background: color-mix(in srgb, var(--ok) 14%, transparent); padding: 3px 8px; border-radius: 999px; text-align: center; }
+  .veh-card .tag.propia { color: var(--brand-2); background: var(--brand-soft); }
+  .veh-card .tag.ocupado { color: var(--bad); background: color-mix(in srgb, var(--bad) 12%, transparent); }
+  .veh-card:disabled { opacity: .6; }
+  .veh-card .ocupado-por { display: block; font-size: 12px; color: var(--bad); }
   .field-hint { font-size: 13px; color: var(--hint); margin-top: 4px; }
   .field-hint.warn { color: var(--warn); font-weight: 600; }
   .field-hint.bad { color: var(--bad); font-weight: 600; }
@@ -416,22 +420,39 @@
     return state.ctx.extractos.filter((e) => e.contratos.some((c) => c.id_contrato === id));
   }
 
+  // Reserva del vehículo durante la jornada: si otro conductor lo tiene (no ha tocado
+  // 🔴 Finalizar), la tarjeta aparece bloqueada; el servidor también lo valida.
+  const reservaDe = (e) => (e.vehiculo.reserva && e.vehiculo.reserva.estado) || "disponible";
+  const seleccionable = (e) => !BLOQUEADO.includes(reservaDe(e));
+  // ocupado: lo tiene otro conductor; otro_propio: este conductor ya tiene otro vehículo reservado.
+  const BLOQUEADO = ["ocupado", "otro_propio"];
+  const TAG = { disponible: "DISPONIBLE", propia: "RESERVADO POR TI", ocupado: "NO DISPONIBLE", otro_propio: "NO DISPONIBLE" };
+
   function onContrato() {
     const opciones = extractosDelContrato();
-    if (state.extracto && !opciones.includes(state.extracto)) state.extracto = null;
-    if (opciones.length === 1) state.extracto = opciones[0];
+    if (state.extracto && (!opciones.includes(state.extracto) || !seleccionable(state.extracto))) state.extracto = null;
+    const libres = opciones.filter(seleccionable);
+    if (libres.length === 1) state.extracto = libres[0];
     const list = $("veh-list");
     list.replaceChildren(...opciones.map((e) => {
       const v = e.vehiculo;
-      const card = el("button", { type: "button", class: "veh-card", "aria-pressed": String(e === state.extracto) }, [
-        el("span", { class: "ico", text: "🚌" }),
-        el("span", {}, [
-          el("strong", { text: v.matricula || v.nombre || "Vehículo" }),
-          el("span", { class: "hint", text: [v.nombre, v.numero_interno && `N.º interno ${v.numero_interno}`, e.codigo].filter(Boolean).join(" · ") }),
-        ]),
-        el("span", { class: "tag", text: "DISPONIBLE" }),
+      const estado = reservaDe(e);
+      const info = el("span", {}, [
+        el("strong", { text: v.matricula || v.nombre || "Vehículo" }),
+        el("span", { class: "hint", text: [v.nombre, v.numero_interno && `N.º interno ${v.numero_interno}`, e.codigo].filter(Boolean).join(" · ") }),
       ]);
-      card.addEventListener("click", () => { markDirty(); state.extracto = e; onContrato(); });
+      if (estado === "ocupado") {
+        info.append(el("span", { class: "ocupado-por", text: `En uso por ${v.reserva.conductor || "otro conductor"} (no ha finalizado su jornada)` }));
+      } else if (estado === "otro_propio") {
+        info.append(el("span", { class: "ocupado-por", text: `Ya tienes reservado ${v.reserva.placa_propia}. Toca 🔴 Finalizar para cambiar de vehículo.` }));
+      }
+      const bloqueado = BLOQUEADO.includes(estado);
+      const card = el("button", { type: "button", class: "veh-card", "aria-pressed": String(e === state.extracto) }, [
+        el("span", { class: "ico", text: "🚌" }), info,
+        el("span", { class: `tag ${bloqueado ? "ocupado" : estado}`, text: TAG[estado] || TAG.disponible }),
+      ]);
+      if (bloqueado) card.disabled = true;
+      else card.addEventListener("click", () => { markDirty(); state.extracto = e; onContrato(); });
       return card;
     }));
     $("veh-box").hidden = opciones.length === 0;
@@ -935,7 +956,8 @@
     const nc = out.no_conformes ? ` Se registraron ${out.no_conformes} ítem(s) no conforme(s).` : "";
     $("done-text").textContent =
       `Se está registrando en Odoo y te llegará la confirmación en el chat.${nc}\n\n` +
-      "📍 Regresa al chat y toca «Enviar ubicación» en los próximos 10 minutos para asociar tu ubicación.";
+      "📍 Regresa al chat y toca «Enviar ubicación» en los próximos 10 minutos para asociar tu ubicación.\n\n" +
+      "🔒 El vehículo quedó reservado a tu nombre por 24 horas. Al terminar tu jornada toca «🔴 Finalizar» en el chat para liberarlo.";
     if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
   }
 

@@ -18,6 +18,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .checklist import CHECKLIST, NO_CONFORME, count_no_conformes, labrado_minimo_acuerdo, llantas_bajo_minimo
+from . import reservas
 from .db import Database
 from .models import Acuerdo, Empleado, Extracto, Flota, Preoperacional, PreopFoto, SyncStatus, Ubicacion, utc_now
 from .odoo_writer import OdooPermanentError, OdooTransientError, OdooWriter, build_odoo_values
@@ -144,6 +145,9 @@ def form_context(db: Database, empleado: Empleado, now: datetime | None = None,
     """
     with db.session() as session:
         extractos = extractos_del_conductor(session, empleado, now)
+        # Reserva del vehículo durante la jornada: disponible, propia u ocupado por otro conductor.
+        estado = reservas.estado_reservas(
+            session, [e.flota.id for e in extractos if e.flota is not None], empleado.id)
         items = []
         for e in extractos:
             v = e.flota
@@ -165,6 +169,7 @@ def form_context(db: Database, empleado: Empleado, now: datetime | None = None,
                     "numero_interno": v.numero_interno if v else None,
                     # Sugerencia "Último registrado" (fleet.vehicle.odometer_post en Odoo).
                     "odometer_post": ultimo_odometro(v, odometro) if v else None,
+                    "reserva": estado.get(v.id) if v else None,
                 },
             })
     return {
@@ -218,6 +223,12 @@ def submit(db: Database, identity: TelegramIdentity, data: PreoperacionalIn,
         if contrato is None and len(permitidos) > 1:
             raise SubmissionError("Selecciona el contrato")
 
+        # Solo un conductor a la vez por vehículo, hasta que toque 🔴 Finalizar.
+        try:
+            reservas.verificar_disponible(session, vehiculo, identity.user_id)
+        except reservas.VehiculoReservadoError as exc:
+            raise SubmissionError(str(exc), status_code=409) from exc
+
         ultimo = ultimo_odometro(vehiculo, odometro)
         if ultimo is not None and data.kilometraje < ultimo:
             raise SubmissionError(
@@ -255,7 +266,14 @@ def submit(db: Database, identity: TelegramIdentity, data: PreoperacionalIn,
                     sha256=hashlib.sha256(foto).hexdigest(),
                 ))
                 session.flush()
+            reservas.reservar(session, vehiculo=vehiculo, empleado=empleado, telegram_user_id=identity.user_id,
+                              extracto_id=extracto.id, preop_id=preop.id, now=preop.fecha)
+            session.flush()
         except IntegrityError as exc:
+            if reservas.es_conflicto_de_reserva(exc):
+                # Carrera: otro conductor reservó el mismo vehículo un instante antes.
+                raise SubmissionError(f"El vehículo {reservas.placa(vehiculo)} acaba de ser reservado por "
+                                      "otro conductor", status_code=409) from exc
             # Carrera: el mismo uuid llegó dos veces en paralelo.
             raise SubmissionError("Formulario ya recibido", status_code=409) from exc
         return preop, False
@@ -318,11 +336,11 @@ class SendOutcome:
 
 def _boss_odoo_id(session: Session, empleado: Empleado) -> int | None:
     """Jefe inmediato: la API entrega solo el nombre del responsable; se resuelve si es único."""
-    jefe = _jefe(session, empleado)
+    jefe = jefe_inmediato(session, empleado)
     return jefe.odoo_id if jefe else None
 
 
-def _jefe(session: Session, empleado: Empleado) -> Empleado | None:
+def jefe_inmediato(session: Session, empleado: Empleado) -> Empleado | None:
     """Jefe inmediato (por nombre del responsable, solo si es único y activo)."""
     if not empleado.responsable:
         return None
@@ -344,7 +362,7 @@ def _aviso_jefe(session: Session, preop: Preoperacional) -> AvisoJefe | None:
         preop.llantas, minimo_acuerdo(session, preop.contrato_odoo_id, vehiculo.tipo_solicitud)))
     if not no_conformes and not llantas:
         return None
-    jefe = _jefe(session, preop.empleado)
+    jefe = jefe_inmediato(session, preop.empleado)
     pin = jefe.codigo_pin if jefe else None
     if not pin or not pin.isdigit():
         logger.warning("Preoperacional %s con hallazgos: el jefe (%s) no tiene id de Telegram en el PIN",

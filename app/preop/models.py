@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import enum
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
 from sqlalchemy import (
@@ -27,6 +27,7 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     CheckConstraint,
+    Date,
     DateTime,
     Enum,
     ForeignKey,
@@ -273,6 +274,66 @@ class Ubicacion(TimestampMixin, Base):
         CheckConstraint("latitud BETWEEN -90 AND 90", name="ck_ubicaciones_latitud"),
         CheckConstraint("longitud BETWEEN -180 AND 180", name="ck_ubicaciones_longitud"),
         Index("ix_ubicaciones_usuario_fecha", "telegram_user_id", "recibido_at"),
+    )
+
+
+class ReservaVehiculo(TimestampMixin, Base):
+    """Tabla temporal: vehículo reservado al conductor que hizo su preoperacional.
+
+    Un extracto puede tener varios conductores, pero solo uno puede tener el vehículo
+    a la vez: la reserva se crea al enviar el preoperacional y se borra cuando ese
+    conductor toca 🔴 Finalizar (fin de su jornada) o a las ``reservas.RESERVA_HORAS``
+    de creada. ``vehiculo_id`` y ``telegram_user_id`` son únicos: una placa tiene un solo
+    conductor y un conductor tiene un solo vehículo a la vez. Al liberarse, la fila pasa
+    a ``reservas_historial``.
+    """
+
+    __tablename__ = "reservas_vehiculo"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    vehiculo_id: Mapped[int] = mapped_column(ForeignKey("flota.id", ondelete="CASCADE"), nullable=False)
+    empleado_id: Mapped[int] = mapped_column(ForeignKey("empleados.id", ondelete="CASCADE"), nullable=False)
+    telegram_user_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    extracto_id: Mapped[int | None] = mapped_column(ForeignKey("extractos.id", ondelete="SET NULL"))
+    # Último preoperacional del conductor con este vehículo (puede hacer varios en el día).
+    preop_id: Mapped[int | None] = mapped_column(ForeignKey("preoperacional.id", ondelete="SET NULL"))
+    fecha_jornada: Mapped[date] = mapped_column(Date, nullable=False)  # fecha local (Colombia) de inicio
+    reservado_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+    ultimo_preop_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+
+    vehiculo: Mapped[Flota] = relationship(lazy="joined")
+    empleado: Mapped[Empleado] = relationship(lazy="joined")
+
+    __table_args__ = (
+        UniqueConstraint("vehiculo_id", name="uq_reservas_vehiculo_vehiculo"),
+        UniqueConstraint("telegram_user_id", name="uq_reservas_vehiculo_conductor"),
+    )
+
+
+class ReservaHistorial(TimestampMixin, Base):
+    """Histórico permanente de jornadas: cada reserva liberada (finalizar, vencida o manual)."""
+
+    __tablename__ = "reservas_historial"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    vehiculo_id: Mapped[int | None] = mapped_column(ForeignKey("flota.id", ondelete="SET NULL"))
+    placa: Mapped[str] = mapped_column(String(255), nullable=False)
+    empleado_id: Mapped[int | None] = mapped_column(ForeignKey("empleados.id", ondelete="SET NULL"))
+    conductor: Mapped[str] = mapped_column(String(255), nullable=False)
+    telegram_user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    extracto_id: Mapped[int | None] = mapped_column(ForeignKey("extractos.id", ondelete="SET NULL"))
+    ultimo_preop_id: Mapped[int | None] = mapped_column(ForeignKey("preoperacional.id", ondelete="SET NULL"))
+    preoperacionales: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    fecha_jornada: Mapped[date] = mapped_column(Date, nullable=False)
+    reservado_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    ultimo_preop_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    liberado_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    motivo: Mapped[str] = mapped_column(String(16), nullable=False)  # finalizar | vencida | manual
+
+    __table_args__ = (
+        CheckConstraint("motivo IN ('finalizar', 'vencida', 'manual')", name="ck_reservas_historial_motivo"),
+        Index("ix_reservas_historial_conductor_fecha", "telegram_user_id", "reservado_at"),
+        Index("ix_reservas_historial_vehiculo_fecha", "vehiculo_id", "reservado_at"),
     )
 
 
