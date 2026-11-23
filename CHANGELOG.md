@@ -9,6 +9,9 @@ Versionado: [SemVer](https://semver.org/lang/es/) (`MAJOR.MINOR.PATCH`).
 - **Reserva del vehículo por jornada y botón 🔴 Finalizar:** tabla temporal `reservas_vehiculo`: una placa por conductor y un conductor por placa. El preoperacional reserva el vehículo; los demás lo ven como NO DISPONIBLE (rojo) y el servidor rechaza su envío. Se libera con 🔴 Finalizar (con confirmación y aviso al jefe inmediato por Telegram), a las 24 h de su registro inicial o con `python -m app.preop.reservas --liberar PLACA`. Cada liberación queda en `reservas_historial`.
 
 ### Cambiado
+- **Preoperacional, ajustes del 2026-11-23 (noche):**
+  - Rines/Llantas: el labrado no puede enviarse en 0 mm (Mini App y servidor); vacío sigue siendo "no medido" y la presión admite 0.
+  - Resumen: la tarjeta "Observaciones y estado final" siempre visible (texto escrito en Evidencia o "Sin observaciones."); "Siguiente" cierra el teclado para que Android confirme la última palabra escrita.
 - **Preoperacional, ajustes del 2026-11-23 (tarde):**
   - Sugerencia "Último registrado" del odómetro leída en vivo de `fleet.vehicle.odometer_post`; si está en 0 (campo sin `@api.depends`), `km_end` del último Pos-Operacional. La misma cifra valida el envío.
   - "Testigos del tablero" pasa a casilla, como "Medidor de aire".
