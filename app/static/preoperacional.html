@@ -767,12 +767,16 @@
       const input = $(`m-${ll.labrado}`);
       const hint = document.querySelector(`[data-hint-for="${CSS.escape(ll.labrado)}"]`);
       if (!input || !hint) continue;
-      const v = parseNum(input.value), min = minimoLabrado(ll);
+      const v = parseNum(input.value), min = minimoLabrado(ll), max = maxDe(input);
       const low = Number.isFinite(v) && v > 0 && v < min;
       const cero = labradoEnCero(input);
-      hint.textContent = cero ? "✖ El labrado no puede ser 0 mm" : low ? `⚠ Bajo el mínimo (${fmtNum(min)} mm)` : `Mínimo ${fmtNum(min)} mm`;
-      hint.classList.toggle("warn", low);
-      hint.classList.toggle("bad", cero);
+      const alto = Number.isFinite(v) && v > max;
+      if (input.value.trim() !== "") validateMeasure(input);  // el máximo cambia con el vehículo
+      hint.textContent = cero ? "✖ El labrado no puede ser 0 mm"
+        : alto ? `✖ Máximo ${fmtNum(max)} mm: revisa lo digitado`
+        : low ? `⚠ Bajo el mínimo (${fmtNum(min)} mm)` : `Mínimo ${fmtNum(min)} mm · máximo ${fmtNum(max)} mm`;
+      hint.classList.toggle("warn", low && !alto);
+      hint.classList.toggle("bad", cero || alto);
     }
   }
 
@@ -852,9 +856,15 @@
   const isLabrado = (input) => !input.dataset.measure.endsWith("_pre");
   const labradoEnCero = (input) => isLabrado(input) && input.value.trim() !== "" && parseNum(input.value) === 0;
 
+  // Máximo de una medida: el labrado depende del tipo de vehículo (Buses 20 mm, Camioneta 15 mm).
+  function maxDe(input) {
+    const v = state.extracto && state.extracto.vehiculo;
+    return isLabrado(input) && v && v.labrado_maximo ? Number(v.labrado_maximo) : Number(input.dataset.max);
+  }
+
   function validateMeasure(input) {
     const n = parseNum(input.value);
-    const bad = input.value.trim() !== "" && (!Number.isFinite(n) || n < 0 || n > Number(input.dataset.max) || labradoEnCero(input));
+    const bad = input.value.trim() !== "" && (!Number.isFinite(n) || n < 0 || n > maxDe(input) || labradoEnCero(input));
     input.classList.toggle("invalid", bad);
     return !bad;
   }
@@ -869,7 +879,9 @@
     for (const input of visibleMeasureInputs()) {
       if (input.value.trim() === "") continue;
       if (labradoEnCero(input)) { validateMeasure(input); errors.push(`${input.dataset.label} (${input.id.slice(2)}): el labrado no puede ser 0 mm.`); }
-      else if (!validateMeasure(input)) errors.push(`${input.dataset.label} (${input.id.slice(2)}): valor fuera de rango (0–${input.dataset.max}).`);
+      else if (!validateMeasure(input)) errors.push(`${input.dataset.label} (${input.id.slice(2)}): ${isLabrado(input)
+        ? `el labrado máximo es ${fmtNum(maxDe(input))} mm (${(state.extracto && state.extracto.vehiculo.clase_labrado) || "vehículo"}).`
+        : `valor fuera de rango (0–${maxDe(input)}).`}`);
       else llantas[input.dataset.measure] = parseNum(input.value);
     }
     return { llantas, errors };

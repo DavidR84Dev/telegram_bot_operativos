@@ -12,6 +12,7 @@ Versionado: [SemVer](https://semver.org/lang/es/) (`MAJOR.MINOR.PATCH`).
 ### Cambiado
 - **Preoperacional, ajustes del 2026-11-24:**
   - «📷 Tomar foto» abre la cámara trasera dentro del formulario (`getUserMedia`): Telegram para Android ignoraba `capture` y abría la galería.
+  - Labrado máximo por tipo de vehículo para evitar errores de digitación: **Buses 20 mm** (bus, buseta, minibus) y **Camioneta 15 mm** (los demás). Validado en la Mini App y en el servidor.
   - Solo se puede hacer el preoperacional de un vehículo **DISPONIBLE**. Un vehículo reservado, incluso a nombre del mismo conductor, queda bloqueado en la Mini App y el servidor lo rechaza (409). Sin vehículos disponibles, el formulario no deja entrar y explica por qué.
 - **Preoperacional, ajustes del 2026-11-23 (noche):**
   - Rines/Llantas: el labrado no puede enviarse en 0 mm (Mini App y servidor); vacío sigue siendo "no medido" y la presión admite 0.

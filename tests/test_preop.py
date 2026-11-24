@@ -1053,3 +1053,40 @@ def test_api_diferido_exige_mismo_usuario_y_firmas_validas(api, seeded):
     vehiculo, extracto = _ids(seeded)
     assert client.post("/api/preop", json=_payload(vehiculo, extracto).model_dump(mode="json"),
                        headers=normal).status_code == 401
+
+
+# ─────────────────────────── labrado máximo por tipo de vehículo ───────────────────────────
+
+from app.preop.checklist import clase_labrado, labrado_maximo  # noqa: E402
+
+
+@pytest.mark.parametrize(("tipo", "maximo", "clase"), [
+    ("bus", 20, "Buses"), ("Buseta", 20, "Buses"), ("minibus", 20, "Buses"),
+    ("camioneta", 15, "Camioneta"), ("car", 15, "Camioneta"), ("jeep", 15, "Camioneta"), (None, 15, "Camioneta"),
+])
+def test_labrado_maximo_segun_tipo(tipo, maximo, clase):
+    assert labrado_maximo(tipo) == maximo and clase_labrado(tipo) == clase
+
+
+def _tipo_vehiculo(db, tipo: str) -> None:
+    with db.session() as s:
+        s.scalar(select(Flota).where(Flota.odoo_id == 10)).tipo_solicitud = tipo
+
+
+def test_submit_rechaza_labrado_sobre_el_maximo(seeded):
+    vehiculo, extracto = _ids(seeded)
+    _tipo_vehiculo(seeded, "camioneta")
+    with pytest.raises(service.SubmissionError, match=r"máximo de 15 mm \(Camioneta\): Llanta N.º 1") as err:
+        service.submit(seeded, IDENTITY, _payload(vehiculo, extracto, llantas={"llanta_1": 15.5}))
+    assert err.value.status_code == 422
+    _tipo_vehiculo(seeded, "bus")  # en buses el mismo valor es válido (máximo 20 mm)
+    preop, _ = service.submit(seeded, IDENTITY, _payload(vehiculo, extracto, llantas={"llanta_1": 18.0}))
+    assert preop.llantas == {"llanta_1": 18.0}
+
+
+def test_context_entrega_labrado_maximo(seeded):
+    _tipo_vehiculo(seeded, "bus")
+    with seeded.session() as s:
+        ana = s.scalar(select(Empleado).where(Empleado.odoo_id == 100))
+    vehiculo = service.form_context(seeded, ana)["extractos"][0]["vehiculo"]
+    assert (vehiculo["labrado_maximo"], vehiculo["clase_labrado"]) == (20, "Buses")

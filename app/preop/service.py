@@ -17,7 +17,16 @@ from sqlalchemy import and_, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from .checklist import CHECKLIST, NO_CONFORME, count_no_conformes, labrado_minimo_acuerdo, llantas_bajo_minimo
+from .checklist import (
+    CHECKLIST,
+    NO_CONFORME,
+    clase_labrado,
+    count_no_conformes,
+    labrado_maximo,
+    labrado_minimo_acuerdo,
+    llantas_bajo_minimo,
+    llantas_sobre_maximo,
+)
 from . import reservas
 from .db import Database
 from .diferido import motivo_vencido
@@ -182,6 +191,9 @@ def form_context(db: Database, empleado: Empleado, now: datetime | None = None,
                     "numero_interno": v.numero_interno if v else None,
                     # Sugerencia "Último registrado" (fleet.vehicle.odometer_post en Odoo).
                     "odometer_post": ultimo_odometro(v, odometro) if v else None,
+                    # Labrado máximo por tipo (Buses 20 mm, Camioneta 15 mm): evita errores de digitación.
+                    "labrado_maximo": labrado_maximo(tipo),
+                    "clase_labrado": clase_labrado(tipo),
                     "reserva": estado.get(v.id) if v else None,
                 },
             })
@@ -292,6 +304,11 @@ def submit(db: Database, identity: TelegramIdentity, data: PreoperacionalIn,
             raise SubmissionError("El vehículo del extracto aún no está sincronizado; intenta en unos minutos", 409)
         if data.vehiculo_id is not None and data.vehiculo_id != vehiculo.id:
             raise SubmissionError("El vehículo no corresponde al extracto")
+        altas = llantas_sobre_maximo(data.llantas, vehiculo.tipo_solicitud)
+        if altas:
+            raise SubmissionError(
+                f"Labrado mayor al máximo de {labrado_maximo(vehiculo.tipo_solicitud):g} mm "
+                f"({clase_labrado(vehiculo.tipo_solicitud)}): {', '.join(altas)}")
 
         permitidos = [c["id_contrato"] for c in _contratos_permitidos(extracto, empleado)]
         contrato = data.contrato_odoo_id
