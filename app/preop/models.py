@@ -252,6 +252,51 @@ class PreopFoto(TimestampMixin, Base):
     __table_args__ = (UniqueConstraint("preop_id", "tipo", name="uq_preop_fotos_tipo"),)
 
 
+class EstadoDiferido(str, enum.Enum):
+    ACEPTADO = "aceptado"  # llegó dentro de la ventana: se creó el preoperacional y sigue el flujo normal
+    VENCIDO = "vencido"    # llegó fuera de la ventana: solo auditoría (no va a Odoo, no reserva, no notifica)
+
+
+class PreopEnvioDiferido(TimestampMixin, Base):
+    """Trazabilidad de los formularios guardados en el teléfono por falta de señal.
+
+    Regla de negocio (2026-11-24): se reenvían como máximo 1 hora después de perder la
+    señal (ver ``app/preop/diferido.py``). Tabla nueva (no columnas en ``preoperacional``)
+    para no requerir migración. Horas:
+
+    * ``apertura_at``: ``auth_date`` del initData con que se abrió el formulario (firmado
+      por Telegram, no falsificable).
+    * ``sin_senal_desde``: primer intento de envío fallido, según el reloj del teléfono.
+    * ``recibido_at``: hora del servidor.
+    """
+
+    __tablename__ = "preop_envios_diferidos"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    uuid: Mapped[str] = mapped_column(String(36), nullable=False, unique=True)
+    telegram_user_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    estado: Mapped[EstadoDiferido] = mapped_column(
+        Enum(EstadoDiferido, name="preop_estado_diferido", native_enum=False, length=16,
+             values_callable=lambda e: [m.value for m in e]),
+        nullable=False,
+    )
+    motivo: Mapped[str | None] = mapped_column(Text)
+    # Solo los aceptados tienen preoperacional; los vencidos guardan el formulario aquí.
+    preop_id: Mapped[int | None] = mapped_column(ForeignKey("preoperacional.id", ondelete="SET NULL"))
+    apertura_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    sin_senal_desde: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    recibido_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+    # Segundos entre la pérdida de señal (teléfono) y la recepción (servidor).
+    retraso_segundos: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Huella SHA-256 del formulario recibido (sin los datos de autenticación).
+    payload_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Formulario completo de un envío vencido (sin la foto, que va en ``foto``).
+    payload: Mapped[dict[str, Any] | None] = mapped_column(JsonType)
+    foto: Mapped[bytes | None] = mapped_column(LargeBinary)
+
+    __table_args__ = (Index("ix_preop_diferidos_estado_fecha", "estado", "recibido_at"),)
+
+
 class Ubicacion(TimestampMixin, Base):
     """Ubicación compartida desde el chat (botón 📍 Enviar ubicación).
 

@@ -6,6 +6,7 @@ Versionado: [SemVer](https://semver.org/lang/es/) (`MAJOR.MINOR.PATCH`).
 ## [Sin publicar]
 
 ### Agregado
+- **Preoperacional sin señal (2026-11-24):** si el envío falla por falta de señal, la Mini App guarda el formulario en el teléfono (IndexedDB) y lo reenvía sola al volver la señal, o al reabrirla. Se acepta como máximo **1 hora después de perder la señal** (anclado a la hora de apertura firmada por Telegram; tope de 2 h desde la apertura). Fuera de la ventana el servidor responde 410 y lo guarda solo como auditoría, sin Odoo, sin reserva y sin aviso al conductor. Nueva tabla `preop_envios_diferidos` con la trazabilidad (apertura, pérdida de señal, recepción, retraso, huella SHA-256). Ver `docs/PREOPERACIONAL.md` § Envío sin señal.
 - **Reserva del vehículo por jornada y botón 🔴 Finalizar:** tabla temporal `reservas_vehiculo`: una placa por conductor y un conductor por placa. El preoperacional reserva el vehículo; los demás lo ven como NO DISPONIBLE (rojo) y el servidor rechaza su envío. Se libera con 🔴 Finalizar (con confirmación y aviso al jefe inmediato por Telegram), a las 24 h de su registro inicial o con `python -m app.preop.reservas --liberar PLACA`. Cada liberación queda en `reservas_historial`.
 
 ### Cambiado

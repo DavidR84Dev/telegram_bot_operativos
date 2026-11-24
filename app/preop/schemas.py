@@ -15,7 +15,7 @@ import binascii
 from datetime import UTC, datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .checklist import CHECKLIST, CHECKLIST_BY_KEY, MEASURES_BY_KEY, OBLIGATORIOS, completar_casillas
 
@@ -237,6 +237,17 @@ def decode_photo(value: str) -> tuple[bytes, str]:
     raise ValueError("La foto debe ser JPEG o PNG")
 
 
+class EnvioDiferidoIn(BaseModel):
+    """Datos de un formulario que quedó guardado en el teléfono por falta de señal."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    # initData con que se abrió el formulario: su ``auth_date`` (firmado) es la hora de apertura.
+    init_data_original: str = Field(min_length=1, max_length=4096)
+    # Primer intento de envío fallido por red (reloj del teléfono, con zona horaria).
+    sin_senal_desde: AwareDatetime
+
+
 class PreoperacionalIn(BaseModel):
     """Formulario enviado por la Mini App. La identidad NO viaja aquí (sale de initData)."""
 
@@ -257,6 +268,8 @@ class PreoperacionalIn(BaseModel):
     # Foto de los testigos del tablero -> campo ``testigos_img`` de Odoo. Recomendada pero
     # no obligatoria (decisión del 2026-11-23): sin ella el resumen solo muestra una alerta.
     testigos_img: str | None = Field(default=None, min_length=16, max_length=FOTO_MAX_BYTES * 4 // 3 + 64)
+    # Solo en reenvíos de un formulario guardado sin señal (ver app/preop/diferido.py).
+    diferido: EnvioDiferidoIn | None = None
 
     @field_validator("testigos_img")
     @classmethod

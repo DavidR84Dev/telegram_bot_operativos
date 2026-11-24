@@ -131,13 +131,29 @@ Sin empleado o sin extracto aprobado se muestra una pantalla de bloqueo que expl
 - **Foto de testigos (opcional):** llega en base64 (JPEG o PNG, máximo 3 MB, validada por su firma real, no por lo que diga el cliente). La Mini App la comprime antes de enviarla (lado mayor 1600 px, unos 300 KB).
 - La Mini App pinta los datos con `textContent`, nunca con `innerHTML`.
 
+### Envío sin señal (`app/preop/diferido.py`, regla del 2026-11-24)
+
+Si el envío falla por red (sin respuesta, o 502/503/504 del túnel), la Mini App guarda el formulario en una **bandeja de salida** en el teléfono (IndexedDB; si no está disponible, `localStorage`) con su `uuid`, el `initData` de la apertura y `sin_senal_desde` (primer intento fallido). Mientras siga abierta reintenta cada 15 s y al evento `online`; si se cerró, lo envía al volver a abrirla con señal. El reenvío lleva `diferido: {init_data_original, sin_senal_desde}`.
+
+**Regla:** se reenvía como máximo **1 hora después de perder la señal**. El servidor lo comprueba anclado a la hora de apertura firmada por Telegram (`auth_date` del initData original), porque el reloj del teléfono se puede cambiar:
+
+1. apertura − 2 min ≤ `sin_senal_desde` ≤ recepción + 2 min (reloj coherente);
+2. recepción − `sin_senal_desde` ≤ 60 min (+ 2 min de tolerancia);
+3. recepción − apertura ≤ 2 h (tope no falsificable).
+
+- **Dentro de la ventana:** flujo normal (mismas validaciones, reserva, Odoo y confirmación en el chat) y una fila `aceptado` en `preop_envios_diferidos` con las tres horas, el retraso y la huella SHA-256 del formulario.
+- **Fuera de la ventana:** **410**. Fila `vencido` en `preop_envios_diferidos` con el motivo, el formulario completo y la foto. No se envía a Odoo, no reserva el vehículo y **no se notifica al conductor** (la Mini App lo descarta en silencio al reabrirla). Si la hora pasa con la Mini App abierta, esta muestra "No se pudo enviar a tiempo" y pide diligenciar uno nuevo.
+- Si el primer intento sí había llegado (se perdió solo la respuesta), el reenvío devuelve el registro original como duplicado.
+- Autenticación del reenvío: la cabecera se acepta hasta 2 h (la Mini App pudo seguir abierta sin señal) y el initData original hasta 7 días (solo para fechar la apertura); ambos deben ser del mismo usuario.
+- Limitación: la Mini App necesita señal para **abrirse**; esto cubre la pérdida de señal durante el diligenciamiento o al enviar.
+
 | Ruta | Respuesta |
 |---|---|
 | `GET /preoperacional` | HTML de la Mini App |
 | `GET /api/preop/form` | catálogo de secciones, ítems, opciones y medidas |
 | `GET /api/preop/context` | conductor y responsable, `validado` y extractos aprobados del conductor con su vehículo y contratos |
 | `GET /static/viacotur-logo.png` | logo de la cabecera |
-| `POST /api/preop` | **202** con `{id, uuid, sync_status: "pendiente", no_conformes, duplicado}`; 401, 403, 409 o 422 si se rechaza |
+| `POST /api/preop` | **202** con `{id, uuid, sync_status: "pendiente", no_conformes, duplicado}`; 401, 403, 409 o 422 si se rechaza; **410** si es un reenvío sin señal fuera de la ventana de 1 h (queda solo como auditoría) |
 | `GET /api/preop/{uuid}` | estado de un envío propio |
 
 ### Conector XML-RPC (`app/preop/odoo_writer.py`)
@@ -217,6 +233,7 @@ Los comandos del bot (`/preoperacional` incluido) se registran solos al arrancar
 | Tarea | Comando |
 |---|---|
 | Cola pendiente | `SELECT sync_status, count(*) FROM preoperacional GROUP BY 1;` |
+| Envíos sin señal | `SELECT estado, uuid, telegram_user_id, apertura_at, sin_senal_desde, recibido_at, motivo FROM preop_envios_diferidos ORDER BY recibido_at DESC;` |
 | Ver fallidos | `SELECT id, uuid, attempts, error_log FROM preoperacional WHERE sync_status='fallido';` |
 | Reencolar tras corregir | `docker compose exec app python -m app.preop.worker --requeue 12 15` (o `--requeue-all`) |
 | Procesar la cola a mano | `docker compose exec app python -m app.preop.worker --once` |

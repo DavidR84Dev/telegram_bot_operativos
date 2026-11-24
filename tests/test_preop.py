@@ -948,3 +948,102 @@ def test_api_submit_validates_payload(api, seeded):
     body = _payload(vehiculo, extracto).model_dump()
     body["checklist"]["soat"] = "<script>"
     assert client.post("/api/preop", json=body, headers=_headers()).status_code == 422
+
+
+# ───────────────────────────── envío diferido (sin señal, máx. 1 h) ─────────────────────────────
+
+from app.preop import diferido  # noqa: E402
+from app.preop.models import EstadoDiferido, PreopEnvioDiferido  # noqa: E402
+
+
+def _diferido_body(seeded, *, abierto_hace: timedelta, sin_senal_hace: timedelta, user_id=TG_USER) -> dict:
+    vehiculo, extracto = _ids(seeded)
+    body = _payload(vehiculo, extracto).model_dump(mode="json")
+    now = datetime.now(UTC)
+    body["diferido"] = {
+        "init_data_original": make_init_data(user_id=user_id, auth_date=int((now - abierto_hace).timestamp())),
+        "sin_senal_desde": (now - sin_senal_hace).isoformat(),
+    }
+    return body
+
+
+@pytest.mark.parametrize(("apertura", "sin_senal", "vencido"), [
+    (timedelta(minutes=30), timedelta(minutes=10), False),
+    (timedelta(minutes=90), timedelta(minutes=59), False),      # dentro de la hora sin señal
+    (timedelta(minutes=90), timedelta(minutes=61), False),      # tolerancia de reloj (2 min)
+    (timedelta(minutes=90), timedelta(minutes=63), True),       # más de 1 h sin señal
+    (timedelta(minutes=125), timedelta(minutes=20), True),      # tope de 2 h desde la apertura
+    (timedelta(minutes=10), timedelta(minutes=20), True),       # señal perdida antes de abrir: reloj manipulado
+    (timedelta(minutes=10), timedelta(minutes=-5), True),       # señal perdida "en el futuro"
+])
+def test_ventana_de_envio_diferido(apertura, sin_senal, vencido):
+    now = datetime.now(UTC)
+    motivo = diferido.motivo_vencido(now - apertura, now - sin_senal, now)
+    assert (motivo is not None) is vencido
+
+
+def test_api_diferido_en_ventana_sigue_flujo_normal_y_deja_trazabilidad(api, seeded):
+    client, woke = api
+    body = _diferido_body(seeded, abierto_hace=timedelta(minutes=80), sin_senal_hace=timedelta(minutes=40))
+    # La cabecera es el mismo initData original (el Mini App siguió abierto): ya pasó de 1 h,
+    # pero se acepta hasta el tope de la ventana.
+    headers = {"X-Telegram-Init-Data": body["diferido"]["init_data_original"]}
+    first = client.post("/api/preop", json=body, headers=headers)
+    assert first.status_code == 202 and woke == [1]
+    with seeded.session() as s:
+        preop = s.scalar(select(Preoperacional))
+        traza = s.scalar(select(PreopEnvioDiferido))
+        assert preop.sync_status == SyncStatus.PENDIENTE
+        assert traza.estado == EstadoDiferido.ACEPTADO and traza.preop_id == preop.id
+        assert 39 * 60 <= traza.retraso_segundos <= 41 * 60 and traza.payload is None
+        assert len(traza.payload_sha256) == 64
+    # Reintento del mismo formulario: duplicado, no un segundo registro.
+    again = client.post("/api/preop", json=body, headers=_headers())
+    assert again.json()["duplicado"] is True and woke == [1]
+
+
+def test_api_diferido_vencido_solo_queda_como_auditoria(api, seeded):
+    client, woke = api
+    body = _diferido_body(seeded, abierto_hace=timedelta(hours=3), sin_senal_hace=timedelta(minutes=150))
+    response = client.post("/api/preop", json=body, headers=_headers())  # se volvió a abrir con señal
+    assert response.status_code == 410 and woke == []
+    with seeded.session() as s:
+        assert s.scalar(select(func.count()).select_from(Preoperacional)) == 0  # ni Odoo ni reserva
+        traza = s.scalar(select(PreopEnvioDiferido))
+        assert traza.estado == EstadoDiferido.VENCIDO and traza.preop_id is None
+        assert "después de perder la señal" in traza.motivo
+        assert traza.payload["kilometraje"] == 1510 and "testigos_img" not in traza.payload
+        assert traza.foto == JPEG
+    # Reenviarlo otra vez no crea otro registro ni lo procesa.
+    assert client.post("/api/preop", json=body, headers=_headers()).status_code == 410
+    with seeded.session() as s:
+        assert s.scalar(select(func.count()).select_from(PreopEnvioDiferido)) == 1
+
+
+def test_api_diferido_si_el_primer_intento_si_llego_es_duplicado(api, seeded):
+    client, _ = api
+    vehiculo, extracto = _ids(seeded)
+    assert client.post("/api/preop", json=_payload(vehiculo, extracto).model_dump(mode="json"),
+                       headers=_headers()).status_code == 202
+    # El teléfono no recibió la respuesta y lo reenvía horas después: es el mismo formulario.
+    body = _diferido_body(seeded, abierto_hace=timedelta(hours=3), sin_senal_hace=timedelta(hours=2))
+    response = client.post("/api/preop", json=body, headers=_headers())
+    assert response.status_code == 202 and response.json()["duplicado"] is True
+
+
+def test_api_diferido_exige_mismo_usuario_y_firmas_validas(api, seeded):
+    client, _ = api
+    otro = _diferido_body(seeded, abierto_hace=timedelta(minutes=30), sin_senal_hace=timedelta(minutes=5), user_id=1)
+    assert client.post("/api/preop", json=otro, headers=_headers()).status_code == 403
+    falso = _diferido_body(seeded, abierto_hace=timedelta(minutes=30), sin_senal_hace=timedelta(minutes=5))
+    falso["diferido"]["init_data_original"] = make_init_data(tamper=True)
+    assert client.post("/api/preop", json=falso, headers=_headers()).status_code == 401
+    # La cabecera más vieja que el tope (2 h) no autentica, aunque sea firmada.
+    viejo = {"X-Telegram-Init-Data": make_init_data(auth_date=int(datetime.now(UTC).timestamp()) - 3 * 3600)}
+    ok = _diferido_body(seeded, abierto_hace=timedelta(minutes=30), sin_senal_hace=timedelta(minutes=5))
+    assert client.post("/api/preop", json=ok, headers=viejo).status_code == 401
+    # Sin "diferido", la cabecera sigue limitada a 1 h.
+    normal = {"X-Telegram-Init-Data": make_init_data(auth_date=int(datetime.now(UTC).timestamp()) - 90 * 60)}
+    vehiculo, extracto = _ids(seeded)
+    assert client.post("/api/preop", json=_payload(vehiculo, extracto).model_dump(mode="json"),
+                       headers=normal).status_code == 401
