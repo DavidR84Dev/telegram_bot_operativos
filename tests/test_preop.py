@@ -453,9 +453,6 @@ def test_odometer_below_last_registered_is_rejected(seeded):
         service.submit(seeded, IDENTITY, _payload(vehiculo, extracto, kilometraje=1500))
     preop, _ = service.submit(seeded, IDENTITY, _payload(vehiculo, extracto, kilometraje=1500.5))
     assert preop.kilometraje == 1500.5
-    # Varios preoperacionales del mismo conductor son válidos.
-    otro, dup = service.submit(seeded, IDENTITY, _payload(vehiculo, extracto, uuid=UUID.replace("0b", "1c", 1)))
-    assert not dup and otro.id != preop.id
 
 
 def test_odometer_is_read_live_from_odoo_with_local_fallback(seeded):
@@ -578,17 +575,19 @@ def test_vehicle_is_reserved_to_one_driver_until_finalizar(seeded):
     _con_segundo_conductor(seeded)
     vehiculo, extracto = _ids(seeded)
     preop, _ = service.submit(seeded, IDENTITY, _payload(vehiculo, extracto, uuid=_uuid(1)))
-    # El mismo conductor puede hacer otro preoperacional del vehículo (la reserva se actualiza).
-    otro, _ = service.submit(seeded, IDENTITY, _payload(vehiculo, extracto, uuid=_uuid(2)))
+    # El mismo conductor tampoco puede repetirlo: ya está reservado a su nombre (regla del 2026-11-24).
+    with pytest.raises(service.SubmissionError, match="Ya hiciste el preoperacional del vehículo ABC123") as err:
+        service.submit(seeded, IDENTITY, _payload(vehiculo, extracto, uuid=_uuid(2)))
+    assert err.value.status_code == 409
     with seeded.session() as s:
         [reserva] = s.scalars(select(reservas.ReservaVehiculo)).all()
-        assert (reserva.telegram_user_id, reserva.preop_id) == (TG_USER, otro.id)
+        assert (reserva.telegram_user_id, reserva.preop_id) == (TG_USER, preop.id)
     # El segundo conductor del mismo extracto no puede mientras Ana no finalice.
     with pytest.raises(service.SubmissionError, match="lo tiene Ana Conductora") as err:
         service.submit(seeded, SEGUNDO, _payload(vehiculo, extracto, uuid=_uuid(3)))
     assert err.value.status_code == 409
-    with seeded.session() as s:  # el rechazo no deja nada guardado
-        assert s.scalar(select(func.count()).select_from(Preoperacional)) == 2
+    with seeded.session() as s:  # los rechazos no dejan nada guardado
+        assert s.scalar(select(func.count()).select_from(Preoperacional)) == 1
 
     # Finalizar de otro usuario no libera la reserva de Ana.
     assert reservas.finalizar_jornada(seeded, SEGUNDO.user_id).placas == ()
@@ -672,13 +671,12 @@ def test_reservation_expires_24h_after_initial_record_and_keeps_history(seeded):
 def test_finalizar_keeps_history_and_returns_boss_telegram(seeded):
     vehiculo, extracto = _ids(seeded)
     service.submit(seeded, IDENTITY, _payload(vehiculo, extracto, uuid=_uuid(1)))
-    service.submit(seeded, IDENTITY, _payload(vehiculo, extracto, uuid=_uuid(2)))
     liberacion = reservas.finalizar_jornada(seeded, TG_USER)
     assert liberacion.placas == ("ABC123",) and liberacion.conductor == "Ana Conductora"
-    assert liberacion.preoperacionales == 2 and liberacion.jefe_telegram_id == 999  # PIN de Jefe Uno
+    assert liberacion.preoperacionales == 1 and liberacion.jefe_telegram_id == 999  # PIN de Jefe Uno
     with seeded.session() as s:
         [h] = s.scalars(select(reservas.ReservaHistorial)).all()
-        assert (h.motivo, h.telegram_user_id, h.preoperacionales) == ("finalizar", TG_USER, 2)
+        assert (h.motivo, h.telegram_user_id, h.preoperacionales) == ("finalizar", TG_USER, 1)
     assert "Jornada finalizada" in formatting.jornada_finalizada_jefe(liberacion)
     # Liberación manual también queda en el histórico.
     service.submit(seeded, IDENTITY, _payload(vehiculo, extracto, uuid=_uuid(3)))

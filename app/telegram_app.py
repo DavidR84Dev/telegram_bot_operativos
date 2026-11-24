@@ -62,7 +62,7 @@ SERVICES_KEY = "services"
 # BD del preoperacional (la cuelga main._start_preop); la usa el handler de ubicación.
 PREOP_DB_KEY = "preop_db"
 BTN_FORMULARIOS = "📋 Formularios"
-BTN_ESCANEAR = "📷 Escanear QR"
+BTN_ESCANEAR = "📷 Escanear QR Tickets"
 BTN_UBICACION = "📍 Enviar ubicación"
 BTN_PREOP = "✅ Preoperacional"
 BTN_FINALIZAR = "🔴 Finalizar"
@@ -165,8 +165,7 @@ def main_keyboard() -> ReplyKeyboardMarkup:
     """
     return ReplyKeyboardMarkup(
         [
-            [KeyboardButton(BTN_FORMULARIOS)],
-            [KeyboardButton(BTN_UBICACION, request_location=True)],
+         [KeyboardButton(BTN_FORMULARIOS), KeyboardButton(BTN_UBICACION, request_location=True)],
         ],
         resize_keyboard=True,
         is_persistent=False,

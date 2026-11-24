@@ -68,10 +68,11 @@ def test_non_qr_text_points_to_scanner_button():
 
 def test_main_keyboard_only_formularios_and_location_collapsible():
     kb = tga.main_keyboard()
-    assert [[b.text for b in row] for row in kb.keyboard] == [[tga.BTN_FORMULARIOS], [tga.BTN_UBICACION]]
+    # Una sola fila: Formularios y Enviar ubicación lado a lado.
+    assert [[b.text for b in row] for row in kb.keyboard] == [[tga.BTN_FORMULARIOS, tga.BTN_UBICACION]]
     # Botones de texto: las Mini Apps se abren con botones inline (initData).
     assert all(b.web_app is None for row in kb.keyboard for b in row)
-    assert kb.keyboard[1][0].request_location is True
+    assert kb.keyboard[0][1].request_location is True
     # No persistente: Telegram lo pliega detrás de su botón de teclado (toggle-reply-markup).
     assert kb.is_persistent is False
 

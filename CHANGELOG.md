@@ -10,6 +10,9 @@ Versionado: [SemVer](https://semver.org/lang/es/) (`MAJOR.MINOR.PATCH`).
 - **Reserva del vehículo por jornada y botón 🔴 Finalizar:** tabla temporal `reservas_vehiculo`: una placa por conductor y un conductor por placa. El preoperacional reserva el vehículo; los demás lo ven como NO DISPONIBLE (rojo) y el servidor rechaza su envío. Se libera con 🔴 Finalizar (con confirmación y aviso al jefe inmediato por Telegram), a las 24 h de su registro inicial o con `python -m app.preop.reservas --liberar PLACA`. Cada liberación queda en `reservas_historial`.
 
 ### Cambiado
+- **Preoperacional, ajustes del 2026-11-24:**
+  - «📷 Tomar foto» abre la cámara trasera dentro del formulario (`getUserMedia`): Telegram para Android ignoraba `capture` y abría la galería.
+  - Solo se puede hacer el preoperacional de un vehículo **DISPONIBLE**. Un vehículo reservado, incluso a nombre del mismo conductor, queda bloqueado en la Mini App y el servidor lo rechaza (409). Sin vehículos disponibles, el formulario no deja entrar y explica por qué.
 - **Preoperacional, ajustes del 2026-11-23 (noche):**
   - Rines/Llantas: el labrado no puede enviarse en 0 mm (Mini App y servidor); vacío sigue siendo "no medido" y la presión admite 0.
   - Resumen: la tarjeta "Observaciones y estado final" siempre visible (texto escrito en Evidencia o "Sin observaciones."); "Siguiente" cierra el teclado para que Android confirme la última palabra escrita.

@@ -76,6 +76,16 @@
   .veh-card .tag.propia { color: var(--brand-2); background: var(--brand-soft); }
   .veh-card .tag.ocupado { color: var(--bad); background: color-mix(in srgb, var(--bad) 12%, transparent); }
   .veh-card:disabled { opacity: .6; }
+  .camara { position: fixed; inset: 0; z-index: 50; background: #000; display: flex; flex-direction: column; }
+  .camara[hidden] { display: none; }
+  .camara video { flex: 1; width: 100%; min-height: 0; object-fit: contain; background: #000; }
+  .cam-bar { display: flex; align-items: center; justify-content: space-between; gap: 16px;
+             padding: 16px 16px calc(16px + env(safe-area-inset-bottom)); }
+  .cam-cancel, .cam-spacer { width: 96px; }
+  .cam-cancel { min-height: var(--tap); border: 0; border-radius: 10px; background: rgba(255,255,255,.18); color: #fff; font: inherit; }
+  .cam-shutter { width: 68px; height: 68px; border-radius: 50%; border: 4px solid #fff;
+                 background: color-mix(in srgb, #fff 85%, transparent); padding: 0; }
+  .cam-shutter:active { transform: scale(.94); }
   .veh-card .ocupado-por { display: block; font-size: 12px; color: var(--bad); }
   .field-hint { font-size: 13px; color: var(--hint); margin-top: 4px; }
   .field-hint.warn { color: var(--warn); font-weight: 600; }
@@ -252,7 +262,8 @@
     <div class="card">
       <h2>Imagen de testigos</h2>
       <div class="hint">Foto del tablero con el vehículo encendido, donde se vean los testigos (luces de advertencia).</div>
-      <!-- Dos entradas: con "capture" abre la cámara; sin él, la galería del celular. -->
+      <!-- "Tomar foto" abre la cámara dentro del formulario (#camara); foto-camara es el respaldo
+           si el teléfono no permite usar la cámara aquí. foto-galeria abre la galería. -->
       <input id="foto-camara" type="file" accept="image/*" capture="environment" hidden>
       <input id="foto-galeria" type="file" accept="image/*" hidden>
       <div class="photo-zone" id="foto-zone">
@@ -309,6 +320,16 @@
   </section>
 </main>
 
+<!-- Cámara dentro del formulario (foto de testigos) -->
+<div id="camara" class="camara" hidden>
+  <video id="cam-video" autoplay playsinline muted></video>
+  <div class="cam-bar">
+    <button type="button" class="cam-cancel" id="cam-cerrar">Cancelar</button>
+    <button type="button" class="cam-shutter" id="cam-capturar" aria-label="Capturar foto"></button>
+    <span class="cam-spacer"></span>
+  </div>
+</div>
+
 <footer class="actions" id="actions" hidden>
   <button type="button" class="btn-secondary" id="prev">← Atrás</button>
   <button type="button" class="btn-primary" id="next">Siguiente →</button>
@@ -340,7 +361,7 @@
 
   const state = {
     step: 1, tab: 0, form: null, ctx: null, extracto: null, answers: {}, foto: null, uuid: null,
-    internas: false, sending: false, finished: false, dirty: false,
+    internas: false, sending: false, finished: false, dirty: false, stream: null,
     // Envío sin señal: initData de la apertura, formulario pendiente y temporizador de reintento.
     initDataOriginal: "", pendiente: null, pendienteGuardado: false, reintento: null, avisoBandeja: "",
   };
@@ -562,9 +583,23 @@
   // 🔴 Finalizar), la tarjeta aparece bloqueada; el servidor también lo valida.
   const reservaDe = (e) => (e.vehiculo.reserva && e.vehiculo.reserva.estado) || "disponible";
   const seleccionable = (e) => !BLOQUEADO.includes(reservaDe(e));
-  // ocupado: lo tiene otro conductor; otro_propio: este conductor ya tiene otro vehículo reservado.
-  const BLOQUEADO = ["ocupado", "otro_propio"];
+  // Regla (2026-11-24): solo un vehículo "disponible" permite el preoperacional.
+  // propia: ya hizo el suyo (reservado a su nombre); ocupado: lo tiene otro conductor;
+  // otro_propio: este conductor ya tiene otro vehículo reservado.
+  const BLOQUEADO = ["propia", "ocupado", "otro_propio"];
   const TAG = { disponible: "DISPONIBLE", propia: "RESERVADO POR TI", ocupado: "NO DISPONIBLE", otro_propio: "NO DISPONIBLE" };
+
+  function motivosSinVehiculo() {
+    const lineas = state.ctx.extractos.map((e) => {
+      const v = e.vehiculo, placa = v.matricula || v.nombre || "Vehículo", r = v.reserva || {};
+      if (reservaDe(e) === "propia") return `${placa}: ya hiciste su preoperacional (reservado a tu nombre).`;
+      if (reservaDe(e) === "ocupado") return `${placa}: en uso por ${r.conductor || "otro conductor"}, que no ha finalizado su jornada.`;
+      return `${placa}: ya tienes reservado ${r.placa_propia}.`;
+    });
+    const propio = state.ctx.extractos.some((e) => ["propia", "otro_propio"].includes(reservaDe(e)));
+    return [...new Set(lineas)].join("\n") +
+      (propio ? "\n\nAl terminar tu jornada toca «🔴 Finalizar» en el chat para liberar tu vehículo." : "");
+  }
 
   function onContrato() {
     const opciones = extractosDelContrato();
@@ -579,7 +614,9 @@
         el("strong", { text: v.matricula || v.nombre || "Vehículo" }),
         el("span", { class: "hint", text: [v.nombre, v.numero_interno && `N.º interno ${v.numero_interno}`, e.codigo].filter(Boolean).join(" · ") }),
       ]);
-      if (estado === "ocupado") {
+      if (estado === "propia") {
+        info.append(el("span", { class: "ocupado-por", text: "Ya hiciste el preoperacional de este vehículo. Toca 🔴 Finalizar en el chat al terminar tu jornada." }));
+      } else if (estado === "ocupado") {
         info.append(el("span", { class: "ocupado-por", text: `En uso por ${v.reserva.conductor || "otro conductor"} (no ha finalizado su jornada)` }));
       } else if (estado === "otro_propio") {
         info.append(el("span", { class: "ocupado-por", text: `Ya tienes reservado ${v.reserva.placa_propia}. Toca 🔴 Finalizar para cambiar de vehículo.` }));
@@ -587,7 +624,7 @@
       const bloqueado = BLOQUEADO.includes(estado);
       const card = el("button", { type: "button", class: "veh-card", "aria-pressed": String(e === state.extracto) }, [
         el("span", { class: "ico", text: "🚌" }), info,
-        el("span", { class: `tag ${bloqueado ? "ocupado" : estado}`, text: TAG[estado] || TAG.disponible }),
+        el("span", { class: `tag ${estado === "propia" ? "propia" : bloqueado ? "ocupado" : estado}`, text: TAG[estado] || TAG.disponible }),
       ]);
       if (bloqueado) card.disabled = true;
       else card.addEventListener("click", () => { markDirty(); state.extracto = e; onContrato(); });
@@ -887,16 +924,31 @@
     });
   }
 
-  async function compress(file) {
-    const img = await loadImage(file);
-    const scale = Math.min(1, PHOTO_MAX_SIDE / Math.max(img.naturalWidth, img.naturalHeight));
+  // Imagen (foto o cuadro de video) -> JPEG con el lado mayor ≤ PHOTO_MAX_SIDE.
+  function toJpeg(source, width, height) {
+    const scale = Math.min(1, PHOTO_MAX_SIDE / Math.max(width, height));
     const canvas = document.createElement("canvas");
-    canvas.width = Math.round(img.naturalWidth * scale);
-    canvas.height = Math.round(img.naturalHeight * scale);
-    canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+    canvas.width = Math.round(width * scale);
+    canvas.height = Math.round(height * scale);
+    canvas.getContext("2d").drawImage(source, 0, 0, canvas.width, canvas.height);
     let data = canvas.toDataURL("image/jpeg", 0.8);
     if (data.length > 1_400_000) data = canvas.toDataURL("image/jpeg", 0.6);
     return data;
+  }
+
+  async function compress(file) {
+    const img = await loadImage(file);
+    return toJpeg(img, img.naturalWidth, img.naturalHeight);
+  }
+
+  function setFoto(data) {
+    state.foto = data;
+    markDirty();
+    $("foto-preview").src = data;
+    $("foto-preview").hidden = false;
+    $("foto-cambiar").hidden = false;
+    $("foto-zone").hidden = true;
+    setMsg("");
   }
 
   async function onPhoto(ev) {
@@ -905,16 +957,46 @@
     if (!file) return;
     setMsg("Procesando foto…");
     try {
-      state.foto = await compress(file);
-      markDirty();
-      $("foto-preview").src = state.foto;
-      $("foto-preview").hidden = false;
-      $("foto-cambiar").hidden = false;
-      $("foto-zone").hidden = true;
-      setMsg("");
+      setFoto(await compress(file));
     } catch (err) {
       setMsg(err.message, true);
     }
+  }
+
+  // Telegram en Android ignora <input capture> y abre la galería: la cámara se abre aquí
+  // mismo con getUserMedia (cámara trasera). Si no hay permiso o soporte, se usa el input.
+  async function abrirCamara() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { $("foto-camara").click(); return; }
+    try {
+      state.stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false,
+      });
+    } catch (err) {
+      setMsg(err && err.name === "NotAllowedError"
+        ? "Permite el acceso a la cámara a Telegram para tomar la foto, o elígela de la galería."
+        : "No se pudo abrir la cámara. Elige la foto de la galería.", true);
+      return;
+    }
+    const video = $("cam-video");
+    video.srcObject = state.stream;
+    $("camara").hidden = false;
+    try { await video.play(); } catch (_) { /* se reproduce al tocar */ }
+  }
+
+  function cerrarCamara() {
+    if (state.stream) state.stream.getTracks().forEach((t) => t.stop());
+    state.stream = null;
+    $("cam-video").srcObject = null;
+    $("camara").hidden = true;
+  }
+
+  function capturar() {
+    const video = $("cam-video");
+    if (!video.videoWidth) return;  // aún no hay imagen
+    const data = toJpeg(video, video.videoWidth, video.videoHeight);
+    cerrarCamara();
+    setFoto(data);
+    if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
   }
 
   // ── Paso 4: Resumen de la Inspección ─────────────────────────────────────
@@ -1057,6 +1139,7 @@
   }
 
   function prev() {
+    if (!$("camara").hidden) { cerrarCamara(); return; }
     if (state.finished) return;
     if (state.step === 2 && state.tab > 0) { showTab(state.tab - 1); return; }
     if (state.step > 1) goTo(state.step - 1);
@@ -1178,6 +1261,11 @@
         "No tienes un extracto aprobado y vigente como conductor.\nPide a tu responsable que apruebe tu extracto y vuelve a abrir el formulario.");
       return;
     }
+    // Sin ningún vehículo disponible no se entra al formulario.
+    if (!state.ctx.extractos.some(seleccionable)) {
+      block("No tienes vehículos disponibles", motivosSinVehiculo());
+      return;
+    }
     state.uuid = newUuid();
     state.initDataOriginal = tg.initData;
     $("conductor").value = state.ctx.empleado.nombre;
@@ -1190,7 +1278,11 @@
     $("observaciones").addEventListener("change", renderObservaciones);
     $("tab-conforme").addEventListener("click", () => markAllPositive(tabItems(state.tab)));
     for (const id of ["foto-camara", "foto-galeria"]) $(id).addEventListener("change", onPhoto);
-    document.querySelectorAll("[data-pick]").forEach((b) => b.addEventListener("click", () => $(b.dataset.pick).click()));
+    document.querySelectorAll("[data-pick]").forEach((b) => b.addEventListener("click", () => {
+      if (b.dataset.pick === "foto-camara") abrirCamara(); else $(b.dataset.pick).click();
+    }));
+    $("cam-capturar").addEventListener("click", capturar);
+    $("cam-cerrar").addEventListener("click", cerrarCamara);
     $("sum-foto").addEventListener("click", () => { if (!state.foto) goTo(3); });
     $("next").addEventListener("click", next);
     $("prev").addEventListener("click", prev);
