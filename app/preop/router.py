@@ -158,7 +158,16 @@ def _out(preop: Preoperacional, duplicated: bool = False) -> PreoperacionalOut:
     )
 
 
-@router.post("/api/preop", status_code=status.HTTP_202_ACCEPTED, response_model=PreoperacionalOut)
+def _firma_previa(request: Request, x_telegram_init_data: Annotated[str | None, Header()] = None) -> None:
+    """Rechaza (401) sin firma válida **antes** de validar el cuerpo: así un cliente sin sesión
+    no ve los errores de validación del formulario. La antigüedad exacta se revisa en la ruta."""
+    svc = _services(request)
+    _validar(x_telegram_init_data, svc.bot_token,
+             max(svc.max_age_seconds, int(diferido.TOPE_DESDE_APERTURA.total_seconds())))
+
+
+@router.post("/api/preop", status_code=status.HTTP_202_ACCEPTED, response_model=PreoperacionalOut,
+             dependencies=[Depends(_firma_previa)])
 async def preop_submit(
     body: PreoperacionalIn,
     request: Request,

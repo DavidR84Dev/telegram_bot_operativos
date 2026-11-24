@@ -942,6 +942,14 @@ def test_api_submit_accepts_and_wakes_worker(api, seeded):
     assert client.get(f"/api/preop/{UUID}", headers=_headers(user_id=1)).status_code == 404
 
 
+def test_api_submit_checks_signature_before_payload(api):
+    client, _ = api
+    assert client.post("/api/preop", json={}).status_code == 401
+    forged = {"X-Telegram-Init-Data": make_init_data(tamper=True)}
+    assert client.post("/api/preop", json={}, headers=forged).status_code == 401
+    assert client.post("/api/preop", json={}, headers=_headers()).status_code == 422
+
+
 def test_api_submit_validates_payload(api, seeded):
     client, _ = api
     vehiculo, extracto = _ids(seeded)
