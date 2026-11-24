@@ -244,10 +244,10 @@
     <div class="card">
       <div class="toolbar">
         <span class="progress-pill" id="tab-count"></span>
-        <button type="button" class="link" id="tab-conforme">✔ Marcar pestaña conforme</button>
+        <button type="button" class="link" id="tab-conforme"></button>
       </div>
-      <div class="hint">Las opciones no marcadas o marcadas como «No conforme» aparecerá como alertas en el resumen antes del envió.
-        Los ítems con <span class="req">*</span> (Conforme / No conforme / No aplica) son obligatorios para continuar.</div>
+      <div class="hint">Las opciones no marcadas o marcadas como «No conforme» aparecerán como alertas en el resumen antes del envío.
+        Los ítems con <span class="req">*</span> (Conforme / No conforme / No aplica) y las medidas visibles de labrado y presión son obligatorios para continuar.</div>
       <div id="req-pending" class="banner bad" hidden></div>
     </div>
     <div id="tab-panels"></div>
@@ -733,21 +733,27 @@
     return opts;
   }
 
-  function numberInput(key, label, decimal, max) {
+  function numberInput(key, label, decimal, max, required) {
     const input = el("input", {
       id: `m-${key}`, type: "text", inputmode: decimal ? "decimal" : "numeric", autocomplete: "off",
-      placeholder: decimal ? "0.0" : "0", enterkeyhint: "next", dataset: { measure: key, label, max: String(max) },
+      placeholder: decimal ? "0.0" : "0", enterkeyhint: "next",
+      dataset: { measure: key, label, max: String(max), required: String(required) },
     });
     input.addEventListener("input", () => { markDirty(); validateMeasure(input); refreshTireHints(); });
-    return el("div", {}, [el("label", { for: input.id, text: label }), input, el("div", { class: "field-hint", dataset: { hintFor: key } })]);
+    return el("div", {}, [
+      el("label", { for: input.id }, [label, ...(required ? [el("span", { class: "req", text: " *" })] : [])]),
+      input,
+      el("div", { class: "field-hint", dataset: { hintFor: key } }),
+    ]);
   }
 
   function tireBlock(ll) {
+    const required = (key) => state.form.measures.find((m) => m.key === key).obligatorio;
     return el("div", { class: "tire", dataset: { tire: ll.codigo, interna: String(ll.interna) } }, [
       el("div", { class: "tire-title" }, [ll.nombre, el("span", { class: "hint", text: ` · ${ll.posicion}` })]),
       el("div", { class: "grid2" }, [
-        numberInput(ll.labrado, "Labrado (mm)", true, measureMax(ll.labrado)),
-        numberInput(ll.presion, "Presión de aire (PSI)", false, measureMax(ll.presion)),
+        numberInput(ll.labrado, "Labrado (mm)", true, measureMax(ll.labrado), required(ll.labrado)),
+        numberInput(ll.presion, "Presión de aire (PSI)", false, measureMax(ll.presion), required(ll.presion)),
       ]),
     ]);
   }
@@ -877,7 +883,10 @@
     const llantas = {};
     const errors = [];
     for (const input of visibleMeasureInputs()) {
-      if (input.value.trim() === "") continue;
+      if (input.value.trim() === "") {
+        if (input.dataset.required === "true") errors.push(`${input.dataset.label} (${input.id.slice(2)}): campo obligatorio.`);
+        continue;
+      }
       if (labradoEnCero(input)) { validateMeasure(input); errors.push(`${input.dataset.label} (${input.id.slice(2)}): el labrado no puede ser 0 mm.`); }
       else if (!validateMeasure(input)) errors.push(`${input.dataset.label} (${input.id.slice(2)}): ${isLabrado(input)
         ? `el labrado máximo es ${fmtNum(maxDe(input))} mm (${(state.extracto && state.extracto.vehiculo.clase_labrado) || "vehículo"}).`
@@ -1288,7 +1297,7 @@
     $("km").addEventListener("input", () => { markDirty(); onKm(); });
     $("observaciones").addEventListener("input", () => { markDirty(); renderObservaciones(); });
     $("observaciones").addEventListener("change", renderObservaciones);
-    $("tab-conforme").addEventListener("click", () => markAllPositive(tabItems(state.tab)));
+    // $("tab-conforme").addEventListener("click", () => markAllPositive(tabItems(state.tab)));
     for (const id of ["foto-camara", "foto-galeria"]) $(id).addEventListener("change", onPhoto);
     document.querySelectorAll("[data-pick]").forEach((b) => b.addEventListener("click", () => {
       if (b.dataset.pick === "foto-camara") abrirCamara(); else $(b.dataset.pick).click();

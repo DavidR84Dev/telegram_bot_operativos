@@ -17,7 +17,14 @@ from typing import Any
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from .checklist import CHECKLIST, CHECKLIST_BY_KEY, MEASURES_BY_KEY, OBLIGATORIOS, completar_casillas
+from .checklist import (
+    CHECKLIST,
+    CHECKLIST_BY_KEY,
+    LLANTAS_POSICIONES,
+    MEASURES_BY_KEY,
+    OBLIGATORIOS,
+    completar_casillas,
+)
 
 # ─────────────────────────────── Normalización de la API ───────────────────────────────
 
@@ -328,6 +335,16 @@ class PreoperacionalIn(BaseModel):
         self.checklist = completar_casillas(self.checklist)
         if self.observaciones == "":
             self.observaciones = None
+        tiene_llantas_internas = self.extra.get("llantas_internas") is True
+        faltan_medidas = [
+            MEASURES_BY_KEY[key].label
+            for ll in LLANTAS_POSICIONES
+            if not ll.interna or tiene_llantas_internas
+            for key in (ll.labrado, ll.presion)
+            if MEASURES_BY_KEY[key].required and key not in self.llantas
+        ]
+        if faltan_medidas:
+            raise ValueError(f"Completa las medidas obligatorias: {', '.join(faltan_medidas)}")
         return self
 
 

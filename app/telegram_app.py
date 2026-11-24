@@ -10,6 +10,11 @@ muestra detrás de su botón de teclado (``toggle-reply-markup``) y solo tiene:
                              • 🔴 Finalizar   (fin de jornada: libera el vehículo reservado)
     📍 Enviar ubicación -> comparte la ubicación (se guarda en la BD del bot)
 
+Un usuario sin acceso (su id de Telegram no está en el PIN de ningún empleado) ve en su
+lugar 📝 Registro: tres preguntas (nombre, documento, correo) que se guardan en
+``registros_conductor``, se validan en Odoo y registran su id de Telegram como PIN
+(``preop.registro``). Quien ya completó el registro no vuelve a ver esa opción.
+
 Agregar un formulario nuevo = agregar una ``MenuOption`` a ``FORMULARIOS``: aparece
 solo en el panel, antes de Escanear QR y Finalizar.
 
@@ -31,6 +36,7 @@ from telegram import (
     InlineKeyboardMarkup,
     KeyboardButton,
     ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
     Update,
     WebAppInfo,
 )
@@ -40,6 +46,7 @@ from telegram.ext import (
     CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
+    ConversationHandler,
     MessageHandler,
     filters,
 )
@@ -50,8 +57,10 @@ from .config import Settings
 from .odoo_client import OdooClient
 from .odoo_queries import find_employee_by_pin, find_internal_token, find_tickets_by_ids
 from .passenger_notifier import PassengerNotifier
+from .preop import registro as preop_registro
 from .preop import reservas as preop_reservas
 from .preop import service as preop_service
+from .preop.rest_client import OdooRestClient
 from .scan_service import STATUS_MESSAGES, scan_qr
 from .watch_store import WatchStore
 from .watcher import Watcher, utc_now
@@ -72,6 +81,35 @@ CB_FINALIZAR_PEDIR = "finalizar:pedir"  # botón 🔴 Finalizar del panel de for
 FINALIZAR_PREGUNTA = "¿Confirmas que ya terminaste tu jornada laboral?"
 BTN_FINALIZAR_SI = "✅ Sí, finalizar"
 BTN_FINALIZAR_NO = "❌ Cancelar"
+
+# ── 📝 Registro de conductores nuevos ──
+REGISTRO_KEY = "registro"
+BTN_REGISTRO = "📝 Registro"
+REG_NOMBRE, REG_DOCUMENTO, REG_CORREO = range(3)
+MSG_REG_INVITACION = (
+    "👋 Hola, aún no estás registrado en el bot <b>Operativos-Viacotur</b>.\n\n"
+    f"Toca <b>{BTN_REGISTRO}</b> para registrarte. Te pediré tu nombre completo, tu número "
+    "de documento y tu correo electrónico."
+)
+MSG_REG_NOMBRE = "¡Hola! Para registrarte necesito tu <b>nombre completo</b>:"
+MSG_REG_DOCUMENTO = "Gracias, {nombre}. Ahora tu <b>número de cédula o documento de identidad</b> (solo números):"
+MSG_REG_CORREO = "Por último, tu <b>correo electrónico</b>:"
+MSG_REG_ERROR_NOMBRE = "Escribe tu nombre y apellidos, solo con letras (por ejemplo: Ana María Pérez Gómez)."
+MSG_REG_ERROR_DOCUMENTO = "Ese documento no parece válido. Envíalo solo con números, sin puntos ni espacios."
+MSG_REG_ERROR_CORREO = "Ese correo no parece válido. Escríbelo completo, por ejemplo: nombre@correo.com"
+MSG_REG_VALIDANDO = "⏳ Validando tus datos en Odoo…"
+MSG_REG_NO_ENCONTRADO = "Conductor no registrado en Odoo. Por favor comunicarse con el área de Talento humano"
+MSG_REG_EXITO = ("Usuario correctamente registrado en Odoo. Bienvenido, ya puedes hacer uso del Bot "
+                 "'Operativos-Viacotur'")
+MSG_REG_PIN_OCUPADO = ("Ese documento ya está asociado a otra cuenta de Telegram. Por favor comunicarse "
+                       "con el área de Talento humano")
+MSG_REG_ERROR_ODOO = ("No fue posible validar tus datos en Odoo en este momento. Intenta de nuevo en unos "
+                      f"minutos con <b>{BTN_REGISTRO}</b>.")
+MSG_REG_YA_REGISTRADO = "Ya estás registrado. Usa el menú para continuar."
+MSG_REG_SIN_ACCESO = ("🔒 Tu registro ya fue realizado, pero tu usuario no tiene acceso en Odoo. Por favor "
+                      "comunicarse con el área de Talento humano")
+MSG_REG_NO_DISPONIBLE = "El registro no está disponible en este momento. Intenta más tarde."
+MSG_REG_CANCELADO = f"Registro cancelado. Cuando quieras empezar de nuevo toca <b>{BTN_REGISTRO}</b>."
 
 
 @dataclass(frozen=True)
@@ -98,8 +136,18 @@ class Services:
     watcher: Watcher
 
 
+@dataclass
+class RegistroServices:
+    """Lo que necesita 📝 Registro: BD del bot y cliente de la API REST de Odoo (lo arma main)."""
+
+    db: object                                   # preop.db.Database
+    client_factory: Callable[[], OdooRestClient]  # un cliente nuevo por registro (se cierra al terminar)
+    company_ids: list[int]
+
+
 BOT_COMMANDS = [
     BotCommand("start", "Abrir el menú principal"),
+    BotCommand("registro", "Registrarte como conductor en Viacotur"),
     BotCommand("formularios", "Ver los formularios disponibles"),
     BotCommand("preoperacional", "Diligenciar la inspección preoperacional"),
     BotCommand("escanear", "Abrir el escáner de QR"),
@@ -173,6 +221,12 @@ def main_keyboard() -> ReplyKeyboardMarkup:
     )
 
 
+def registro_keyboard() -> ReplyKeyboardMarkup:
+    """Teclado de los usuarios sin registrar: solo 📝 Registro."""
+    return ReplyKeyboardMarkup([[KeyboardButton(BTN_REGISTRO)]], resize_keyboard=True,
+                               input_field_placeholder="Toca 📝 Registro")
+
+
 def option_inline(option: MenuOption, settings: Settings) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[InlineKeyboardButton(option.open_text, web_app=WebAppInfo(url=option.url(settings)))]])
 
@@ -237,6 +291,8 @@ def build_application(settings: Settings, odoo: OdooClient, store: WatchStore) -
                       notify_passenger=notify_passenger)
     application.bot_data[SERVICES_KEY] = Services(settings, odoo, access, store, watcher)
 
+    # Va primero: mientras dura el registro, sus respuestas no deben llegar a on_text.
+    application.add_handler(registro_conversation())
     application.add_handler(CommandHandler("start", cmd_start))
     application.add_handler(CommandHandler("ayuda", cmd_start))
     application.add_handler(CommandHandler("formularios", cmd_formularios))
@@ -259,6 +315,14 @@ async def _authorized(update: Update, context: ContextTypes.DEFAULT_TYPE) -> boo
     allowed = await asyncio.to_thread(_services(context).access.is_authorized, user_id)
     if allowed:
         return True
+    registro = _registro(context)
+    if registro is not None:
+        # Usuario nuevo: en lugar de bloquearlo se le ofrece 📝 Registro (antes del preoperacional).
+        if not await asyncio.to_thread(preop_registro.ya_registrado, registro.db, update.effective_user.id):
+            await update.message.reply_text(MSG_REG_INVITACION, parse_mode="HTML", reply_markup=registro_keyboard())
+        else:
+            await update.message.reply_text(MSG_REG_SIN_ACCESO)
+        return False
     await update.message.reply_text(
         "🔒 <b>Acceso no autorizado</b>.\n\n"
         f"Tu ID de Telegram es <code>{escape(user_id)}</code>. Pide a Recursos Humanos "
@@ -266,6 +330,112 @@ async def _authorized(update: Update, context: ContextTypes.DEFAULT_TYPE) -> boo
         parse_mode="HTML",
     )
     return False
+
+
+def _registro(context: ContextTypes.DEFAULT_TYPE) -> RegistroServices | None:
+    return context.application.bot_data.get(REGISTRO_KEY)
+
+
+# ───────────────────────────────────── 📝 Registro ─────────────────────────────────────
+
+def registro_conversation() -> ConversationHandler:
+    """Conversación de registro: nombre -> documento -> correo -> validación en Odoo."""
+    texto = filters.TEXT & ~filters.COMMAND
+    return ConversationHandler(
+        entry_points=[
+            CommandHandler("registro", reg_inicio),
+            MessageHandler(filters.Text([BTN_REGISTRO]), reg_inicio),
+        ],
+        states={
+            REG_NOMBRE: [MessageHandler(texto, reg_nombre)],
+            REG_DOCUMENTO: [MessageHandler(texto, reg_documento)],
+            REG_CORREO: [MessageHandler(texto, reg_correo)],
+        },
+        fallbacks=[CommandHandler(["cancelar", "cancel"], reg_cancelar)],
+        name="registro",
+    )
+
+
+async def reg_inicio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """📝 Registro: solo para usuarios nuevos (sin acceso y sin registro completado)."""
+    assert update.message is not None and update.effective_user is not None
+    uid = update.effective_user.id
+    if await asyncio.to_thread(_services(context).access.is_authorized, str(uid)):
+        await update.message.reply_text(MSG_REG_YA_REGISTRADO, reply_markup=main_keyboard())
+        return ConversationHandler.END
+    registro = _registro(context)
+    if registro is None:
+        await update.message.reply_text(MSG_REG_NO_DISPONIBLE)
+        return ConversationHandler.END
+    if await asyncio.to_thread(preop_registro.ya_registrado, registro.db, uid):
+        await update.message.reply_text(MSG_REG_SIN_ACCESO)
+        return ConversationHandler.END
+    context.user_data.clear()
+    await update.message.reply_text(MSG_REG_NOMBRE, parse_mode="HTML", reply_markup=ReplyKeyboardRemove())
+    return REG_NOMBRE
+
+
+async def reg_nombre(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    assert update.message is not None
+    nombre = preop_registro.limpiar_nombre(update.message.text or "")
+    if nombre is None:
+        await update.message.reply_text(MSG_REG_ERROR_NOMBRE)
+        return REG_NOMBRE
+    context.user_data["reg_nombre"] = nombre
+    await update.message.reply_text(MSG_REG_DOCUMENTO.format(nombre=escape(nombre.split(" ")[0])),
+                                    parse_mode="HTML")
+    return REG_DOCUMENTO
+
+
+async def reg_documento(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    assert update.message is not None
+    documento = preop_registro.limpiar_documento(update.message.text or "")
+    if documento is None:
+        await update.message.reply_text(MSG_REG_ERROR_DOCUMENTO)
+        return REG_DOCUMENTO
+    context.user_data["reg_documento"] = documento
+    await update.message.reply_text(MSG_REG_CORREO, parse_mode="HTML")
+    return REG_CORREO
+
+
+async def reg_correo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    assert update.message is not None and update.effective_user is not None
+    correo = preop_registro.limpiar_correo(update.message.text or "")
+    if correo is None:
+        await update.message.reply_text(MSG_REG_ERROR_CORREO)
+        return REG_CORREO
+    registro = _registro(context)
+    if registro is None:
+        await update.message.reply_text(MSG_REG_NO_DISPONIBLE)
+        return ConversationHandler.END
+    user = update.effective_user
+    datos = preop_registro.DatosRegistro(
+        telegram_user_id=user.id, telegram_username=user.username,
+        nombre_completo=context.user_data.pop("reg_nombre"),
+        documento=context.user_data.pop("reg_documento"), correo=correo,
+    )
+    await update.message.reply_text(MSG_REG_VALIDANDO)
+    resultado = await asyncio.to_thread(
+        preop_registro.registrar_conductor, registro.db, registro.client_factory, registro.company_ids, datos
+    )
+    if resultado.estado == preop_registro.REGISTRADO:
+        _services(context).access.forget(str(user.id))  # el acceso se vuelve a consultar en Odoo
+        await update.message.reply_text(MSG_REG_EXITO, reply_markup=main_keyboard())
+    elif resultado.estado == preop_registro.NO_ENCONTRADO:
+        await update.message.reply_text(MSG_REG_NO_ENCONTRADO, reply_markup=registro_keyboard())
+    elif resultado.estado == preop_registro.PIN_OCUPADO:
+        await update.message.reply_text(MSG_REG_PIN_OCUPADO, reply_markup=registro_keyboard())
+    else:
+        await update.message.reply_text(MSG_REG_ERROR_ODOO, parse_mode="HTML", reply_markup=registro_keyboard())
+    return ConversationHandler.END
+
+
+async def reg_cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    assert update.message is not None
+    context.user_data.pop("reg_nombre", None)
+    context.user_data.pop("reg_documento", None)
+    await update.message.reply_text(MSG_REG_CANCELADO, parse_mode="HTML", reply_markup=registro_keyboard())
+    return ConversationHandler.END
 
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

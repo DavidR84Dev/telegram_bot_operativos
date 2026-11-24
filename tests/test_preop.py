@@ -19,7 +19,14 @@ from tenacity import wait_none
 
 from app.preop import etl, service
 from app.preop import reservas
-from app.preop.checklist import CHECKLIST, NO_CONFORME, count_no_conformes, form_definition, llantas_bajo_minimo
+from app.preop.checklist import (
+    CHECKLIST,
+    LLANTAS_POSICIONES,
+    NO_CONFORME,
+    count_no_conformes,
+    form_definition,
+    llantas_bajo_minimo,
+)
 from app.preop.db import Database
 from app import formatting
 from app.preop.models import (
@@ -123,8 +130,11 @@ def _ids(db) -> tuple[int, int]:
 
 def _payload(vehiculo_id: int | None, extracto_id: int, **over) -> PreoperacionalIn:
     data = {"uuid": UUID, "vehiculo_id": vehiculo_id, "extracto_id": extracto_id, "kilometraje": 1510,
-            "checklist": {item.key: item.options[0] for item in CHECKLIST}, "llantas": {"llanta_1": 5.0},
+            "checklist": {item.key: item.options[0] for item in CHECKLIST},
+            "llantas": {key: (5.0 if key == ll.labrado else 0.0)
+                        for ll in LLANTAS_POSICIONES for key in (ll.labrado, ll.presion)},
             "testigos_img": f"data:image/jpeg;base64,{FOTO_B64}"}
+    data["llantas"].update(over.pop("llantas", {}))
     data.update(over)
     return PreoperacionalIn.model_validate(data)
 
@@ -177,6 +187,14 @@ def test_preop_input_unchecked_box_is_no_conforme_and_unanswered_radio_is_empty(
     with pytest.raises(ValueError, match="no puede ser 0 mm"):
         _payload(1, 1, llantas={"llanta_1": 0})
     assert _payload(1, 1, llantas={"llanta_1": 0.5, "llanta_1_pre": 0}).llantas["llanta_1_pre"] == 0
+    missing_measures = _payload(1, 1).model_dump()
+    missing_measures["llantas"] = {"llanta_1": 5.0}
+    with pytest.raises(ValueError, match="medidas obligatorias"):
+        PreoperacionalIn.model_validate(missing_measures)
+    missing_internal = _payload(1, 1, extra={"llantas_internas": True}).model_dump()
+    missing_internal["llantas"].pop("llanta_5_pre")
+    with pytest.raises(ValueError, match="Presión llanta n.º 5"):
+        PreoperacionalIn.model_validate(missing_internal)
     with pytest.raises(ValueError):
         PreoperacionalIn.model_validate({**_payload(1, 1).model_dump(), "telegram_user_id": 1})  # extra=forbid
 
@@ -206,6 +224,7 @@ def test_form_definition_lists_every_item():
     assert {k for k, i in items.items() if i["obligatorio"]} == radios
     assert items["camaras"]["options"] == ["conforme", "no conforme", "no aplica"]
     assert "camaras_new" not in items and "llanta_rep_pre_act" not in items
+    assert all(measure["obligatorio"] for measure in form["measures"])
 
 
 def test_form_definition_tires_cover_every_measure_once():
@@ -1081,7 +1100,8 @@ def test_submit_rechaza_labrado_sobre_el_maximo(seeded):
     assert err.value.status_code == 422
     _tipo_vehiculo(seeded, "bus")  # en buses el mismo valor es válido (máximo 20 mm)
     preop, _ = service.submit(seeded, IDENTITY, _payload(vehiculo, extracto, llantas={"llanta_1": 18.0}))
-    assert preop.llantas == {"llanta_1": 18.0}
+    assert preop.llantas["llanta_1"] == 18.0
+    assert len(preop.llantas) == 14
 
 
 def test_context_entrega_labrado_maximo(seeded):

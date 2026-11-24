@@ -48,6 +48,7 @@ class MeasureItem:
     label: str
     unit: str
     max_value: float
+    required: bool = True
 
 
 @dataclass(frozen=True)
@@ -296,6 +297,7 @@ def form_definition() -> dict[str, object]:
             for ll in LLANTAS_POSICIONES
         ],
         "measures": [
-            {"key": m.key, "label": m.label, "unit": m.unit, "max": m.max_value} for m in LLANTAS_MEDIDAS
+            {"key": m.key, "label": m.label, "unit": m.unit, "max": m.max_value, "obligatorio": m.required}
+            for m in LLANTAS_MEDIDAS
         ],
     }

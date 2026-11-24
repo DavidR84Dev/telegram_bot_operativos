@@ -12,11 +12,19 @@ from .config import get_settings
 from .odoo_client import OdooClient
 from .preop.db import Database
 from .preop.etl import run_from_settings
+from .preop.rest_client import OdooRestClient
 from .preop.router import PreopServices
 from .preop.router import router as preop_router
 from .preop.service import SendOutcome
 from .preop.worker import MasterSync, PreopSender, build_writer
-from .telegram_app import BOT_COMMANDS, PREOP_DB_KEY, SERVICES_KEY, build_application
+from .telegram_app import (
+    BOT_COMMANDS,
+    PREOP_DB_KEY,
+    REGISTRO_KEY,
+    SERVICES_KEY,
+    RegistroServices,
+    build_application,
+)
 from .watch_store import WatchStore
 from .web import router as web_router
 
@@ -65,8 +73,19 @@ def _start_preop(app: FastAPI, application) -> list:
         master = MasterSync(settings.master_sync_interval_seconds, lambda: run_from_settings(db))
         master.start()
         tasks.append(master)
+        # 📝 Registro de conductores nuevos: misma BD y misma API REST (/api/empleados).
+        assert settings.odoo_api_password is not None
+        api_password = settings.odoo_api_password.get_secret_value()
+        application.bot_data[REGISTRO_KEY] = RegistroServices(
+            db=db,
+            client_factory=lambda: OdooRestClient(settings.odoo_api_url or settings.odoo_url,
+                                                  settings.odoo_api_login, api_password,
+                                                  settings.odoo_api_timeout_seconds),
+            company_ids=settings.api_company_ids,
+        )
     else:
-        logger.warning("ODOO_API_LOGIN/ODOO_API_PASSWORD vacíos: tablas maestras sin sincronizar")
+        logger.warning("ODOO_API_LOGIN/ODOO_API_PASSWORD vacíos: tablas maestras sin sincronizar "
+                       "y 📝 Registro desactivado")
     return tasks
 
 

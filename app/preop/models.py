@@ -382,6 +382,38 @@ class ReservaHistorial(TimestampMixin, Base):
     )
 
 
+class RegistroConductor(TimestampMixin, Base):
+    """Registro de conductores nuevos (opción 📝 Registro del bot).
+
+    Una fila por usuario de Telegram con los datos que escribió (nombre, documento y
+    correo). Se valida contra ``/api/empleados`` por número de documento y, si el
+    empleado existe, su ``hr.employee.pin`` se fija al id de Telegram con
+    ``/api/empleados/register``. Si un intento falla (no existe en Odoo, error de red),
+    la misma fila se actualiza en el siguiente intento (``intentos``). Con
+    ``estado = 'registrado'`` el usuario ya no tiene acceso a la opción de registro.
+    """
+
+    __tablename__ = "registros_conductor"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    telegram_user_id: Mapped[int] = mapped_column(BigInteger, nullable=False, unique=True)
+    telegram_username: Mapped[str | None] = mapped_column(String(64))
+    nombre_completo: Mapped[str] = mapped_column(String(255), nullable=False)
+    documento: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    correo: Mapped[str] = mapped_column(String(255), nullable=False)
+    # pendiente | registrado | no_encontrado | pin_ocupado | error
+    estado: Mapped[str] = mapped_column(String(16), nullable=False, default="pendiente")
+    empleado_odoo_id: Mapped[int | None] = mapped_column(Integer)
+    intentos: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error_log: Mapped[str | None] = mapped_column(Text)
+    registrado_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        CheckConstraint("estado IN ('pendiente', 'registrado', 'no_encontrado', 'pin_ocupado', 'error')",
+                        name="ck_registros_conductor_estado"),
+    )
+
+
 class SyncRun(Base):
     """Bitácora de cada sincronización maestra (una fila por entidad y compañía)."""
 
