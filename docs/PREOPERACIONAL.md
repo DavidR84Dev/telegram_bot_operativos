@@ -102,14 +102,15 @@ Formulario por pasos con barra de progreso e identidad VIACOTUR (logo y paleta a
    - Cada ítem muestra su criterio de no conforme. "Marcar pestaña conforme" marca la pestaña visible.
    - **Llantas:** labrado (mm, teclado decimal) y presión (PSI, teclado numérico) de las llantas 1–4 y la de repuesto (`llanta_7` / `llanta_rep_pre`); las llantas 5 y 6 aparecen si el conductor responde **Sí** a "¿El vehículo tiene llantas internas?". Ya no se preguntan "¿La repuesto tiene presión?" (`llanta_rep_pre_act`) ni "¿Tiene cámaras?" (`camaras_new`).
    - **Alerta de labrado:** cada llanta muestra su mínimo y alerta si está por debajo. El mínimo sale del acuerdo del contrato según el tipo de vehículo (`fleet.vehicle.type`): `labrado_buses` para bus, buseta y microbus; `labrado_camioneta` para los demás. Si el acuerdo tiene 0, se usa el de Odoo (1,6 mm; 2,0 mm en internas). Es solo una alerta: Odoo sigue aplicando sus propios umbrales al crear el registro.
-3. **Observaciones y Evidencia:** observaciones libres (sin texto, se envían en blanco) y foto de testigos del tablero (única foto; recomendada, no obligatoria) con dos botones: **📷 Tomar foto** (cámara) y **🖼️ Elegir de la galería**.
+   - **Labrado máximo (2026-11-24):** para evitar errores de digitación, el labrado no puede superar **20 mm en Buses** (bus, buseta, minibus) ni **15 mm en Camioneta** (los demás tipos, incluidos los vehículos sin tipo en Odoo). La pista de cada llanta muestra "Mínimo … · máximo …"; un valor mayor marca el campo en rojo, no deja pasar a Evidencia y el servidor lo rechaza (422).
+3. **Observaciones y Evidencia:** observaciones libres (sin texto, se envían en blanco) y foto de testigos del tablero (única foto; recomendada, no obligatoria) con dos botones: **📷 Tomar foto** y **🖼️ Elegir de la galería**. «Tomar foto» abre la cámara trasera **dentro del formulario** (`getUserMedia`), porque Telegram para Android ignora `<input capture>` y abre la galería. Si Telegram no tiene permiso de cámara o el teléfono no lo soporta, el formulario lo indica y se puede elegir la foto de la galería.
 4. **Resumen de la Inspección:** información general, observaciones (si hay texto) y una tarjeta por sección con ✔ (conforme), **!** rojo (casilla sin marcar, no conforme o radio sin elegir) y **N/A**; tabla de labrado/presión con alerta bajo el mínimo; "Imagen subida: 0/1 o 1/1". Al tocar una alerta vuelve al ítem. **Completar inspección** envía aunque haya alertas, previa confirmación.
 
-El conductor puede enviar uno o varios preoperacionales (no hay límite diario).
+Solo se hace el preoperacional de un vehículo **DISPONIBLE** (regla del 2026-11-24): un vehículo reservado, sea por otro conductor o por el mismo conductor que ya hizo su preoperacional, no se puede seleccionar, y el servidor rechaza el envío (409). Si ningún vehículo del conductor está disponible, el formulario no deja entrar y explica el motivo de cada uno.
 
 **Reserva del vehículo durante la jornada (`app/preop/reservas.py`):** un extracto puede tener varios conductores, pero solo uno puede tener el vehículo a la vez.
-- La reserva empieza **al enviar** el preoperacional (tabla temporal `reservas_vehiculo`). Si el conductor envía otro del mismo vehículo, la reserva se actualiza, pero su vencimiento no cambia.
-- **Una placa, un conductor:** los demás conductores ven la tarjeta en rojo como **NO DISPONIBLE** ("En uso por …", no seleccionable) y el servidor rechaza su envío (409). Su dueño la ve como **RESERVADO POR TI**.
+- La reserva empieza **al enviar** el preoperacional (tabla temporal `reservas_vehiculo`). Mientras dure, el mismo conductor no puede repetir el preoperacional de ese vehículo.
+- **Una placa, un conductor:** los demás conductores ven la tarjeta en rojo como **NO DISPONIBLE** ("En uso por …", no seleccionable) y el servidor rechaza su envío (409). Su dueño la ve como **RESERVADO POR TI**, también bloqueada ("Ya hiciste el preoperacional de este vehículo").
 - **Un conductor, un vehículo:** mientras tenga una reserva, los demás vehículos le aparecen como **NO DISPONIBLE** ("Ya tienes reservado …") y el servidor rechaza el envío.
 - Ambas reglas las garantizan además índices únicos en la BD (envíos simultáneos).
 - **Vencimiento:** la reserva se libera sola **24 h después de su registro inicial** (`RESERVA_HORAS`); se verifica antes de cada consulta.
@@ -131,13 +132,29 @@ Sin empleado o sin extracto aprobado se muestra una pantalla de bloqueo que expl
 - **Foto de testigos (opcional):** llega en base64 (JPEG o PNG, máximo 3 MB, validada por su firma real, no por lo que diga el cliente). La Mini App la comprime antes de enviarla (lado mayor 1600 px, unos 300 KB).
 - La Mini App pinta los datos con `textContent`, nunca con `innerHTML`.
 
+### Envío sin señal (`app/preop/diferido.py`, regla del 2026-11-24)
+
+Si el envío falla por red (sin respuesta, o 502/503/504 del túnel), la Mini App guarda el formulario en una **bandeja de salida** en el teléfono (IndexedDB; si no está disponible, `localStorage`) con su `uuid`, el `initData` de la apertura y `sin_senal_desde` (primer intento fallido). Mientras siga abierta reintenta cada 15 s y al evento `online`; si se cerró, lo envía al volver a abrirla con señal. El reenvío lleva `diferido: {init_data_original, sin_senal_desde}`.
+
+**Regla:** se reenvía como máximo **1 hora después de perder la señal**. El servidor lo comprueba anclado a la hora de apertura firmada por Telegram (`auth_date` del initData original), porque el reloj del teléfono se puede cambiar:
+
+1. apertura − 2 min ≤ `sin_senal_desde` ≤ recepción + 2 min (reloj coherente);
+2. recepción − `sin_senal_desde` ≤ 60 min (+ 2 min de tolerancia);
+3. recepción − apertura ≤ 2 h (tope no falsificable).
+
+- **Dentro de la ventana:** flujo normal (mismas validaciones, reserva, Odoo y confirmación en el chat) y una fila `aceptado` en `preop_envios_diferidos` con las tres horas, el retraso y la huella SHA-256 del formulario.
+- **Fuera de la ventana:** **410**. Fila `vencido` en `preop_envios_diferidos` con el motivo, el formulario completo y la foto. No se envía a Odoo, no reserva el vehículo y **no se notifica al conductor** (la Mini App lo descarta en silencio al reabrirla). Si la hora pasa con la Mini App abierta, esta muestra "No se pudo enviar a tiempo" y pide diligenciar uno nuevo.
+- Si el primer intento sí había llegado (se perdió solo la respuesta), el reenvío devuelve el registro original como duplicado.
+- Autenticación del reenvío: la cabecera se acepta hasta 2 h (la Mini App pudo seguir abierta sin señal) y el initData original hasta 7 días (solo para fechar la apertura); ambos deben ser del mismo usuario.
+- Limitación: la Mini App necesita señal para **abrirse**; esto cubre la pérdida de señal durante el diligenciamiento o al enviar.
+
 | Ruta | Respuesta |
 |---|---|
 | `GET /preoperacional` | HTML de la Mini App |
 | `GET /api/preop/form` | catálogo de secciones, ítems, opciones y medidas |
 | `GET /api/preop/context` | conductor y responsable, `validado` y extractos aprobados del conductor con su vehículo y contratos |
 | `GET /static/viacotur-logo.png` | logo de la cabecera |
-| `POST /api/preop` | **202** con `{id, uuid, sync_status: "pendiente", no_conformes, duplicado}`; 401, 403, 409 o 422 si se rechaza |
+| `POST /api/preop` | **202** con `{id, uuid, sync_status: "pendiente", no_conformes, duplicado}`; 401, 403, 409 o 422 si se rechaza; **410** si es un reenvío sin señal fuera de la ventana de 1 h (queda solo como auditoría) |
 | `GET /api/preop/{uuid}` | estado de un envío propio |
 
 ### Conector XML-RPC (`app/preop/odoo_writer.py`)
@@ -217,6 +234,7 @@ Los comandos del bot (`/preoperacional` incluido) se registran solos al arrancar
 | Tarea | Comando |
 |---|---|
 | Cola pendiente | `SELECT sync_status, count(*) FROM preoperacional GROUP BY 1;` |
+| Envíos sin señal | `SELECT estado, uuid, telegram_user_id, apertura_at, sin_senal_desde, recibido_at, motivo FROM preop_envios_diferidos ORDER BY recibido_at DESC;` |
 | Ver fallidos | `SELECT id, uuid, attempts, error_log FROM preoperacional WHERE sync_status='fallido';` |
 | Reencolar tras corregir | `docker compose exec app python -m app.preop.worker --requeue 12 15` (o `--requeue-all`) |
 | Procesar la cola a mano | `docker compose exec app python -m app.preop.worker --once` |

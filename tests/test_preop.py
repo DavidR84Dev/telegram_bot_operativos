@@ -19,7 +19,14 @@ from tenacity import wait_none
 
 from app.preop import etl, service
 from app.preop import reservas
-from app.preop.checklist import CHECKLIST, NO_CONFORME, count_no_conformes, form_definition, llantas_bajo_minimo
+from app.preop.checklist import (
+    CHECKLIST,
+    LLANTAS_POSICIONES,
+    NO_CONFORME,
+    count_no_conformes,
+    form_definition,
+    llantas_bajo_minimo,
+)
 from app.preop.db import Database
 from app import formatting
 from app.preop.models import (
@@ -123,8 +130,11 @@ def _ids(db) -> tuple[int, int]:
 
 def _payload(vehiculo_id: int | None, extracto_id: int, **over) -> PreoperacionalIn:
     data = {"uuid": UUID, "vehiculo_id": vehiculo_id, "extracto_id": extracto_id, "kilometraje": 1510,
-            "checklist": {item.key: item.options[0] for item in CHECKLIST}, "llantas": {"llanta_1": 5.0},
+            "checklist": {item.key: item.options[0] for item in CHECKLIST},
+            "llantas": {key: (5.0 if key == ll.labrado else 0.0)
+                        for ll in LLANTAS_POSICIONES for key in (ll.labrado, ll.presion)},
             "testigos_img": f"data:image/jpeg;base64,{FOTO_B64}"}
+    data["llantas"].update(over.pop("llantas", {}))
     data.update(over)
     return PreoperacionalIn.model_validate(data)
 
@@ -177,6 +187,14 @@ def test_preop_input_unchecked_box_is_no_conforme_and_unanswered_radio_is_empty(
     with pytest.raises(ValueError, match="no puede ser 0 mm"):
         _payload(1, 1, llantas={"llanta_1": 0})
     assert _payload(1, 1, llantas={"llanta_1": 0.5, "llanta_1_pre": 0}).llantas["llanta_1_pre"] == 0
+    missing_measures = _payload(1, 1).model_dump()
+    missing_measures["llantas"] = {"llanta_1": 5.0}
+    with pytest.raises(ValueError, match="medidas obligatorias"):
+        PreoperacionalIn.model_validate(missing_measures)
+    missing_internal = _payload(1, 1, extra={"llantas_internas": True}).model_dump()
+    missing_internal["llantas"].pop("llanta_5_pre")
+    with pytest.raises(ValueError, match="Presión llanta n.º 5"):
+        PreoperacionalIn.model_validate(missing_internal)
     with pytest.raises(ValueError):
         PreoperacionalIn.model_validate({**_payload(1, 1).model_dump(), "telegram_user_id": 1})  # extra=forbid
 
@@ -206,6 +224,7 @@ def test_form_definition_lists_every_item():
     assert {k for k, i in items.items() if i["obligatorio"]} == radios
     assert items["camaras"]["options"] == ["conforme", "no conforme", "no aplica"]
     assert "camaras_new" not in items and "llanta_rep_pre_act" not in items
+    assert all(measure["obligatorio"] for measure in form["measures"])
 
 
 def test_form_definition_tires_cover_every_measure_once():
@@ -453,9 +472,6 @@ def test_odometer_below_last_registered_is_rejected(seeded):
         service.submit(seeded, IDENTITY, _payload(vehiculo, extracto, kilometraje=1500))
     preop, _ = service.submit(seeded, IDENTITY, _payload(vehiculo, extracto, kilometraje=1500.5))
     assert preop.kilometraje == 1500.5
-    # Varios preoperacionales del mismo conductor son válidos.
-    otro, dup = service.submit(seeded, IDENTITY, _payload(vehiculo, extracto, uuid=UUID.replace("0b", "1c", 1)))
-    assert not dup and otro.id != preop.id
 
 
 def test_odometer_is_read_live_from_odoo_with_local_fallback(seeded):
@@ -578,17 +594,19 @@ def test_vehicle_is_reserved_to_one_driver_until_finalizar(seeded):
     _con_segundo_conductor(seeded)
     vehiculo, extracto = _ids(seeded)
     preop, _ = service.submit(seeded, IDENTITY, _payload(vehiculo, extracto, uuid=_uuid(1)))
-    # El mismo conductor puede hacer otro preoperacional del vehículo (la reserva se actualiza).
-    otro, _ = service.submit(seeded, IDENTITY, _payload(vehiculo, extracto, uuid=_uuid(2)))
+    # El mismo conductor tampoco puede repetirlo: ya está reservado a su nombre (regla del 2026-11-24).
+    with pytest.raises(service.SubmissionError, match="Ya hiciste el preoperacional del vehículo ABC123") as err:
+        service.submit(seeded, IDENTITY, _payload(vehiculo, extracto, uuid=_uuid(2)))
+    assert err.value.status_code == 409
     with seeded.session() as s:
         [reserva] = s.scalars(select(reservas.ReservaVehiculo)).all()
-        assert (reserva.telegram_user_id, reserva.preop_id) == (TG_USER, otro.id)
+        assert (reserva.telegram_user_id, reserva.preop_id) == (TG_USER, preop.id)
     # El segundo conductor del mismo extracto no puede mientras Ana no finalice.
     with pytest.raises(service.SubmissionError, match="lo tiene Ana Conductora") as err:
         service.submit(seeded, SEGUNDO, _payload(vehiculo, extracto, uuid=_uuid(3)))
     assert err.value.status_code == 409
-    with seeded.session() as s:  # el rechazo no deja nada guardado
-        assert s.scalar(select(func.count()).select_from(Preoperacional)) == 2
+    with seeded.session() as s:  # los rechazos no dejan nada guardado
+        assert s.scalar(select(func.count()).select_from(Preoperacional)) == 1
 
     # Finalizar de otro usuario no libera la reserva de Ana.
     assert reservas.finalizar_jornada(seeded, SEGUNDO.user_id).placas == ()
@@ -672,13 +690,12 @@ def test_reservation_expires_24h_after_initial_record_and_keeps_history(seeded):
 def test_finalizar_keeps_history_and_returns_boss_telegram(seeded):
     vehiculo, extracto = _ids(seeded)
     service.submit(seeded, IDENTITY, _payload(vehiculo, extracto, uuid=_uuid(1)))
-    service.submit(seeded, IDENTITY, _payload(vehiculo, extracto, uuid=_uuid(2)))
     liberacion = reservas.finalizar_jornada(seeded, TG_USER)
     assert liberacion.placas == ("ABC123",) and liberacion.conductor == "Ana Conductora"
-    assert liberacion.preoperacionales == 2 and liberacion.jefe_telegram_id == 999  # PIN de Jefe Uno
+    assert liberacion.preoperacionales == 1 and liberacion.jefe_telegram_id == 999  # PIN de Jefe Uno
     with seeded.session() as s:
         [h] = s.scalars(select(reservas.ReservaHistorial)).all()
-        assert (h.motivo, h.telegram_user_id, h.preoperacionales) == ("finalizar", TG_USER, 2)
+        assert (h.motivo, h.telegram_user_id, h.preoperacionales) == ("finalizar", TG_USER, 1)
     assert "Jornada finalizada" in formatting.jornada_finalizada_jefe(liberacion)
     # Liberación manual también queda en el histórico.
     service.submit(seeded, IDENTITY, _payload(vehiculo, extracto, uuid=_uuid(3)))
@@ -942,9 +959,154 @@ def test_api_submit_accepts_and_wakes_worker(api, seeded):
     assert client.get(f"/api/preop/{UUID}", headers=_headers(user_id=1)).status_code == 404
 
 
+def test_api_submit_checks_signature_before_payload(api):
+    client, _ = api
+    assert client.post("/api/preop", json={}).status_code == 401
+    forged = {"X-Telegram-Init-Data": make_init_data(tamper=True)}
+    assert client.post("/api/preop", json={}, headers=forged).status_code == 401
+    assert client.post("/api/preop", json={}, headers=_headers()).status_code == 422
+
+
 def test_api_submit_validates_payload(api, seeded):
     client, _ = api
     vehiculo, extracto = _ids(seeded)
     body = _payload(vehiculo, extracto).model_dump()
     body["checklist"]["soat"] = "<script>"
     assert client.post("/api/preop", json=body, headers=_headers()).status_code == 422
+
+
+# ───────────────────────────── envío diferido (sin señal, máx. 1 h) ─────────────────────────────
+
+from app.preop import diferido  # noqa: E402
+from app.preop.models import EstadoDiferido, PreopEnvioDiferido  # noqa: E402
+
+
+def _diferido_body(seeded, *, abierto_hace: timedelta, sin_senal_hace: timedelta, user_id=TG_USER) -> dict:
+    vehiculo, extracto = _ids(seeded)
+    body = _payload(vehiculo, extracto).model_dump(mode="json")
+    now = datetime.now(UTC)
+    body["diferido"] = {
+        "init_data_original": make_init_data(user_id=user_id, auth_date=int((now - abierto_hace).timestamp())),
+        "sin_senal_desde": (now - sin_senal_hace).isoformat(),
+    }
+    return body
+
+
+@pytest.mark.parametrize(("apertura", "sin_senal", "vencido"), [
+    (timedelta(minutes=30), timedelta(minutes=10), False),
+    (timedelta(minutes=90), timedelta(minutes=59), False),      # dentro de la hora sin señal
+    (timedelta(minutes=90), timedelta(minutes=61), False),      # tolerancia de reloj (2 min)
+    (timedelta(minutes=90), timedelta(minutes=63), True),       # más de 1 h sin señal
+    (timedelta(minutes=125), timedelta(minutes=20), True),      # tope de 2 h desde la apertura
+    (timedelta(minutes=10), timedelta(minutes=20), True),       # señal perdida antes de abrir: reloj manipulado
+    (timedelta(minutes=10), timedelta(minutes=-5), True),       # señal perdida "en el futuro"
+])
+def test_ventana_de_envio_diferido(apertura, sin_senal, vencido):
+    now = datetime.now(UTC)
+    motivo = diferido.motivo_vencido(now - apertura, now - sin_senal, now)
+    assert (motivo is not None) is vencido
+
+
+def test_api_diferido_en_ventana_sigue_flujo_normal_y_deja_trazabilidad(api, seeded):
+    client, woke = api
+    body = _diferido_body(seeded, abierto_hace=timedelta(minutes=80), sin_senal_hace=timedelta(minutes=40))
+    # La cabecera es el mismo initData original (el Mini App siguió abierto): ya pasó de 1 h,
+    # pero se acepta hasta el tope de la ventana.
+    headers = {"X-Telegram-Init-Data": body["diferido"]["init_data_original"]}
+    first = client.post("/api/preop", json=body, headers=headers)
+    assert first.status_code == 202 and woke == [1]
+    with seeded.session() as s:
+        preop = s.scalar(select(Preoperacional))
+        traza = s.scalar(select(PreopEnvioDiferido))
+        assert preop.sync_status == SyncStatus.PENDIENTE
+        assert traza.estado == EstadoDiferido.ACEPTADO and traza.preop_id == preop.id
+        assert 39 * 60 <= traza.retraso_segundos <= 41 * 60 and traza.payload is None
+        assert len(traza.payload_sha256) == 64
+    # Reintento del mismo formulario: duplicado, no un segundo registro.
+    again = client.post("/api/preop", json=body, headers=_headers())
+    assert again.json()["duplicado"] is True and woke == [1]
+
+
+def test_api_diferido_vencido_solo_queda_como_auditoria(api, seeded):
+    client, woke = api
+    body = _diferido_body(seeded, abierto_hace=timedelta(hours=3), sin_senal_hace=timedelta(minutes=150))
+    response = client.post("/api/preop", json=body, headers=_headers())  # se volvió a abrir con señal
+    assert response.status_code == 410 and woke == []
+    with seeded.session() as s:
+        assert s.scalar(select(func.count()).select_from(Preoperacional)) == 0  # ni Odoo ni reserva
+        traza = s.scalar(select(PreopEnvioDiferido))
+        assert traza.estado == EstadoDiferido.VENCIDO and traza.preop_id is None
+        assert "después de perder la señal" in traza.motivo
+        assert traza.payload["kilometraje"] == 1510 and "testigos_img" not in traza.payload
+        assert traza.foto == JPEG
+    # Reenviarlo otra vez no crea otro registro ni lo procesa.
+    assert client.post("/api/preop", json=body, headers=_headers()).status_code == 410
+    with seeded.session() as s:
+        assert s.scalar(select(func.count()).select_from(PreopEnvioDiferido)) == 1
+
+
+def test_api_diferido_si_el_primer_intento_si_llego_es_duplicado(api, seeded):
+    client, _ = api
+    vehiculo, extracto = _ids(seeded)
+    assert client.post("/api/preop", json=_payload(vehiculo, extracto).model_dump(mode="json"),
+                       headers=_headers()).status_code == 202
+    # El teléfono no recibió la respuesta y lo reenvía horas después: es el mismo formulario.
+    body = _diferido_body(seeded, abierto_hace=timedelta(hours=3), sin_senal_hace=timedelta(hours=2))
+    response = client.post("/api/preop", json=body, headers=_headers())
+    assert response.status_code == 202 and response.json()["duplicado"] is True
+
+
+def test_api_diferido_exige_mismo_usuario_y_firmas_validas(api, seeded):
+    client, _ = api
+    otro = _diferido_body(seeded, abierto_hace=timedelta(minutes=30), sin_senal_hace=timedelta(minutes=5), user_id=1)
+    assert client.post("/api/preop", json=otro, headers=_headers()).status_code == 403
+    falso = _diferido_body(seeded, abierto_hace=timedelta(minutes=30), sin_senal_hace=timedelta(minutes=5))
+    falso["diferido"]["init_data_original"] = make_init_data(tamper=True)
+    assert client.post("/api/preop", json=falso, headers=_headers()).status_code == 401
+    # La cabecera más vieja que el tope (2 h) no autentica, aunque sea firmada.
+    viejo = {"X-Telegram-Init-Data": make_init_data(auth_date=int(datetime.now(UTC).timestamp()) - 3 * 3600)}
+    ok = _diferido_body(seeded, abierto_hace=timedelta(minutes=30), sin_senal_hace=timedelta(minutes=5))
+    assert client.post("/api/preop", json=ok, headers=viejo).status_code == 401
+    # Sin "diferido", la cabecera sigue limitada a 1 h.
+    normal = {"X-Telegram-Init-Data": make_init_data(auth_date=int(datetime.now(UTC).timestamp()) - 90 * 60)}
+    vehiculo, extracto = _ids(seeded)
+    assert client.post("/api/preop", json=_payload(vehiculo, extracto).model_dump(mode="json"),
+                       headers=normal).status_code == 401
+
+
+# ─────────────────────────── labrado máximo por tipo de vehículo ───────────────────────────
+
+from app.preop.checklist import clase_labrado, labrado_maximo  # noqa: E402
+
+
+@pytest.mark.parametrize(("tipo", "maximo", "clase"), [
+    ("bus", 20, "Buses"), ("Buseta", 20, "Buses"), ("minibus", 20, "Buses"),
+    ("camioneta", 15, "Camioneta"), ("car", 15, "Camioneta"), ("jeep", 15, "Camioneta"), (None, 15, "Camioneta"),
+])
+def test_labrado_maximo_segun_tipo(tipo, maximo, clase):
+    assert labrado_maximo(tipo) == maximo and clase_labrado(tipo) == clase
+
+
+def _tipo_vehiculo(db, tipo: str) -> None:
+    with db.session() as s:
+        s.scalar(select(Flota).where(Flota.odoo_id == 10)).tipo_solicitud = tipo
+
+
+def test_submit_rechaza_labrado_sobre_el_maximo(seeded):
+    vehiculo, extracto = _ids(seeded)
+    _tipo_vehiculo(seeded, "camioneta")
+    with pytest.raises(service.SubmissionError, match=r"máximo de 15 mm \(Camioneta\): Llanta N.º 1") as err:
+        service.submit(seeded, IDENTITY, _payload(vehiculo, extracto, llantas={"llanta_1": 15.5}))
+    assert err.value.status_code == 422
+    _tipo_vehiculo(seeded, "bus")  # en buses el mismo valor es válido (máximo 20 mm)
+    preop, _ = service.submit(seeded, IDENTITY, _payload(vehiculo, extracto, llantas={"llanta_1": 18.0}))
+    assert preop.llantas["llanta_1"] == 18.0
+    assert len(preop.llantas) == 14
+
+
+def test_context_entrega_labrado_maximo(seeded):
+    _tipo_vehiculo(seeded, "bus")
+    with seeded.session() as s:
+        ana = s.scalar(select(Empleado).where(Empleado.odoo_id == 100))
+    vehiculo = service.form_context(seeded, ana)["extractos"][0]["vehiculo"]
+    assert (vehiculo["labrado_maximo"], vehiculo["clase_labrado"]) == (20, "Buses")

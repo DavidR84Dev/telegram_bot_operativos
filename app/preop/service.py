@@ -17,10 +17,32 @@ from sqlalchemy import and_, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from .checklist import CHECKLIST, NO_CONFORME, count_no_conformes, labrado_minimo_acuerdo, llantas_bajo_minimo
+from .checklist import (
+    CHECKLIST,
+    NO_CONFORME,
+    clase_labrado,
+    count_no_conformes,
+    labrado_maximo,
+    labrado_minimo_acuerdo,
+    llantas_bajo_minimo,
+    llantas_sobre_maximo,
+)
 from . import reservas
 from .db import Database
-from .models import Acuerdo, Empleado, Extracto, Flota, Preoperacional, PreopFoto, SyncStatus, Ubicacion, utc_now
+from .diferido import motivo_vencido
+from .models import (
+    Acuerdo,
+    Empleado,
+    EstadoDiferido,
+    Extracto,
+    Flota,
+    Preoperacional,
+    PreopEnvioDiferido,
+    PreopFoto,
+    SyncStatus,
+    Ubicacion,
+    utc_now,
+)
 from .odoo_writer import OdooPermanentError, OdooTransientError, OdooWriter, build_odoo_values
 from .schemas import PreoperacionalIn, decode_photo
 
@@ -169,6 +191,9 @@ def form_context(db: Database, empleado: Empleado, now: datetime | None = None,
                     "numero_interno": v.numero_interno if v else None,
                     # Sugerencia "Último registrado" (fleet.vehicle.odometer_post en Odoo).
                     "odometer_post": ultimo_odometro(v, odometro) if v else None,
+                    # Labrado máximo por tipo (Buses 20 mm, Camioneta 15 mm): evita errores de digitación.
+                    "labrado_maximo": labrado_maximo(tipo),
+                    "clase_labrado": clase_labrado(tipo),
                     "reserva": estado.get(v.id) if v else None,
                 },
             })
@@ -184,11 +209,77 @@ def form_context(db: Database, empleado: Empleado, now: datetime | None = None,
 
 # ───────────────────────────────────── recepción ──────────────────────────────────────
 
+@dataclass(frozen=True)
+class TiemposDiferido:
+    """Horas de un envío diferido (ver ``app/preop/diferido.py``)."""
+
+    apertura: datetime         # auth_date del initData original (firmado por Telegram)
+    sin_senal_desde: datetime  # reloj del teléfono
+    recibido: datetime         # reloj del servidor
+
+    @property
+    def retraso_segundos(self) -> int:
+        return max(0, int((self.recibido - self.sin_senal_desde).total_seconds()))
+
+
+class EnvioVencidoError(Exception):
+    """El envío diferido llegó fuera de la ventana: quedó solo como auditoría."""
+
+
+def payload_sha256(data: PreoperacionalIn) -> str:
+    """Huella del formulario tal como llegó (sin los datos de autenticación del envío diferido)."""
+    return hashlib.sha256(data.model_dump_json(exclude={"diferido"}).encode("utf-8")).hexdigest()
+
+
+def submit_diferido(db: Database, identity: TelegramIdentity, data: PreoperacionalIn, tiempos: TiemposDiferido,
+                    odometro: OdometroReader | None = None) -> tuple[Preoperacional, bool]:
+    """Recibe un formulario guardado en el teléfono por falta de señal.
+
+    Dentro de la ventana sigue el flujo normal (mismas validaciones, Odoo, reserva y aviso
+    en el chat) y deja su trazabilidad. Fuera de ella lo guarda solo como auditoría y lanza
+    ``EnvioVencidoError``: no va a Odoo, no reserva y no se notifica al conductor.
+    """
+    with db.session() as session:
+        # El primer intento pudo llegar aunque el teléfono no recibió la respuesta: sigue
+        # siendo el mismo formulario (idempotencia), no un vencido.
+        existing = session.scalar(select(Preoperacional).where(Preoperacional.uuid == data.uuid))
+        if existing is not None:
+            if existing.telegram_user_id != identity.user_id:
+                raise SubmissionError("Identificador de formulario en uso", status_code=409)
+            return existing, True
+        previo = session.scalar(select(PreopEnvioDiferido).where(PreopEnvioDiferido.uuid == data.uuid))
+        if previo is not None:
+            if previo.telegram_user_id != identity.user_id:
+                raise SubmissionError("Identificador de formulario en uso", status_code=409)
+            raise EnvioVencidoError(previo.motivo or "Envío vencido")
+
+    motivo = motivo_vencido(tiempos.apertura, tiempos.sin_senal_desde, tiempos.recibido)
+    if motivo is None:
+        return submit(db, identity, data, odometro, diferido=tiempos)
+
+    foto = decode_photo(data.testigos_img)[0] if data.testigos_img else None
+    with db.session() as session:
+        session.add(PreopEnvioDiferido(
+            uuid=data.uuid, telegram_user_id=identity.user_id, estado=EstadoDiferido.VENCIDO, motivo=motivo,
+            apertura_at=tiempos.apertura, sin_senal_desde=tiempos.sin_senal_desde, recibido_at=tiempos.recibido,
+            retraso_segundos=tiempos.retraso_segundos, payload_sha256=payload_sha256(data),
+            payload=data.model_dump(mode="json", exclude={"diferido", "testigos_img"}), foto=foto,
+        ))
+        try:
+            session.flush()
+        except IntegrityError as exc:  # el mismo uuid llegó dos veces en paralelo
+            raise EnvioVencidoError(motivo) from exc
+    logger.warning("Preoperacional diferido VENCIDO uuid=%s usuario=%s: %s", data.uuid, identity.user_id, motivo)
+    raise EnvioVencidoError(motivo)
+
+
 def submit(db: Database, identity: TelegramIdentity, data: PreoperacionalIn,
-           odometro: OdometroReader | None = None) -> tuple[Preoperacional, bool]:
+           odometro: OdometroReader | None = None,
+           diferido: TiemposDiferido | None = None) -> tuple[Preoperacional, bool]:
     """Guarda el formulario como ``pendiente``. Devuelve (registro, era_duplicado).
 
     Idempotente por ``uuid``: un reenvío (doble toque, red inestable) devuelve el original.
+    ``diferido`` (ya validado dentro de la ventana) deja la trazabilidad del envío sin señal.
     """
     with db.session() as session:
         existing = session.scalar(select(Preoperacional).where(Preoperacional.uuid == data.uuid))
@@ -213,6 +304,11 @@ def submit(db: Database, identity: TelegramIdentity, data: PreoperacionalIn,
             raise SubmissionError("El vehículo del extracto aún no está sincronizado; intenta en unos minutos", 409)
         if data.vehiculo_id is not None and data.vehiculo_id != vehiculo.id:
             raise SubmissionError("El vehículo no corresponde al extracto")
+        altas = llantas_sobre_maximo(data.llantas, vehiculo.tipo_solicitud)
+        if altas:
+            raise SubmissionError(
+                f"Labrado mayor al máximo de {labrado_maximo(vehiculo.tipo_solicitud):g} mm "
+                f"({clase_labrado(vehiculo.tipo_solicitud)}): {', '.join(altas)}")
 
         permitidos = [c["id_contrato"] for c in _contratos_permitidos(extracto, empleado)]
         contrato = data.contrato_odoo_id
@@ -269,6 +365,14 @@ def submit(db: Database, identity: TelegramIdentity, data: PreoperacionalIn,
             reservas.reservar(session, vehiculo=vehiculo, empleado=empleado, telegram_user_id=identity.user_id,
                               extracto_id=extracto.id, preop_id=preop.id, now=preop.fecha)
             session.flush()
+            if diferido is not None:
+                session.add(PreopEnvioDiferido(
+                    uuid=preop.uuid, telegram_user_id=identity.user_id, estado=EstadoDiferido.ACEPTADO,
+                    preop_id=preop.id, apertura_at=diferido.apertura, sin_senal_desde=diferido.sin_senal_desde,
+                    recibido_at=diferido.recibido, retraso_segundos=diferido.retraso_segundos,
+                    payload_sha256=payload_sha256(data),
+                ))
+                session.flush()
         except IntegrityError as exc:
             if reservas.es_conflicto_de_reserva(exc):
                 # Carrera: otro conductor reservó el mismo vehículo un instante antes.

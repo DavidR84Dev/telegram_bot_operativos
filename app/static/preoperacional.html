@@ -76,6 +76,16 @@
   .veh-card .tag.propia { color: var(--brand-2); background: var(--brand-soft); }
   .veh-card .tag.ocupado { color: var(--bad); background: color-mix(in srgb, var(--bad) 12%, transparent); }
   .veh-card:disabled { opacity: .6; }
+  .camara { position: fixed; inset: 0; z-index: 50; background: #000; display: flex; flex-direction: column; }
+  .camara[hidden] { display: none; }
+  .camara video { flex: 1; width: 100%; min-height: 0; object-fit: contain; background: #000; }
+  .cam-bar { display: flex; align-items: center; justify-content: space-between; gap: 16px;
+             padding: 16px 16px calc(16px + env(safe-area-inset-bottom)); }
+  .cam-cancel, .cam-spacer { width: 96px; }
+  .cam-cancel { min-height: var(--tap); border: 0; border-radius: 10px; background: rgba(255,255,255,.18); color: #fff; font: inherit; }
+  .cam-shutter { width: 68px; height: 68px; border-radius: 50%; border: 4px solid #fff;
+                 background: color-mix(in srgb, #fff 85%, transparent); padding: 0; }
+  .cam-shutter:active { transform: scale(.94); }
   .veh-card .ocupado-por { display: block; font-size: 12px; color: var(--bad); }
   .field-hint { font-size: 13px; color: var(--hint); margin-top: 4px; }
   .field-hint.warn { color: var(--warn); font-weight: 600; }
@@ -234,10 +244,10 @@
     <div class="card">
       <div class="toolbar">
         <span class="progress-pill" id="tab-count"></span>
-        <button type="button" class="link" id="tab-conforme">✔ Marcar pestaña conforme</button>
+        <button type="button" class="link" id="tab-conforme"></button>
       </div>
-      <div class="hint">Las opciones no marcadas o marcadas como «No conforme» aparecerá como alertas en el resumen antes del envió.
-        Los ítems con <span class="req">*</span> (Conforme / No conforme / No aplica) son obligatorios para continuar.</div>
+      <div class="hint">Las opciones no marcadas o marcadas como «No conforme» aparecerán como alertas en el resumen antes del envío.
+        Los ítems con <span class="req">*</span> (Conforme / No conforme / No aplica) y las medidas visibles de labrado y presión son obligatorios para continuar.</div>
       <div id="req-pending" class="banner bad" hidden></div>
     </div>
     <div id="tab-panels"></div>
@@ -252,7 +262,8 @@
     <div class="card">
       <h2>Imagen de testigos</h2>
       <div class="hint">Foto del tablero con el vehículo encendido, donde se vean los testigos (luces de advertencia).</div>
-      <!-- Dos entradas: con "capture" abre la cámara; sin él, la galería del celular. -->
+      <!-- "Tomar foto" abre la cámara dentro del formulario (#camara); foto-camara es el respaldo
+           si el teléfono no permite usar la cámara aquí. foto-galeria abre la galería. -->
       <input id="foto-camara" type="file" accept="image/*" capture="environment" hidden>
       <input id="foto-galeria" type="file" accept="image/*" hidden>
       <div class="photo-zone" id="foto-zone">
@@ -309,6 +320,16 @@
   </section>
 </main>
 
+<!-- Cámara dentro del formulario (foto de testigos) -->
+<div id="camara" class="camara" hidden>
+  <video id="cam-video" autoplay playsinline muted></video>
+  <div class="cam-bar">
+    <button type="button" class="cam-cancel" id="cam-cerrar">Cancelar</button>
+    <button type="button" class="cam-shutter" id="cam-capturar" aria-label="Capturar foto"></button>
+    <span class="cam-spacer"></span>
+  </div>
+</div>
+
 <footer class="actions" id="actions" hidden>
   <button type="button" class="btn-secondary" id="prev">← Atrás</button>
   <button type="button" class="btn-primary" id="next">Siguiente →</button>
@@ -340,7 +361,9 @@
 
   const state = {
     step: 1, tab: 0, form: null, ctx: null, extracto: null, answers: {}, foto: null, uuid: null,
-    internas: false, sending: false, finished: false, dirty: false,
+    internas: false, sending: false, finished: false, dirty: false, stream: null,
+    // Envío sin señal: initData de la apertura, formulario pendiente y temporizador de reintento.
+    initDataOriginal: "", pendiente: null, pendienteGuardado: false, reintento: null, avisoBandeja: "",
   };
 
   function setMsg(text, isError = false) {
@@ -362,11 +385,27 @@
     return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
   }
 
+  // Sin respuesta del servidor (sin señal) o el túnel/proxy no llega al bot: se puede reintentar.
+  const SIN_RED = [502, 503, 504];
+
   async function api(path, options = {}) {
-    const res = await fetch(path, {
-      ...options,
-      headers: { "Content-Type": "application/json", "X-Telegram-Init-Data": tg ? tg.initData : "", ...(options.headers || {}) },
-    });
+    let res;
+    try {
+      res = await fetch(path, {
+        ...options,
+        headers: { "Content-Type": "application/json", "X-Telegram-Init-Data": tg ? tg.initData : "", ...(options.headers || {}) },
+      });
+    } catch (_) {
+      const err = new Error("Sin conexión");
+      err.network = true;
+      throw err;
+    }
+    if (SIN_RED.includes(res.status)) {
+      const err = new Error(`Error ${res.status}`);
+      err.status = res.status;
+      err.network = true;
+      throw err;
+    }
     let body = null;
     try { body = await res.json(); } catch (_) { /* sin JSON */ }
     if (!res.ok) {
@@ -377,6 +416,126 @@
       throw err;
     }
     return body;
+  }
+
+  // ── Bandeja de salida (formularios guardados sin señal) ─────────────────
+  // Regla (2026-11-24): un formulario que no se pudo enviar por falta de señal se reenvía
+  // como máximo 1 hora después de perder la señal. Se guarda en IndexedDB (si no está
+  // disponible, en localStorage) para no perderlo si se cierra el Mini App. Pasada la hora
+  // el servidor lo guarda solo como auditoría (410) y aquí se descarta sin avisar.
+  const VENTANA_MS = 60 * 60 * 1000;
+  const REINTENTO_MS = 15 * 1000;
+  const BANDEJA_MAX_MS = 7 * 24 * 60 * 60 * 1000;  // el servidor ya no lo audita después
+  const IDB_NAME = "preop-offline", IDB_STORE = "bandeja", LS_PREFIX = "preop-bandeja:";
+
+  function idb() {
+    return new Promise((resolve, reject) => {
+      if (!window.indexedDB) { reject(new Error("sin IndexedDB")); return; }
+      const req = indexedDB.open(IDB_NAME, 1);
+      req.onupgradeneeded = () => req.result.createObjectStore(IDB_STORE, { keyPath: "uuid" });
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  }
+
+  async function idbRun(mode, fn) {
+    const db = await idb();
+    try {
+      return await new Promise((resolve, reject) => {
+        const tx = db.transaction(IDB_STORE, mode);
+        const req = fn(tx.objectStore(IDB_STORE));
+        tx.oncomplete = () => resolve(req && req.result);
+        tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error);
+      });
+    } finally { db.close(); }
+  }
+
+  const bandeja = {
+    async put(item) {
+      try { await idbRun("readwrite", (s) => s.put(item)); return true; } catch (_) { /* respaldo */ }
+      try { localStorage.setItem(LS_PREFIX + item.uuid, JSON.stringify(item)); return true; } catch (_) { return false; }
+    },
+    async all() {
+      let items = [];
+      try { items = (await idbRun("readonly", (s) => s.getAll())) || []; } catch (_) { /* respaldo */ }
+      try {
+        for (let i = 0; i < localStorage.length; i++) {
+          const k = localStorage.key(i);
+          if (k && k.startsWith(LS_PREFIX) && !items.some((x) => LS_PREFIX + x.uuid === k)) items.push(JSON.parse(localStorage.getItem(k)));
+        }
+      } catch (_) { /* sin almacenamiento */ }
+      return items;
+    },
+    async del(uuid) {
+      try { await idbRun("readwrite", (s) => s.delete(uuid)); } catch (_) { /* respaldo */ }
+      try { localStorage.removeItem(LS_PREFIX + uuid); } catch (_) { /* sin almacenamiento */ }
+    },
+  };
+
+  const usuarioId = () => (tg && tg.initDataUnsafe && tg.initDataUnsafe.user ? tg.initDataUnsafe.user.id : null);
+  const vencidoLocal = (item) => Date.now() - Date.parse(item.sin_senal_desde) > VENTANA_MS;
+  const cuerpoDiferido = (item) => JSON.stringify({
+    ...item.payload, diferido: { init_data_original: item.init_data_original, sin_senal_desde: item.sin_senal_desde },
+  });
+
+  // Al abrir con señal: reenvía lo que quedó guardado de sesiones anteriores.
+  // Devuelve el envío aceptado (para mostrarlo) y el aviso de uno rechazado por validación.
+  async function vaciarBandeja() {
+    const propios = (await bandeja.all()).filter((i) => i && i.user_id === usuarioId())
+      .sort((a, b) => Date.parse(a.sin_senal_desde) - Date.parse(b.sin_senal_desde));
+    let aceptado = null, aviso = "";
+    for (const item of propios) {
+      if (Date.now() - Date.parse(item.sin_senal_desde) > BANDEJA_MAX_MS) { await bandeja.del(item.uuid); continue; }
+      try {
+        aceptado = await api("/api/preop", { method: "POST", body: cuerpoDiferido(item) });
+        await bandeja.del(item.uuid);
+      } catch (err) {
+        if (err.network || err.status === 401 || (err.status && err.status >= 500)) break;  // se intenta en la próxima apertura
+        await bandeja.del(item.uuid);
+        // 410 = vencido: queda como auditoría en el servidor y no se avisa al conductor.
+        if (err.status !== 410) aviso = `Tu preoperacional guardado sin señal no fue aceptado: ${err.message}\nDiligencia uno nuevo.`;
+      }
+    }
+    return { aceptado, aviso };
+  }
+
+  function detenerReintentos() {
+    if (state.reintento) { clearInterval(state.reintento); state.reintento = null; }
+    window.removeEventListener("online", reintentarSiPendiente);
+  }
+
+  function reintentarSiPendiente() {
+    if (!state.pendiente || state.sending || state.finished) return;
+    if (vencidoLocal(state.pendiente)) { vencer(); return; }
+    submit();
+  }
+
+  function modoSinSenal(guardado) {
+    $("next").textContent = "Reintentar ahora";
+    $("next").disabled = false;
+    setMsg(guardado
+      ? "📥 Sin señal. Tu formulario quedó guardado en este teléfono y se enviará solo cuando vuelva la señal (hasta 1 hora).\n" +
+        "Mantén abierto el formulario; si lo cierras, vuelve a abrirlo cuando tengas señal."
+      : "📵 Sin señal y no se pudo guardar en el teléfono. No cierres el formulario: se enviará solo cuando vuelva la señal (hasta 1 hora).",
+    true);
+    if (!state.reintento) {
+      state.reintento = setInterval(reintentarSiPendiente, REINTENTO_MS);
+      window.addEventListener("online", reintentarSiPendiente);
+    }
+  }
+
+  // Pasó la hora sin señal: el formulario ya no se procesará. Se conserva en la bandeja para
+  // que el servidor lo registre como auditoría la próxima vez que se abra con señal.
+  function vencer() {
+    detenerReintentos();
+    state.finished = true;
+    if (tg && tg.disableClosingConfirmation) tg.disableClosingConfirmation();
+    document.querySelectorAll("section[data-step]").forEach((s) => { s.hidden = true; });
+    $("stepper").hidden = true;
+    $("actions").hidden = true;
+    block("No se pudo enviar a tiempo",
+      "Pasó más de 1 hora sin señal y este formulario ya no se puede enviar.\nDiligencia un nuevo preoperacional cuando tengas señal.");
   }
 
   function confirmAsync(text) {
@@ -424,9 +583,23 @@
   // 🔴 Finalizar), la tarjeta aparece bloqueada; el servidor también lo valida.
   const reservaDe = (e) => (e.vehiculo.reserva && e.vehiculo.reserva.estado) || "disponible";
   const seleccionable = (e) => !BLOQUEADO.includes(reservaDe(e));
-  // ocupado: lo tiene otro conductor; otro_propio: este conductor ya tiene otro vehículo reservado.
-  const BLOQUEADO = ["ocupado", "otro_propio"];
+  // Regla (2026-11-24): solo un vehículo "disponible" permite el preoperacional.
+  // propia: ya hizo el suyo (reservado a su nombre); ocupado: lo tiene otro conductor;
+  // otro_propio: este conductor ya tiene otro vehículo reservado.
+  const BLOQUEADO = ["propia", "ocupado", "otro_propio"];
   const TAG = { disponible: "DISPONIBLE", propia: "RESERVADO POR TI", ocupado: "NO DISPONIBLE", otro_propio: "NO DISPONIBLE" };
+
+  function motivosSinVehiculo() {
+    const lineas = state.ctx.extractos.map((e) => {
+      const v = e.vehiculo, placa = v.matricula || v.nombre || "Vehículo", r = v.reserva || {};
+      if (reservaDe(e) === "propia") return `${placa}: ya hiciste su preoperacional (reservado a tu nombre).`;
+      if (reservaDe(e) === "ocupado") return `${placa}: en uso por ${r.conductor || "otro conductor"}, que no ha finalizado su jornada.`;
+      return `${placa}: ya tienes reservado ${r.placa_propia}.`;
+    });
+    const propio = state.ctx.extractos.some((e) => ["propia", "otro_propio"].includes(reservaDe(e)));
+    return [...new Set(lineas)].join("\n") +
+      (propio ? "\n\nAl terminar tu jornada toca «🔴 Finalizar» en el chat para liberar tu vehículo." : "");
+  }
 
   function onContrato() {
     const opciones = extractosDelContrato();
@@ -441,7 +614,9 @@
         el("strong", { text: v.matricula || v.nombre || "Vehículo" }),
         el("span", { class: "hint", text: [v.nombre, v.numero_interno && `N.º interno ${v.numero_interno}`, e.codigo].filter(Boolean).join(" · ") }),
       ]);
-      if (estado === "ocupado") {
+      if (estado === "propia") {
+        info.append(el("span", { class: "ocupado-por", text: "Ya hiciste el preoperacional de este vehículo. Toca 🔴 Finalizar en el chat al terminar tu jornada." }));
+      } else if (estado === "ocupado") {
         info.append(el("span", { class: "ocupado-por", text: `En uso por ${v.reserva.conductor || "otro conductor"} (no ha finalizado su jornada)` }));
       } else if (estado === "otro_propio") {
         info.append(el("span", { class: "ocupado-por", text: `Ya tienes reservado ${v.reserva.placa_propia}. Toca 🔴 Finalizar para cambiar de vehículo.` }));
@@ -449,7 +624,7 @@
       const bloqueado = BLOQUEADO.includes(estado);
       const card = el("button", { type: "button", class: "veh-card", "aria-pressed": String(e === state.extracto) }, [
         el("span", { class: "ico", text: "🚌" }), info,
-        el("span", { class: `tag ${bloqueado ? "ocupado" : estado}`, text: TAG[estado] || TAG.disponible }),
+        el("span", { class: `tag ${estado === "propia" ? "propia" : bloqueado ? "ocupado" : estado}`, text: TAG[estado] || TAG.disponible }),
       ]);
       if (bloqueado) card.disabled = true;
       else card.addEventListener("click", () => { markDirty(); state.extracto = e; onContrato(); });
@@ -558,21 +733,27 @@
     return opts;
   }
 
-  function numberInput(key, label, decimal, max) {
+  function numberInput(key, label, decimal, max, required) {
     const input = el("input", {
       id: `m-${key}`, type: "text", inputmode: decimal ? "decimal" : "numeric", autocomplete: "off",
-      placeholder: decimal ? "0.0" : "0", enterkeyhint: "next", dataset: { measure: key, label, max: String(max) },
+      placeholder: decimal ? "0.0" : "0", enterkeyhint: "next",
+      dataset: { measure: key, label, max: String(max), required: String(required) },
     });
     input.addEventListener("input", () => { markDirty(); validateMeasure(input); refreshTireHints(); });
-    return el("div", {}, [el("label", { for: input.id, text: label }), input, el("div", { class: "field-hint", dataset: { hintFor: key } })]);
+    return el("div", {}, [
+      el("label", { for: input.id }, [label, ...(required ? [el("span", { class: "req", text: " *" })] : [])]),
+      input,
+      el("div", { class: "field-hint", dataset: { hintFor: key } }),
+    ]);
   }
 
   function tireBlock(ll) {
+    const required = (key) => state.form.measures.find((m) => m.key === key).obligatorio;
     return el("div", { class: "tire", dataset: { tire: ll.codigo, interna: String(ll.interna) } }, [
       el("div", { class: "tire-title" }, [ll.nombre, el("span", { class: "hint", text: ` · ${ll.posicion}` })]),
       el("div", { class: "grid2" }, [
-        numberInput(ll.labrado, "Labrado (mm)", true, measureMax(ll.labrado)),
-        numberInput(ll.presion, "Presión de aire (PSI)", false, measureMax(ll.presion)),
+        numberInput(ll.labrado, "Labrado (mm)", true, measureMax(ll.labrado), required(ll.labrado)),
+        numberInput(ll.presion, "Presión de aire (PSI)", false, measureMax(ll.presion), required(ll.presion)),
       ]),
     ]);
   }
@@ -592,12 +773,16 @@
       const input = $(`m-${ll.labrado}`);
       const hint = document.querySelector(`[data-hint-for="${CSS.escape(ll.labrado)}"]`);
       if (!input || !hint) continue;
-      const v = parseNum(input.value), min = minimoLabrado(ll);
+      const v = parseNum(input.value), min = minimoLabrado(ll), max = maxDe(input);
       const low = Number.isFinite(v) && v > 0 && v < min;
       const cero = labradoEnCero(input);
-      hint.textContent = cero ? "✖ El labrado no puede ser 0 mm" : low ? `⚠ Bajo el mínimo (${fmtNum(min)} mm)` : `Mínimo ${fmtNum(min)} mm`;
-      hint.classList.toggle("warn", low);
-      hint.classList.toggle("bad", cero);
+      const alto = Number.isFinite(v) && v > max;
+      if (input.value.trim() !== "") validateMeasure(input);  // el máximo cambia con el vehículo
+      hint.textContent = cero ? "✖ El labrado no puede ser 0 mm"
+        : alto ? `✖ Máximo ${fmtNum(max)} mm: revisa lo digitado`
+        : low ? `⚠ Bajo el mínimo (${fmtNum(min)} mm)` : `Mínimo ${fmtNum(min)} mm · máximo ${fmtNum(max)} mm`;
+      hint.classList.toggle("warn", low && !alto);
+      hint.classList.toggle("bad", cero || alto);
     }
   }
 
@@ -677,9 +862,15 @@
   const isLabrado = (input) => !input.dataset.measure.endsWith("_pre");
   const labradoEnCero = (input) => isLabrado(input) && input.value.trim() !== "" && parseNum(input.value) === 0;
 
+  // Máximo de una medida: el labrado depende del tipo de vehículo (Buses 20 mm, Camioneta 15 mm).
+  function maxDe(input) {
+    const v = state.extracto && state.extracto.vehiculo;
+    return isLabrado(input) && v && v.labrado_maximo ? Number(v.labrado_maximo) : Number(input.dataset.max);
+  }
+
   function validateMeasure(input) {
     const n = parseNum(input.value);
-    const bad = input.value.trim() !== "" && (!Number.isFinite(n) || n < 0 || n > Number(input.dataset.max) || labradoEnCero(input));
+    const bad = input.value.trim() !== "" && (!Number.isFinite(n) || n < 0 || n > maxDe(input) || labradoEnCero(input));
     input.classList.toggle("invalid", bad);
     return !bad;
   }
@@ -692,9 +883,14 @@
     const llantas = {};
     const errors = [];
     for (const input of visibleMeasureInputs()) {
-      if (input.value.trim() === "") continue;
+      if (input.value.trim() === "") {
+        if (input.dataset.required === "true") errors.push(`${input.dataset.label} (${input.id.slice(2)}): campo obligatorio.`);
+        continue;
+      }
       if (labradoEnCero(input)) { validateMeasure(input); errors.push(`${input.dataset.label} (${input.id.slice(2)}): el labrado no puede ser 0 mm.`); }
-      else if (!validateMeasure(input)) errors.push(`${input.dataset.label} (${input.id.slice(2)}): valor fuera de rango (0–${input.dataset.max}).`);
+      else if (!validateMeasure(input)) errors.push(`${input.dataset.label} (${input.id.slice(2)}): ${isLabrado(input)
+        ? `el labrado máximo es ${fmtNum(maxDe(input))} mm (${(state.extracto && state.extracto.vehiculo.clase_labrado) || "vehículo"}).`
+        : `valor fuera de rango (0–${maxDe(input)}).`}`);
       else llantas[input.dataset.measure] = parseNum(input.value);
     }
     return { llantas, errors };
@@ -749,16 +945,31 @@
     });
   }
 
-  async function compress(file) {
-    const img = await loadImage(file);
-    const scale = Math.min(1, PHOTO_MAX_SIDE / Math.max(img.naturalWidth, img.naturalHeight));
+  // Imagen (foto o cuadro de video) -> JPEG con el lado mayor ≤ PHOTO_MAX_SIDE.
+  function toJpeg(source, width, height) {
+    const scale = Math.min(1, PHOTO_MAX_SIDE / Math.max(width, height));
     const canvas = document.createElement("canvas");
-    canvas.width = Math.round(img.naturalWidth * scale);
-    canvas.height = Math.round(img.naturalHeight * scale);
-    canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+    canvas.width = Math.round(width * scale);
+    canvas.height = Math.round(height * scale);
+    canvas.getContext("2d").drawImage(source, 0, 0, canvas.width, canvas.height);
     let data = canvas.toDataURL("image/jpeg", 0.8);
     if (data.length > 1_400_000) data = canvas.toDataURL("image/jpeg", 0.6);
     return data;
+  }
+
+  async function compress(file) {
+    const img = await loadImage(file);
+    return toJpeg(img, img.naturalWidth, img.naturalHeight);
+  }
+
+  function setFoto(data) {
+    state.foto = data;
+    markDirty();
+    $("foto-preview").src = data;
+    $("foto-preview").hidden = false;
+    $("foto-cambiar").hidden = false;
+    $("foto-zone").hidden = true;
+    setMsg("");
   }
 
   async function onPhoto(ev) {
@@ -767,16 +978,46 @@
     if (!file) return;
     setMsg("Procesando foto…");
     try {
-      state.foto = await compress(file);
-      markDirty();
-      $("foto-preview").src = state.foto;
-      $("foto-preview").hidden = false;
-      $("foto-cambiar").hidden = false;
-      $("foto-zone").hidden = true;
-      setMsg("");
+      setFoto(await compress(file));
     } catch (err) {
       setMsg(err.message, true);
     }
+  }
+
+  // Telegram en Android ignora <input capture> y abre la galería: la cámara se abre aquí
+  // mismo con getUserMedia (cámara trasera). Si no hay permiso o soporte, se usa el input.
+  async function abrirCamara() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { $("foto-camara").click(); return; }
+    try {
+      state.stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false,
+      });
+    } catch (err) {
+      setMsg(err && err.name === "NotAllowedError"
+        ? "Permite el acceso a la cámara a Telegram para tomar la foto, o elígela de la galería."
+        : "No se pudo abrir la cámara. Elige la foto de la galería.", true);
+      return;
+    }
+    const video = $("cam-video");
+    video.srcObject = state.stream;
+    $("camara").hidden = false;
+    try { await video.play(); } catch (_) { /* se reproduce al tocar */ }
+  }
+
+  function cerrarCamara() {
+    if (state.stream) state.stream.getTracks().forEach((t) => t.stop());
+    state.stream = null;
+    $("cam-video").srcObject = null;
+    $("camara").hidden = true;
+  }
+
+  function capturar() {
+    const video = $("cam-video");
+    if (!video.videoWidth) return;  // aún no hay imagen
+    const data = toJpeg(video, video.videoWidth, video.videoHeight);
+    cerrarCamara();
+    setFoto(data);
+    if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
   }
 
   // ── Paso 4: Resumen de la Inspección ─────────────────────────────────────
@@ -919,6 +1160,7 @@
   }
 
   function prev() {
+    if (!$("camara").hidden) { cerrarCamara(); return; }
     if (state.finished) return;
     if (state.step === 2 && state.tab > 0) { showTab(state.tab - 1); return; }
     if (state.step > 1) goTo(state.step - 1);
@@ -943,20 +1185,49 @@
       extra: { llantas_internas: state.internas },
       testigos_img: state.foto,
     };
+    // Si ya falló por falta de señal, se reenvía como diferido (con el payload actual: el
+    // conductor pudo corregir algo mientras tanto).
+    if (state.pendiente) {
+      state.pendiente.payload = payload;
+      await bandeja.put(state.pendiente);
+    }
     try {
       // Reintentar con el mismo uuid no duplica (idempotencia del servidor).
-      const out = await api("/api/preop", { method: "POST", body: JSON.stringify(payload) });
-      showDone(out);
+      const body = state.pendiente ? cuerpoDiferido(state.pendiente) : JSON.stringify(payload);
+      const out = await api("/api/preop", { method: "POST", body });
+      if (state.pendiente) { detenerReintentos(); await bandeja.del(state.uuid); }
+      showDone(out, Boolean(state.pendiente));
     } catch (err) {
-      setMsg(`No se pudo enviar: ${err.message}\nPuedes reintentar: no se duplicará.`, true);
-      $("next").textContent = "Reintentar envío";
       state.sending = false;
+      if (err.network) {
+        if (!state.pendiente) {
+          state.pendiente = {
+            uuid: state.uuid, user_id: usuarioId(), payload,
+            init_data_original: state.initDataOriginal, sin_senal_desde: new Date().toISOString(),
+          };
+          state.pendienteGuardado = await bandeja.put(state.pendiente);
+        }
+        if (vencidoLocal(state.pendiente)) vencer(); else modoSinSenal(state.pendienteGuardado);
+        return;
+      }
+      if (err.status === 410) {  // fuera de la ventana: el servidor lo guardó solo como auditoría
+        await bandeja.del(state.uuid);
+        vencer();
+        return;
+      }
+      // Error de validación o sesión: se detienen los reintentos automáticos (repetirían el
+      // mismo error) y el conductor corrige y reintenta. Sigue en la bandeja si estaba.
+      detenerReintentos();
+      const sesion = err.status === 401 ? "\nCierra y vuelve a abrir el formulario: lo que guardaste se enviará al abrirlo." : "";
+      setMsg(`No se pudo enviar: ${err.message}${sesion}\nPuedes reintentar: no se duplicará.`, true);
+      $("next").textContent = "Reintentar envío";
       $("next").disabled = false;
     }
   }
 
-  function showDone(out) {
+  function showDone(out, diferido = false) {
     state.finished = true;
+    $("actions").hidden = false;
     if (tg && tg.disableClosingConfirmation) tg.disableClosingConfirmation();
     if (tg && tg.BackButton) tg.BackButton.hide();
     document.querySelectorAll("section[data-step]").forEach((s) => { s.hidden = true; });
@@ -967,7 +1238,8 @@
     $("next").disabled = false;
     setMsg("");
     $("done").hidden = false;
-    $("done-title").textContent = out.duplicado ? "Este formulario ya había sido recibido" : "Preoperacional recibido";
+    $("done-title").textContent = out.duplicado ? "Este formulario ya había sido recibido"
+      : diferido ? "Preoperacional recibido al recuperar la señal" : "Preoperacional recibido";
     const nc = out.no_conformes ? ` Se registraron ${out.no_conformes} ítem(s) no conforme(s).` : "";
     $("done-text").textContent =
       `Se está registrando en Odoo y te llegará la confirmación en el chat.${nc}\n\n` +
@@ -996,6 +1268,10 @@
       const [form, ctx] = await Promise.all([api("/api/preop/form"), api("/api/preop/context")]);
       state.form = form;
       state.ctx = ctx;
+      // Hay señal: primero se envía lo que quedó guardado en una sesión anterior.
+      const previo = await vaciarBandeja();
+      if (previo.aceptado) { showDone(previo.aceptado, true); return; }
+      state.avisoBandeja = previo.aviso;
     } catch (err) {
       if (err.status === 403) block("Usuario no registrado", `${err.message}.\nPide a Recursos Humanos que lo registre.`);
       else block("No se pudo cargar el formulario", err.message);
@@ -1006,7 +1282,13 @@
         "No tienes un extracto aprobado y vigente como conductor.\nPide a tu responsable que apruebe tu extracto y vuelve a abrir el formulario.");
       return;
     }
+    // Sin ningún vehículo disponible no se entra al formulario.
+    if (!state.ctx.extractos.some(seleccionable)) {
+      block("No tienes vehículos disponibles", motivosSinVehiculo());
+      return;
+    }
     state.uuid = newUuid();
+    state.initDataOriginal = tg.initData;
     $("conductor").value = state.ctx.empleado.nombre;
     $("responsable").value = state.ctx.empleado.responsable || "—";
     renderTabs();
@@ -1015,9 +1297,13 @@
     $("km").addEventListener("input", () => { markDirty(); onKm(); });
     $("observaciones").addEventListener("input", () => { markDirty(); renderObservaciones(); });
     $("observaciones").addEventListener("change", renderObservaciones);
-    $("tab-conforme").addEventListener("click", () => markAllPositive(tabItems(state.tab)));
+    // $("tab-conforme").addEventListener("click", () => markAllPositive(tabItems(state.tab)));
     for (const id of ["foto-camara", "foto-galeria"]) $(id).addEventListener("change", onPhoto);
-    document.querySelectorAll("[data-pick]").forEach((b) => b.addEventListener("click", () => $(b.dataset.pick).click()));
+    document.querySelectorAll("[data-pick]").forEach((b) => b.addEventListener("click", () => {
+      if (b.dataset.pick === "foto-camara") abrirCamara(); else $(b.dataset.pick).click();
+    }));
+    $("cam-capturar").addEventListener("click", capturar);
+    $("cam-cerrar").addEventListener("click", cerrarCamara);
     $("sum-foto").addEventListener("click", () => { if (!state.foto) goTo(3); });
     $("next").addEventListener("click", next);
     $("prev").addEventListener("click", prev);
@@ -1025,6 +1311,7 @@
     $("stepper").hidden = false;
     $("actions").hidden = false;
     goTo(1);
+    if (state.avisoBandeja) setMsg(state.avisoBandeja, true);
   }
 
   init();

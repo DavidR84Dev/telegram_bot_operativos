@@ -154,6 +154,25 @@ class OdooRestClient:
             raise OdooApiError(f"{path}: respuesta sin 'items'")
         return data
 
+    # ── escritura ──────────────────────────────────────────────────────────
+    @_retry
+    def post_json(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
+        """POST con cuerpo JSON. Solo para endpoints idempotentes (se reintenta ante 5xx/red)."""
+        token = self._valid_token()
+        response = self._http.post(path, json=body, headers={"Authorization": f"Bearer {token}"})
+        if response.status_code == 401:
+            token = self._authenticate()
+            response = self._http.post(path, json=body, headers={"Authorization": f"Bearer {token}"})
+        if response.status_code >= 500 or response.status_code == 429:
+            raise _RetryableHttpError(f"{path} respondió {response.status_code}")
+        if response.status_code >= 400:
+            raise OdooApiError(f"{path} respondió {response.status_code}: {response.text[:200]}")
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise OdooApiError(f"{path} no devolvió JSON") from exc
+        return data if isinstance(data, dict) else {"response": data}
+
     def iter_items(self, path: str, company_id: int, page_size: int = 500) -> Iterator[dict[str, Any]]:
         """Recorre todas las páginas de ``path`` para una compañía."""
         page = 1

@@ -6,9 +6,15 @@ Versionado: [SemVer](https://semver.org/lang/es/) (`MAJOR.MINOR.PATCH`).
 ## [Sin publicar]
 
 ### Agregado
+- **📝 Registro de conductores nuevos (2026-11-24):** quien escribe al bot sin tener su id de Telegram en el PIN de un empleado ya no recibe "Acceso no autorizado": se le ofrece 📝 Registro (o `/registro`), antes del preoperacional. Pide nombre completo, cédula o documento y correo (uno por mensaje, con validación; `/cancelar` en cualquier paso) y los guarda con el id de Telegram en la nueva tabla `registros_conductor`. Valida al conductor en `/api/empleados` por número de documento: si no existe responde "Conductor no registrado en Odoo. Por favor comunicarse con el área de Talento humano"; si existe envía `{id, pin}` a `/api/empleados/register` y responde "Usuario correctamente registrado en Odoo…". No sobrescribe el PIN de un empleado que ya tiene otro id de Telegram. Solo los usuarios sin registro completado ven la opción. Requiere `ODOO_API_LOGIN`/`ODOO_API_PASSWORD`.
+- **Preoperacional sin señal (2026-11-24):** si el envío falla por falta de señal, la Mini App guarda el formulario en el teléfono (IndexedDB) y lo reenvía sola al volver la señal, o al reabrirla. Se acepta como máximo **1 hora después de perder la señal** (anclado a la hora de apertura firmada por Telegram; tope de 2 h desde la apertura). Fuera de la ventana el servidor responde 410 y lo guarda solo como auditoría, sin Odoo, sin reserva y sin aviso al conductor. Nueva tabla `preop_envios_diferidos` con la trazabilidad (apertura, pérdida de señal, recepción, retraso, huella SHA-256). Ver `docs/PREOPERACIONAL.md` § Envío sin señal.
 - **Reserva del vehículo por jornada y botón 🔴 Finalizar:** tabla temporal `reservas_vehiculo`: una placa por conductor y un conductor por placa. El preoperacional reserva el vehículo; los demás lo ven como NO DISPONIBLE (rojo) y el servidor rechaza su envío. Se libera con 🔴 Finalizar (con confirmación y aviso al jefe inmediato por Telegram), a las 24 h de su registro inicial o con `python -m app.preop.reservas --liberar PLACA`. Cada liberación queda en `reservas_historial`.
 
 ### Cambiado
+- **Preoperacional, ajustes del 2026-11-24:**
+  - «📷 Tomar foto» abre la cámara trasera dentro del formulario (`getUserMedia`): Telegram para Android ignoraba `capture` y abría la galería.
+  - Labrado máximo por tipo de vehículo para evitar errores de digitación: **Buses 20 mm** (bus, buseta, minibus) y **Camioneta 15 mm** (los demás). Validado en la Mini App y en el servidor.
+  - Solo se puede hacer el preoperacional de un vehículo **DISPONIBLE**. Un vehículo reservado, incluso a nombre del mismo conductor, queda bloqueado en la Mini App y el servidor lo rechaza (409). Sin vehículos disponibles, el formulario no deja entrar y explica por qué.
 - **Preoperacional, ajustes del 2026-11-23 (noche):**
   - Rines/Llantas: el labrado no puede enviarse en 0 mm (Mini App y servidor); vacío sigue siendo "no medido" y la presión admite 0.
   - Resumen: la tarjeta "Observaciones y estado final" siempre visible (texto escrito en Evidencia o "Sin observaciones."); "Siguiente" cierra el teclado para que Android confirme la última palabra escrita.

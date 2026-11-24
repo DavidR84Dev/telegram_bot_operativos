@@ -3,7 +3,8 @@
 Reglas (definidas con el usuario el 2026-11-23):
 
 * Al enviar un preoperacional, el vehículo queda reservado al conductor (su id de
-  Telegram y su empleado). Puede enviar varios preoperacionales del mismo vehículo.
+  Telegram y su empleado). Desde el 2026-11-24 solo se puede hacer el preoperacional de un
+  vehículo **disponible**: tampoco puede repetirlo el mismo conductor hasta que finalice.
 * Una placa tiene un solo conductor a la vez: los demás conductores (aunque figuren
   en el mismo extracto) la ven como NO DISPONIBLE y el servidor rechaza su envío.
 * Un conductor tiene un solo vehículo reservado a la vez: debe finalizar antes de
@@ -38,7 +39,7 @@ ZONA_JORNADA = timezone(timedelta(hours=-5), "America/Bogota")
 RESERVA_HORAS = 24
 
 DISPONIBLE = "disponible"
-PROPIA = "propia"            # reservado por el mismo conductor
+PROPIA = "propia"            # reservado por el mismo conductor -> NO DISPONIBLE (ya hizo su preoperacional)
 OCUPADO = "ocupado"          # reservado por otro conductor -> NO DISPONIBLE
 OTRO_PROPIO = "otro_propio"  # libre, pero el conductor ya tiene otro vehículo -> NO DISPONIBLE
 
@@ -136,10 +137,19 @@ def estado_reservas(session: Session, vehiculo_ids: list[int], empleado_id: int,
 
 def verificar_disponible(session: Session, vehiculo: Flota, telegram_user_id: int,
                          now: datetime | None = None) -> None:
-    """Lanza ``VehiculoReservadoError`` si la placa es de otro o el conductor ya tiene otra."""
+    """Lanza ``VehiculoReservadoError`` si el vehículo no está **disponible**.
+
+    Regla del 2026-11-24: solo se hace el preoperacional de un vehículo sin reserva. Si ya
+    está reservado (por otro conductor o por el mismo, que ya hizo su preoperacional), o el
+    conductor ya tiene otro vehículo, se rechaza hasta que toque 🔴 Finalizar.
+    """
     liberar_vencidas(session, now)
     reserva = session.scalar(select(ReservaVehiculo).where(ReservaVehiculo.vehiculo_id == vehiculo.id))
-    if reserva is not None and reserva.telegram_user_id != telegram_user_id:
+    if reserva is not None and reserva.telegram_user_id == telegram_user_id:
+        raise VehiculoReservadoError(
+            f"Ya hiciste el preoperacional del vehículo {placa(vehiculo)}: está reservado a tu nombre. "
+            "Toca 🔴 Finalizar en el chat al terminar tu jornada.")
+    if reserva is not None:
         raise VehiculoReservadoError(
             f"El vehículo {placa(vehiculo)} no está disponible: lo tiene {reserva.empleado.nombre}, que aún no ha "
             "finalizado su jornada.")
@@ -152,9 +162,9 @@ def verificar_disponible(session: Session, vehiculo: Flota, telegram_user_id: in
 
 def reservar(session: Session, *, vehiculo: Flota, empleado: Empleado, telegram_user_id: int,
              extracto_id: int | None, preop_id: int, now: datetime | None = None) -> ReservaVehiculo:
-    """Crea la reserva o la actualiza si el mismo conductor ya la tenía (otro preoperacional).
+    """Crea la reserva del vehículo (``verificar_disponible`` ya comprobó que estaba libre).
 
-    Un nuevo preoperacional no extiende el vencimiento: cuenta desde el registro inicial.
+    Si ya existiera del mismo conductor solo se actualiza, sin extender el vencimiento.
     """
     now = now or utc_now()
     reserva = session.scalar(select(ReservaVehiculo).where(ReservaVehiculo.vehiculo_id == vehiculo.id))

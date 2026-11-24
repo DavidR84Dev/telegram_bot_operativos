@@ -48,6 +48,7 @@ class MeasureItem:
     label: str
     unit: str
     max_value: float
+    required: bool = True
 
 
 @dataclass(frozen=True)
@@ -185,7 +186,11 @@ LLANTAS_POSICIONES: tuple[Llanta, ...] = (
     Llanta("R", "Llanta de repuesto", "Repuesto", "llanta_7", "llanta_rep_pre"),
 )
 
-LABRADO_MAX_MM = 30
+# Labrado máximo según el tipo de vehículo (2026-11-24), para evitar errores de digitación.
+LABRADO_MAX_CAMIONETA_MM = 15
+LABRADO_MAX_BUS_MM = 20
+# Tope general del esquema; el máximo real depende del vehículo (``labrado_maximo``).
+LABRADO_MAX_MM = max(LABRADO_MAX_CAMIONETA_MM, LABRADO_MAX_BUS_MM)
 PRESION_MAX_PSI = 200
 
 LLANTAS_MEDIDAS: tuple[MeasureItem, ...] = (
@@ -207,6 +212,22 @@ TIPOS_BUS = frozenset({"bus", "buseta", "minibus"})
 
 def es_bus(tipo_vehiculo: str | None) -> bool:
     return (tipo_vehiculo or "").strip().lower() in TIPOS_BUS
+
+
+def clase_labrado(tipo_vehiculo: str | None) -> str:
+    """Grupo del vehículo para los límites de labrado: "Buses" o "Camioneta" (todos los demás)."""
+    return "Buses" if es_bus(tipo_vehiculo) else "Camioneta"
+
+
+def labrado_maximo(tipo_vehiculo: str | None) -> float:
+    """Labrado máximo aceptado: 20 mm en buses, 15 mm en los demás vehículos."""
+    return float(LABRADO_MAX_BUS_MM if es_bus(tipo_vehiculo) else LABRADO_MAX_CAMIONETA_MM)
+
+
+def llantas_sobre_maximo(llantas: dict[str, float], tipo_vehiculo: str | None) -> list[str]:
+    """Nombres de las llantas cuyo labrado supera el máximo del tipo de vehículo."""
+    maximo = labrado_maximo(tipo_vehiculo)
+    return [ll.nombre for ll in LLANTAS_POSICIONES if llantas.get(ll.labrado, 0) > maximo]
 
 
 def labrado_minimo_acuerdo(tipo_vehiculo: str | None, labrado_camioneta: float | None,
@@ -276,6 +297,7 @@ def form_definition() -> dict[str, object]:
             for ll in LLANTAS_POSICIONES
         ],
         "measures": [
-            {"key": m.key, "label": m.label, "unit": m.unit, "max": m.max_value} for m in LLANTAS_MEDIDAS
+            {"key": m.key, "label": m.label, "unit": m.unit, "max": m.max_value, "obligatorio": m.required}
+            for m in LLANTAS_MEDIDAS
         ],
     }

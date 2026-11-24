@@ -64,3 +64,8 @@ def validate_init_data_user(
     if not isinstance(user, dict) or not isinstance(user.get("id"), int):
         raise InitDataError("usuario inválido")
     return user
+
+
+def init_data_auth_date(init_data: str) -> int:
+    """``auth_date`` (epoch) de un initData **ya validado** con ``validate_init_data_user``."""
+    return int(dict(parse_qsl(init_data, keep_blank_values=True))["auth_date"])

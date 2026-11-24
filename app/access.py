@@ -40,5 +40,9 @@ class AccessControl:
         self._cache[telegram_user_id] = (now + ttl, employee)
         return employee
 
+    def forget(self, telegram_user_id: str) -> None:
+        """Descarta la respuesta cacheada (p. ej. tras registrar el PIN del usuario en Odoo)."""
+        self._cache.pop(telegram_user_id, None)
+
     def is_authorized(self, telegram_user_id: str) -> bool:
         return self.employee_for(telegram_user_id) is not None
