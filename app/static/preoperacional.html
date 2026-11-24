@@ -545,9 +545,24 @@
     });
   }
 
-  const fmtNum = (n) => Number(n).toLocaleString("es-CO");
+  // Odoo solo admite punto decimal: los números se muestran con punto decimal y miles con espacio
+  // (125 430 km · 5.5 mm) para que coincidan con lo que se guarda.
+  const fmtNum = (n) => Number(n).toLocaleString("en-US", { maximumFractionDigits: 2 }).replace(/,/g, " ");
   // Acepta coma o punto decimal (teclados en español) y devuelve NaN si está vacío.
-  const parseNum = (text) => (String(text).trim() === "" ? NaN : Number(String(text).trim().replace(",", ".")));
+  const parseNum = (text) => (String(text).trim() === "" ? NaN : Number(String(text).trim().replace(/,/g, ".")));
+
+  // Campo decimal: mientras se escribe, la coma pasa a punto, se quitan los caracteres no
+  // numéricos y se deja un solo separador decimal (5,5 -> 5.5; 5.5.1 -> 5.51).
+  function normalizarDecimal(input) {
+    const antes = input.value;
+    let v = antes.replace(/,/g, ".").replace(/[^\d.]/g, "");
+    const punto = v.indexOf(".");
+    if (punto !== -1) v = v.slice(0, punto + 1) + v.slice(punto + 1).replace(/\./g, "");
+    if (v === antes) return;
+    const cursor = Math.max(0, (input.selectionStart ?? v.length) - (antes.length - v.length));
+    input.value = v;
+    try { input.setSelectionRange(cursor, cursor); } catch { /* algunos navegadores no lo permiten */ }
+  }
 
   // ── Paso 1: Información General ───────────────────────────────────────────
   // Contrato (unión de los contratos de los extractos aprobados) → vehículos de los
@@ -739,7 +754,10 @@
       placeholder: decimal ? "0.0" : "0", enterkeyhint: "next",
       dataset: { measure: key, label, max: String(max), required: String(required) },
     });
-    input.addEventListener("input", () => { markDirty(); validateMeasure(input); refreshTireHints(); });
+    input.addEventListener("input", () => {
+      normalizarDecimal(input);
+      markDirty(); validateMeasure(input); refreshTireHints(); refreshNext();
+    });
     return el("div", {}, [
       el("label", { for: input.id }, [label, ...(required ? [el("span", { class: "req", text: " *" })] : [])]),
       input,
@@ -809,6 +827,7 @@
     if (byUser) markDirty();
     document.querySelectorAll('[data-item="_internas"] button').forEach((b) => b.setAttribute("aria-pressed", String((b.dataset.v === "si") === on)));
     $("internas").hidden = !on;
+    if (byUser) refreshNext();  // cambian las medidas obligatorias visibles (llantas 5 y 6)
   }
 
   function renderTabs() {
@@ -906,20 +925,41 @@
     return errors.concat(collectMeasures().errors);
   }
 
+  // Medidas de llantas visibles vacías (obligatorias) o con un valor inválido.
+  const medidasPendientes = () => visibleMeasureInputs().filter(
+    (i) => (i.value.trim() === "" && i.dataset.required === "true") || !validateMeasure(i));
+  const nombreMedida = (i) =>
+    `${i.closest(".tire").querySelector(".tire-title").firstChild.textContent} – ${isLabrado(i) ? "labrado" : "presión"}`;
+
   function renderPending() {
     const box = $("req-pending");
     const faltan = pendientesObligatorios();
-    box.hidden = state.step !== 2 || faltan.length === 0;
+    const medidas = state.step === 2 ? medidasPendientes() : [];
+    box.hidden = state.step !== 2 || (faltan.length === 0 && medidas.length === 0);
     if (box.hidden) return;
     const tabTitle = (i) => state.form.tabs[Number(document.querySelector(`.item[data-row="${CSS.escape(i.key)}"]`).dataset.tabOf)].title;
+    const link = (text, onClick) => {
+      const b = el("button", { type: "button", class: "link", style: "padding:0;min-height:0;display:inline;text-align:left", text });
+      b.addEventListener("click", onClick);
+      return b;
+    };
+    const total = faltan.length + medidas.length;
     box.replaceChildren(el("span", {}, [
-      `Para continuar a Evidencia faltan ${faltan.length} obligatorio(s): `,
-      ...faltan.flatMap((i, n) => {
-        const b = el("button", { type: "button", class: "link", style: "padding:0;min-height:0;display:inline;text-align:left", text: `${i.label} (${tabTitle(i)})` });
-        b.addEventListener("click", () => jumpToItem(i.key));
-        return n ? [", ", b] : [b];
-      }),
+      `Para continuar a Evidencia faltan ${total} obligatorio(s): `,
+      ...[...faltan.map((i) => link(`${i.label} (${tabTitle(i)})`, () => jumpToItem(i.key))),
+          ...medidas.map((i) => link(`${nombreMedida(i)} (Rines/Llantas)`, () => jumpToMeasure(i)))]
+        .flatMap((b, n) => (n ? [", ", b] : [b])),
     ]));
+  }
+
+  function jumpToMeasure(input) {
+    goTo(2);
+    showTab(state.form.tabs.findIndex((t) => t.title === "Rines/Llantas"));
+    if (input.value.trim() === "") input.classList.add("invalid");
+    setTimeout(() => {
+      input.scrollIntoView({ behavior: "smooth", block: "center" });
+      input.focus({ preventScroll: true });
+    }, 80);
   }
 
   function jumpToItem(key) {

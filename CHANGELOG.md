@@ -11,6 +11,12 @@ Versionado: [SemVer](https://semver.org/lang/es/) (`MAJOR.MINOR.PATCH`).
 - **Reserva del vehículo por jornada y botón 🔴 Finalizar:** tabla temporal `reservas_vehiculo`: una placa por conductor y un conductor por placa. El preoperacional reserva el vehículo; los demás lo ven como NO DISPONIBLE (rojo) y el servidor rechaza su envío. Se libera con 🔴 Finalizar (con confirmación y aviso al jefe inmediato por Telegram), a las 24 h de su registro inicial o con `python -m app.preop.reservas --liberar PLACA`. Cada liberación queda en `reservas_historial`.
 
 ### Cambiado
+- **Preoperacional, decimales y obligatorios (2026-11-24, tarde):**
+  - Decimales con punto, porque Odoo solo lo admite en los `float`: la Mini App cambia la coma por punto mientras se escribe (`5,5` → `5.5`) y muestra los números con punto decimal y miles con espacio (`125 430 km`); el servidor convierte a número un texto con coma (`"5,5"`) antes de validar, en vez de rechazarlo.
+  - Labrado y presión obligatorios en las llantas 1–4 y la de repuesto (y en las internas 5 y 6 si el vehículo las tiene), en la Mini App y en el servidor.
+  - El aviso de pendientes ahora también lista las medidas de llantas que faltan o no son válidas, y cada una lleva a su campo; antes "Siguiente" podía quedar deshabilitado sin explicación. El estado del botón se recalcula al escribir una medida y al responder "¿Tiene llantas internas?".
+  - Se desactiva a propósito "✔ Marcar pestaña conforme": el conductor revisa cada ítem.
+  - Nueva guía `docs/GUIA_NUEVOS_BOTS.md` con estas convenciones para los próximos bots.
 - **Preoperacional, ajustes del 2026-11-24:**
   - «📷 Tomar foto» abre la cámara trasera dentro del formulario (`getUserMedia`): Telegram para Android ignoraba `capture` y abría la galería.
   - Labrado máximo por tipo de vehículo para evitar errores de digitación: **Buses 20 mm** (bus, buseta, minibus) y **Camioneta 15 mm** (los demás). Validado en la Mini App y en el servidor.

@@ -37,6 +37,16 @@ def _clean_str(value: Any) -> str | None:
     return text or None
 
 
+def _punto_decimal(value: Any) -> Any:
+    """Texto numérico con coma decimal -> punto ("5,5" -> "5.5"). Odoo solo admite punto en los float.
+
+    Los números y los demás tipos pasan sin cambios; la validación de tipo y rango la hace Pydantic.
+    """
+    if isinstance(value, str):
+        return value.strip().replace(",", ".")
+    return value
+
+
 def related_name(value: Any) -> str | None:
     """Nombre de un relacional: 'Texto', {'name'|'nombre': ...} o [id, 'Texto'] (formato Odoo)."""
     if isinstance(value, dict):
@@ -300,6 +310,19 @@ class PreoperacionalIn(BaseModel):
         for key, option in value.items():
             if option not in CHECKLIST_BY_KEY[key].options:
                 raise ValueError(f"Valor inválido para {key}: {option!r}")
+        return value
+
+    @field_validator("kilometraje", mode="before")
+    @classmethod
+    def _km_decimal_point(cls, value: Any) -> Any:
+        return _punto_decimal(value)
+
+    @field_validator("llantas", mode="before")
+    @classmethod
+    def _llantas_decimal_point(cls, value: Any) -> Any:
+        # Odoo solo admite punto decimal: "5,5" (texto de un cliente viejo o de un envío diferido) -> 5.5.
+        if isinstance(value, dict):
+            return {key: _punto_decimal(number) for key, number in value.items()}
         return value
 
     @field_validator("llantas")

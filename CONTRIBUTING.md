@@ -59,6 +59,7 @@ No agregues `# type: ignore` para silenciar un error que no entiendes: primero c
 - **Texto en Telegram siempre HTML-escapado.** `app/formatting.py` usa `html.escape()` en cualquier dato que venga de Odoo (nombre del pasajero, rutas, etc.) antes de interpolarlo en un mensaje `parse_mode="HTML"`. Sigue el mismo patrón para evitar inyección de HTML en el chat.
 - **Secretos como `SecretStr`.** `ODOO_PASSWORD`, `TELEGRAM_BOT_TOKEN` y `TELEGRAM_WEBHOOK_SECRET` son `pydantic.SecretStr` en `app/config.py`: no se imprimen por accidente en logs o `repr()`. Cualquier variable de entorno nueva que sea un secreto debe declararse igual.
 - **Comentarios en español, explicando el "por qué".** El estilo del proyecto usa docstrings y comentarios cortos en español que explican una decisión no obvia (p. ej. por qué se ignora el host del QR, por qué el aviso al pasajero se intenta antes que el aviso al validador). Evita comentarios que repitan lo que el código ya dice.
+- **Decimales con punto.** Odoo solo admite punto decimal en los `float`. Normaliza la coma a punto en la Mini App (al escribir y al mostrar) y en el esquema del servidor; detalles en `docs/GUIA_NUEVOS_BOTS.md` § 1.
 - **Un solo SQL para SQLite y PostgreSQL.** `app/watch_store.py` usa SQLAlchemy Core (sin ORM) con `text()` y parámetros nombrados (`:nombre`), nunca f-strings ni `%s`: ese mismo SQL debe seguir funcionando igual contra `sqlite:///...` (dev/tests) y `postgresql+psycopg2://...` (Docker/producción). Antes de usar una función específica de un motor (p. ej. `RETURNING`, tipos de SQLite como `AUTOINCREMENT`), comprueba que el otro motor la soporte igual o evítala.
 
 ## Variables de entorno nuevas
@@ -81,6 +82,8 @@ El teclado principal de @OperativosViacoturBot es plegable (`is_persistent=False
 6. Cubrir el orden y la apertura en `tests/test_handlers.py`.
 
 ## Agregar un nuevo bot operativo al mismo patrón
+
+Antes de empezar, lee **`docs/GUIA_NUEVOS_BOTS.md`**: convenciones que todo bot nuevo debe seguir (decimales con punto para Odoo, campos obligatorios validados en la Mini App y en el servidor, revisión ítem por ítem y registro de usuarios nuevos).
 
 La intención de este repositorio es centralizar varios bots de Telegram conectados a Odoo (ver "Por qué existe este proyecto" en `README.md`). Un bot nuevo **no se mezcla dentro de `app/`** de este proyecto: se crea como una carpeta hermana independiente, replicando esta misma estructura:
 
