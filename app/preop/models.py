@@ -233,6 +233,61 @@ class Preoperacional(TimestampMixin, Base):
     )
 
 
+class AnalisisSeguro(TimestampMixin, Base):
+    """Análisis Seguro de Trabajo (AST) diligenciado en la Mini App ⚠️ AST.
+
+    Misma cola que ``preoperacional`` (``sync_status``, reintentos, idempotencia por
+    ``uuid``) hacia el modelo ``ast`` de Odoo. No tiene vehículo: el contrato sale de los
+    extractos aprobados del conductor (``extracto_id`` es solo trazabilidad local; el
+    modelo ``ast`` de Odoo no tiene ese campo). Las preguntas y sus opciones están en
+    ``app/ast_trabajo/catalogo.py``.
+    """
+
+    __tablename__ = "ast_trabajo"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    uuid: Mapped[str] = mapped_column(String(36), nullable=False, unique=True, default=lambda: str(uuid.uuid4()))
+
+    telegram_user_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    telegram_username: Mapped[str | None] = mapped_column(String(64))
+    firma_nombre: Mapped[str] = mapped_column(String(255), nullable=False)
+
+    empleado_id: Mapped[int] = mapped_column(ForeignKey("empleados.id", ondelete="RESTRICT"), nullable=False)
+    extracto_id: Mapped[int | None] = mapped_column(ForeignKey("extractos.id", ondelete="SET NULL"))
+    contrato_odoo_id: Mapped[int | None] = mapped_column(Integer)
+    fecha: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+
+    # {campo_odoo: "conforme" | "no conforme" | "si" | "no"} (validado contra el catálogo).
+    respuestas: Mapped[dict[str, str]] = mapped_column(JsonType, nullable=False, default=dict)
+    nombre_medicamento: Mapped[str | None] = mapped_column(String(255))
+    observaciones: Mapped[str | None] = mapped_column(Text)
+    # Respuestas con alerta ("no conforme" o medicamentos = "si"): Odoo abre plan de acción.
+    no_conformes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    sync_status: Mapped[SyncStatus] = mapped_column(
+        Enum(SyncStatus, name="ast_sync_status", native_enum=False, length=16,
+             values_callable=lambda e: [m.value for m in e]),
+        nullable=False,
+        default=SyncStatus.PENDIENTE,
+    )
+    odoo_id: Mapped[int | None] = mapped_column(Integer, unique=True)
+    odoo_name: Mapped[str | None] = mapped_column(String(64))
+    error_log: Mapped[str | None] = mapped_column(Text)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    empleado: Mapped[Empleado] = relationship(lazy="joined")
+    extracto: Mapped[Extracto | None] = relationship(lazy="joined")
+
+    __table_args__ = (
+        CheckConstraint("attempts >= 0", name="ck_ast_attempts_no_negativo"),
+        Index("ix_ast_cola", "sync_status", "next_attempt_at"),
+        Index("ix_ast_empleado_fecha", "empleado_id", "fecha"),
+    )
+
+
 class PreopFoto(TimestampMixin, Base):
     """Fotos de evidencia de un preoperacional (hoy solo ``testigos`` -> ``testigos_img`` en Odoo).
 

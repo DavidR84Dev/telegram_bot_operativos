@@ -160,7 +160,7 @@ Si el envío falla por red (sin respuesta, o 502/503/504 del túnel), la Mini Ap
 
 ### Conector XML-RPC (`app/preop/odoo_writer.py`)
 
-`OdooWriter.create_preoperacional(uuid, vals, fecha, incierto)`:
+`OdooWriter.create_preoperacional(uuid, vals, fecha, incierto)` (el AST usa el mismo flujo con `create_ast`; ver `docs/AST.md`):
 
 1. `common.authenticate`. El uid queda en caché y se invalida si Odoo responde `AccessDenied`.
 2. Idempotencia: primero se busca el external id `telegram_bot_operativos.preop_<uuid>` en `ir.model.data`. Si el intento anterior fue incierto (timeout después de enviar), también se busca por llave natural: empleado, vehículo, odómetro y `create_date >=` fecha de envío − 2 min.

@@ -168,4 +168,5 @@ Este plan asume las opciones **A**; si el usuario elige otra, se ajusta la fase 
 - [ ] `viacotur_api`: exponer `responsable.mobile`, `responsable_cliente.mobile`, `vehiculo.id` y, para la fase 4, el id del conductor.
 - [ ] Revisar por qué `/api/empleados` devuelve solo 12 empleados en qa2.
 - [ ] Borrar el registro de prueba `PRE-000009912` en qa2 (opcional).
-- [ ] Preguntas abiertas del mapa: qué hace "🔴 Finalizar", qué pasa tras enviar, y otros formularios (AST, Pos-Operacional, Combustible, Gastos) para fases futuras.
+- [x] AST implementado el 2026-11-25 (`docs/AST.md`); falta la prueba de punta a punta en qa2.
+- [ ] Preguntas abiertas del mapa: otros formularios (Prueba de Ruta, Pos-Operacional, Combustible, Gastos) para fases futuras.

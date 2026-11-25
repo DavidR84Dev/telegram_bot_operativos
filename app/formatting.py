@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 from . import ticket_state
 
 if TYPE_CHECKING:
+    from .ast_trabajo.service import AstOutcome, AvisoJefeAst
     from .preop.reservas import Liberacion
     from .preop.service import AvisoJefe, SendOutcome, UbicacionRegistrada
 
@@ -73,6 +74,40 @@ def preop_aviso_jefe(aviso: AvisoJefe, odoo_name: str | None) -> str:
     if aviso.llantas_bajas:
         lines += ["", "<b>Labrado bajo el mínimo del contrato:</b>"]
         lines += [f"• {escape(nombre)}" for nombre in aviso.llantas_bajas]
+    return "\n".join(lines)
+
+
+def ast_result(outcome: AstOutcome) -> str:
+    """Aviso al conductor cuando su AST llega a Odoo (o falla definitivamente)."""
+    if outcome.status.value == "enviado":
+        name = escape(outcome.odoo_name or f"#{outcome.ast_id}")
+        text = f"✅ <b>Análisis Seguro de Trabajo registrado en Odoo</b>\n\n📄 {name}"
+        if outcome.no_conformes:
+            text += (f"\n⚠️ {outcome.no_conformes} respuesta(s) con alerta: Odoo abrió un plan de acción "
+                     "y se avisó a tu jefe inmediato.")
+        return text
+    return (
+        "❌ <b>Tu AST no pudo registrarse en Odoo</b>\n\n"
+        f"Referencia local: #{outcome.ast_id}. El área de sistemas ya tiene el detalle; "
+        "no es necesario diligenciarlo de nuevo."
+    )
+
+
+def ast_aviso_jefe(aviso: AvisoJefeAst, odoo_name: str | None) -> str:
+    """Aviso al jefe inmediato cuando un AST de su equipo trae "No conforme" o consumo de medicamentos."""
+    lines = [
+        "⚠️ <b>AST con alertas</b>",
+        "",
+        f"👤 Conductor: <b>{escape(aviso.conductor)}</b>",
+    ]
+    if aviso.contrato:
+        lines.append(f"📑 Contrato: {escape(aviso.contrato)}")
+    if odoo_name:
+        lines.append(f"📄 {escape(odoo_name)}")
+    lines += ["", f"<b>Alertas ({len(aviso.alertas)}):</b>"]
+    lines += [f"• {escape(label)}" for label in aviso.alertas]
+    if aviso.medicamento:
+        lines.append(f"💊 Medicamento: {escape(aviso.medicamento)}")
     return "\n".join(lines)
 
 

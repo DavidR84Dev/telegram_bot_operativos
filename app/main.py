@@ -1,4 +1,4 @@
-"""Entrypoint FastAPI: validador de QR (solo lectura en Odoo) y preoperacional (Mini App + cola a Odoo)."""
+"""Entrypoint FastAPI: validador de QR (solo lectura en Odoo), preoperacional y AST (Mini Apps + cola a Odoo)."""
 from __future__ import annotations
 
 import logging
@@ -8,6 +8,10 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from telegram import Update
 
 from . import formatting
+from .ast_trabajo.router import AstServices
+from .ast_trabajo.router import router as ast_router
+from .ast_trabajo.service import AstOutcome
+from .ast_trabajo.worker import AstSender
 from .config import get_settings
 from .odoo_client import OdooClient
 from .preop.db import Database
@@ -62,6 +66,7 @@ def _start_preop(app: FastAPI, application) -> list:
     )
     sender.start()
     tasks: list = [sender]
+    tasks.append(_start_ast(app, application, db, writer))
     # El handler de 📍 Enviar ubicación guarda en esta misma BD.
     application.bot_data[PREOP_DB_KEY] = db
     app.state.preop = PreopServices(
@@ -87,6 +92,34 @@ def _start_preop(app: FastAPI, application) -> list:
         logger.warning("ODOO_API_LOGIN/ODOO_API_PASSWORD vacíos: tablas maestras sin sincronizar "
                        "y 📝 Registro desactivado")
     return tasks
+
+
+def _start_ast(app: FastAPI, application, db: Database, writer) -> AstSender:
+    """Arranca el AST: misma BD, mismo usuario de escritura y su propia cola hacia el modelo ``ast``."""
+
+    async def notify(outcome: AstOutcome) -> None:
+        await application.bot.send_message(
+            chat_id=outcome.telegram_user_id, text=formatting.ast_result(outcome), parse_mode="HTML"
+        )
+        if outcome.aviso_jefe is not None:
+            try:
+                await application.bot.send_message(
+                    chat_id=outcome.aviso_jefe.telegram_id,
+                    text=formatting.ast_aviso_jefe(outcome.aviso_jefe, outcome.odoo_name), parse_mode="HTML",
+                )
+            except Exception:  # p. ej. el jefe nunca abrió el bot: Telegram no permite escribirle
+                logger.exception("No se pudo avisar al jefe del AST (Telegram %s)", outcome.aviso_jefe.telegram_id)
+
+    sender = AstSender(
+        db, writer, settings.preop_worker_interval_seconds, settings.preop_max_attempts,
+        settings.preop_sending_lease_seconds, notify=notify,
+    )
+    sender.start()
+    app.state.ast = AstServices(
+        db=db, bot_token=settings.telegram_bot_token.get_secret_value(),
+        max_age_seconds=settings.preop_auth_max_age_seconds, wake_worker=sender.wake,
+    )
+    return sender
 
 
 @asynccontextmanager
@@ -133,9 +166,10 @@ async def lifespan(app: FastAPI):
         await application.shutdown()
 
 
-app = FastAPI(title="Telegram Bot Operativos", version="1.2.0", lifespan=lifespan)
+app = FastAPI(title="Telegram Bot Operativos", version="1.3.0", lifespan=lifespan)
 app.include_router(web_router)
 app.include_router(preop_router)
+app.include_router(ast_router)
 
 
 @app.get("/health")

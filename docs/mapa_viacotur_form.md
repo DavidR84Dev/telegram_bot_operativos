@@ -348,3 +348,24 @@ Regla indicada por el usuario: los campos no seleccionados o marcados "No confor
 - **El sistema debe permitir enviar el Preoperacional con ítems alertados** (sin marcar o "No conforme"): las alertas del resumen son informativas, no bloquean el envío. Por tanto la foto de testigos tampoco debe bloquear el envío; solo advertir.
 - **Alcance actual:** enfocarse únicamente en el formulario **Preoperacional**; los demás (Prueba de Ruta, AST, Pos-Operacional, Combustible, Gastos) quedan para después.
 - El formulario de prueba se cerró sin enviar (se descartó el borrador).
+
+---
+
+## 10. AST: decisiones e implementación (2026-11-25)
+
+Segundo formulario implementado en @OperativosViacoturBot, después del Preoperacional. Detalle técnico en
+[`docs/AST.md`](AST.md).
+
+- **Modelo de Odoo:** `ast` ("Analisis Seguro de Trabajo", módulos `preoperacional` y `preoperacional_inherit`).
+  Tiene 10 preguntas: las 8 del bot de referencia más **`documentos`** (¿documentos vigentes?) y
+  **`descanso`** (¿descansó adecuadamente?). Odoo calcula `state` y `plan_accion`: cualquier "No conforme" o
+  medicamentos = "Sí" deja el registro *no conforme* con plan de acción.
+- **Decisiones del usuario:**
+  1. El AST vive en el mismo bot (botón ⚠️ AST del panel 📋 Formularios y `/ast`).
+  2. Se preguntan las **10** preguntas de Odoo, todas obligatorias.
+  3. Con "No conforme" o medicamentos = "Sí" **se permite enviar** (con confirmación) y se **avisa al jefe
+     inmediato**; con "Sí" el nombre del medicamento es obligatorio. Esto responde la pregunta abierta 7 (§ 6).
+  4. El contrato sale de los **extractos aprobados y vigentes** del conductor; sin extracto, pantalla de bloqueo.
+- **Diseño:** dos pasos (Verificación → Resumen) con la identidad del preoperacional; botones Conforme /
+  No conforme de 44 px; aviso de pendientes que lleva a cada pregunta; resumen con alertas que regresan a la
+  pregunta; confirmación al enviar y mensaje en el chat con el número AST-xxxx.
