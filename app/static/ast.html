@@ -1,0 +1,739 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Análisis Seguro de Trabajo</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root {
+    color-scheme: light dark;
+    /* Identidad VIACOTUR (igual que el preoperacional): azul marino del logo + azul de acción. */
+    --brand: #1b1f5e;
+    --brand-2: #1f6fb8;
+    --brand-soft: color-mix(in srgb, var(--brand-2) 12%, transparent);
+    --bg: var(--tg-theme-secondary-bg-color, #eef2f8);
+    --surface: var(--tg-theme-bg-color, #ffffff);
+    --fg: var(--tg-theme-text-color, #14172f);
+    --hint: var(--tg-theme-hint-color, #6b7085);
+    --line: color-mix(in srgb, var(--hint) 28%, transparent);
+    --ok: #1f9d55; --bad: #d64545; --warn: #c27a12;
+    --radius: 14px;
+    --tap: 44px; /* área táctil mínima */
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg); color: var(--fg);
+    padding-bottom: calc(88px + env(safe-area-inset-bottom));
+    -webkit-text-size-adjust: 100%;
+  }
+  header.brand { background: #fff; padding: 12px 16px 8px; text-align: center; border-bottom: 3px solid var(--brand); }
+  header.brand img { height: 52px; width: auto; display: block; margin: 0 auto 4px; }
+  header.brand h1 { margin: 0; font-size: 17px; color: var(--brand); letter-spacing: .2px; }
+
+  /* Barra de progreso (2 pasos) */
+  .stepper { display: grid; grid-template-columns: repeat(2, 1fr); padding: 12px 8px 2px; position: relative; }
+  .stepper::before { content: ""; position: absolute; left: 25%; right: 25%; top: 27px; height: 3px; background: var(--line); }
+  .stepper .bar { position: absolute; left: 25%; top: 27px; height: 3px; width: 0; background: var(--brand-2); transition: width .25s; }
+  .step { position: relative; text-align: center; font-size: 12px; color: var(--hint); }
+  .step .dot {
+    width: 32px; height: 32px; margin: 0 auto 4px; border-radius: 50%; display: grid; place-items: center;
+    background: var(--surface); border: 3px solid var(--line); font-weight: 700; color: var(--hint); position: relative; z-index: 1;
+  }
+  .step.active .dot { border-color: var(--brand-2); color: var(--brand-2); }
+  .step.done .dot { background: var(--brand-2); border-color: var(--brand-2); color: #fff; }
+  .step.active, .step.done { color: var(--fg); font-weight: 600; }
+
+  main { padding: 4px 16px 16px; max-width: 640px; margin: 0 auto; }
+  .card { background: var(--surface); border-radius: var(--radius); padding: 14px; margin: 12px 0; box-shadow: 0 1px 2px rgb(0 0 0 / 6%); }
+  .card h2 { font-size: 16px; margin: 0 0 4px; color: var(--brand-2); }
+  .hint { color: var(--hint); font-size: 13px; }
+  label.field { display: block; margin: 12px 0 4px; font-weight: 600; font-size: 14px; }
+  .req { color: var(--bad); }
+  select, input[type=text], textarea {
+    width: 100%; min-height: var(--tap); padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line);
+    background: var(--surface); color: var(--fg); font: inherit; font-size: 16px; /* 16px evita el zoom en iOS */
+  }
+  input[readonly], select:disabled { background: color-mix(in srgb, var(--hint) 10%, var(--surface)); color: var(--fg); opacity: 1; }
+  input.invalid { border-color: var(--bad); }
+  textarea { min-height: 110px; resize: vertical; }
+  .banner { display: flex; gap: 8px; align-items: flex-start; padding: 10px 12px; border-radius: 10px; font-size: 14px; margin-top: 12px; }
+  .banner.ok { background: color-mix(in srgb, var(--ok) 14%, transparent); color: var(--ok); }
+  .banner.warn { background: color-mix(in srgb, var(--warn) 16%, transparent); color: var(--warn); }
+  .banner.bad { background: color-mix(in srgb, var(--bad) 12%, transparent); color: var(--bad); }
+  .banner ul { margin: 4px 0 0; padding-left: 18px; }
+  .banner button.jump { background: none; border: 0; padding: 4px 0; color: inherit; font: inherit; text-decoration: underline; text-align: left; min-height: 28px; }
+
+  /* Preguntas: una tarjeta por pregunta, sin scroll interno. */
+  .q { padding: 12px 0; border-top: 1px solid var(--line); scroll-margin-top: 16px; }
+  .q:first-of-type { border-top: 0; }
+  .q .num { color: var(--brand-2); font-weight: 700; margin-right: 4px; }
+  .q .name { font-size: 15px; }
+  .q.missing .name { color: var(--bad); font-weight: 600; }
+  .q.med { background: color-mix(in srgb, var(--warn) 10%, transparent); border-radius: 10px; padding: 12px; margin-top: 8px; border-top: 0; }
+  .q.flash { animation: flash 1.6s ease-out; }
+  @keyframes flash { 0%, 40% { background: color-mix(in srgb, var(--warn) 22%, transparent); } 100% { background: transparent; } }
+  .opts { display: flex; gap: 6px; margin-top: 8px; }
+  .opts button {
+    flex: 1 1 0; min-height: var(--tap); padding: 6px 4px; border-radius: 10px; border: 1px solid var(--line);
+    background: var(--surface); color: var(--fg); font: inherit; font-size: 14px;
+  }
+  .opts button[aria-pressed="true"].v-good { background: var(--ok); border-color: var(--ok); color: #fff; }
+  .opts button[aria-pressed="true"].v-bad { background: var(--bad); border-color: var(--bad); color: #fff; }
+  .field-hint { font-size: 13px; color: var(--hint); margin-top: 4px; }
+  .field-hint.bad { color: var(--bad); font-weight: 600; }
+
+  /* Resumen */
+  dl.summary { display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; margin: 8px 0 0; font-size: 14px; }
+  dl.summary dt { color: var(--hint); }
+  dl.summary dd { margin: 0; font-weight: 600; overflow-wrap: anywhere; }
+  .sum-list { display: grid; gap: 2px; margin-top: 8px; }
+  .sum-item {
+    display: flex; gap: 8px; align-items: flex-start; padding: 6px 4px; border: 0; background: none;
+    color: var(--fg); text-align: left; font: inherit; font-size: 14px; border-radius: 8px; min-height: 32px; width: 100%;
+  }
+  button.sum-item { cursor: pointer; }
+  button.sum-item:active { background: var(--brand-soft); }
+  .sum-item .val { margin-left: auto; font-weight: 600; white-space: nowrap; }
+  .sum-item .val.bad { color: var(--bad); }
+  .ic { flex: 0 0 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; font-weight: 700; color: #fff; }
+  .ic.ok { background: var(--ok); }
+  .ic.bad { background: var(--bad); }
+
+  /* Pie fijo */
+  footer.actions {
+    position: fixed; left: 0; right: 0; bottom: 0; display: flex; gap: 10px; z-index: 10;
+    padding: 12px 16px calc(12px + env(safe-area-inset-bottom)); background: var(--surface);
+    box-shadow: 0 -2px 10px rgb(0 0 0 / 8%);
+  }
+  footer.actions button { flex: 1; min-height: 50px; padding: 12px; border-radius: 12px; font: inherit; font-size: 16px; font-weight: 600; border: 0; }
+  .btn-primary { background: var(--brand-2); color: #fff; }
+  .btn-primary.finish { background: var(--ok); }
+  .btn-primary:disabled { opacity: .45; }
+  .btn-secondary { background: color-mix(in srgb, var(--hint) 16%, transparent); color: var(--fg); flex: 0 0 34% !important; }
+
+  #msg { white-space: pre-line; margin: 10px 0 0; }
+  #msg.error { color: var(--bad); font-weight: 600; }
+  .center { text-align: center; }
+  .state-icon { font-size: 52px; text-align: center; margin: 8px 0; }
+  #done-text, #blocked-text { white-space: pre-line; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<header class="brand">
+  <img src="/static/viacotur-logo.png" alt="VIACOTUR S.A. — Transporte especial y de carga">
+  <h1>Análisis Seguro de Trabajo</h1>
+</header>
+<nav class="stepper" id="stepper" aria-label="Progreso" hidden>
+  <div class="bar" id="bar"></div>
+  <div class="step" data-n="1"><div class="dot">1</div>Verificación</div>
+  <div class="step" data-n="2"><div class="dot">2</div>Resumen</div>
+</nav>
+
+<main>
+  <p id="msg" class="hint center">Cargando…</p>
+
+  <!-- Paso 1: Información del personal + verificación de seguridad -->
+  <section data-step="1" hidden>
+    <div class="card">
+      <h2>Información del personal</h2>
+      <label class="field" for="empleado">Empleado</label>
+      <input id="empleado" type="text" readonly>
+      <label class="field" for="responsable">Responsable</label>
+      <input id="responsable" type="text" readonly>
+      <label class="field" for="contrato">Contrato <span class="req">*</span></label>
+      <select id="contrato"></select>
+      <div class="banner ok">✔ <span>Conductor validado con extractos aprobados</span></div>
+    </div>
+    <div class="card">
+      <h2>Verificación de seguridad</h2>
+      <div class="hint">Complete todas las preguntas para verificar las condiciones de seguridad. Todas son obligatorias
+        (<span class="req">*</span>). Las respuestas «No conforme» o el consumo de medicamentos se informan a tu jefe inmediato.</div>
+      <div id="preguntas"></div>
+    </div>
+    <div class="card">
+      <h2>Observaciones</h2>
+      <textarea id="observaciones" maxlength="2000" placeholder="Ingrese sus observaciones aquí…"></textarea>
+    </div>
+    <div id="pendientes" class="banner bad" hidden></div>
+  </section>
+
+  <!-- Paso 2: Resumen -->
+  <section data-step="2" hidden>
+    <div id="alerts-box" class="banner warn" hidden>⚠️ <span id="alerts-text"></span></div>
+    <div id="alerts-ok" class="banner ok" hidden>✔ <span>Sin alertas: todas las respuestas son conformes.</span></div>
+    <div class="card">
+      <h2>Información del personal</h2>
+      <dl class="summary" id="summary"></dl>
+    </div>
+    <div class="card">
+      <h2>Verificación de seguridad</h2>
+      <div class="sum-list" id="sum-preguntas"></div>
+    </div>
+    <div class="card">
+      <h2>Observaciones</h2>
+      <p id="sum-obs" style="white-space: pre-line; margin: 4px 0 0;"></p>
+    </div>
+  </section>
+
+  <!-- Bloqueo (sin empleado o sin extracto aprobado) -->
+  <section id="blocked" class="card" hidden>
+    <div class="state-icon">🚫</div>
+    <h2 class="center" id="blocked-title"></h2>
+    <p class="hint center" id="blocked-text"></p>
+  </section>
+
+  <!-- Enviado -->
+  <section id="done" class="card" hidden>
+    <div class="state-icon">✅</div>
+    <h2 class="center" id="done-title"></h2>
+    <p class="hint center" id="done-text"></p>
+  </section>
+</main>
+
+<footer class="actions" id="actions" hidden>
+  <button type="button" class="btn-secondary" id="prev">← Atrás</button>
+  <button type="button" class="btn-primary" id="next">Siguiente →</button>
+</footer>
+
+<script>
+(() => {
+  "use strict";
+  const tg = window.Telegram && window.Telegram.WebApp;
+  const $ = (id) => document.getElementById(id);
+  const el = (tag, props = {}, children = []) => {
+    const n = document.createElement(tag);
+    for (const [k, v] of Object.entries(props)) {
+      if (k === "text") n.textContent = v;
+      else if (k === "class") n.className = v;
+      else n.setAttribute(k, v);
+    }
+    for (const c of children) n.append(c);
+    return n;
+  };
+
+  const STEPS = 2;
+  const state = {
+    step: 1, form: null, ctx: null, answers: {}, uuid: null, sending: false, finished: false, dirty: false,
+    // Envío sin señal: initData de la apertura, formulario pendiente y temporizador de reintento.
+    initDataOriginal: "", pendiente: null, pendienteGuardado: false, reintento: null, avisoBandeja: "",
+  };
+
+  function setMsg(text, isError = false) {
+    $("msg").textContent = text;
+    $("msg").className = isError ? "error" : "hint center";
+    $("msg").hidden = !text;
+  }
+
+  function markDirty() {
+    if (!state.dirty && tg && tg.enableClosingConfirmation) tg.enableClosingConfirmation();
+    state.dirty = true;
+  }
+
+  function newUuid() {
+    if (crypto.randomUUID) return crypto.randomUUID();
+    const b = crypto.getRandomValues(new Uint8Array(16));
+    b[6] = (b[6] & 0x0f) | 0x40; b[8] = (b[8] & 0x3f) | 0x80;
+    const h = [...b].map((x) => x.toString(16).padStart(2, "0")).join("");
+    return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+  }
+
+  // Sin respuesta del servidor (sin señal) o el túnel/proxy no llega al bot: se puede reintentar.
+  const SIN_RED = [502, 503, 504];
+
+  async function api(path, options = {}) {
+    let res;
+    try {
+      res = await fetch(path, {
+        ...options,
+        headers: { "Content-Type": "application/json", "X-Telegram-Init-Data": tg ? tg.initData : "", ...(options.headers || {}) },
+      });
+    } catch (_) {
+      const err = new Error("Sin conexión");
+      err.network = true;
+      throw err;
+    }
+    if (SIN_RED.includes(res.status)) {
+      const err = new Error(`Error ${res.status}`);
+      err.status = res.status;
+      err.network = true;
+      throw err;
+    }
+    let body = null;
+    try { body = await res.json(); } catch (_) { /* sin JSON */ }
+    if (!res.ok) {
+      let detail = body && body.detail;
+      if (Array.isArray(detail)) detail = detail.map((d) => d.msg).join("\n");
+      const err = new Error(detail || `Error ${res.status}`);
+      err.status = res.status;
+      throw err;
+    }
+    return body;
+  }
+
+  // ── Bandeja de salida (formularios guardados sin señal) ─────────────────
+  // Regla de todos los formularios (igual que el preoperacional, ver app/preop/diferido.py): un
+  // AST que no se pudo enviar por falta de señal se guarda en el teléfono (IndexedDB; si no está
+  // disponible, localStorage) y se reenvía solo al volver la señal, como máximo 1 hora después de
+  // perderla. Pasada la hora el servidor lo guarda solo como auditoría (410) y aquí se descarta.
+  const VENTANA_MS = 60 * 60 * 1000;
+  const REINTENTO_MS = 15 * 1000;
+  const BANDEJA_MAX_MS = 7 * 24 * 60 * 60 * 1000;  // el servidor ya no lo audita después
+  const IDB_NAME = "ast-offline", IDB_STORE = "bandeja", LS_PREFIX = "ast-bandeja:";
+
+  function idb() {
+    return new Promise((resolve, reject) => {
+      if (!window.indexedDB) { reject(new Error("sin IndexedDB")); return; }
+      const req = indexedDB.open(IDB_NAME, 1);
+      req.onupgradeneeded = () => req.result.createObjectStore(IDB_STORE, { keyPath: "uuid" });
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  }
+
+  async function idbRun(mode, fn) {
+    const db = await idb();
+    try {
+      return await new Promise((resolve, reject) => {
+        const tx = db.transaction(IDB_STORE, mode);
+        const req = fn(tx.objectStore(IDB_STORE));
+        tx.oncomplete = () => resolve(req && req.result);
+        tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error);
+      });
+    } finally { db.close(); }
+  }
+
+  const bandeja = {
+    async put(item) {
+      try { await idbRun("readwrite", (s) => s.put(item)); return true; } catch (_) { /* respaldo */ }
+      try { localStorage.setItem(LS_PREFIX + item.uuid, JSON.stringify(item)); return true; } catch (_) { return false; }
+    },
+    async all() {
+      let items = [];
+      try { items = (await idbRun("readonly", (s) => s.getAll())) || []; } catch (_) { /* respaldo */ }
+      try {
+        for (let i = 0; i < localStorage.length; i++) {
+          const k = localStorage.key(i);
+          if (k && k.startsWith(LS_PREFIX) && !items.some((x) => LS_PREFIX + x.uuid === k)) items.push(JSON.parse(localStorage.getItem(k)));
+        }
+      } catch (_) { /* sin almacenamiento */ }
+      return items;
+    },
+    async del(uuid) {
+      try { await idbRun("readwrite", (s) => s.delete(uuid)); } catch (_) { /* respaldo */ }
+      try { localStorage.removeItem(LS_PREFIX + uuid); } catch (_) { /* sin almacenamiento */ }
+    },
+  };
+
+  const usuarioId = () => (tg && tg.initDataUnsafe && tg.initDataUnsafe.user ? tg.initDataUnsafe.user.id : null);
+  const vencidoLocal = (item) => Date.now() - Date.parse(item.sin_senal_desde) > VENTANA_MS;
+  const cuerpoDiferido = (item) => JSON.stringify({
+    ...item.payload, diferido: { init_data_original: item.init_data_original, sin_senal_desde: item.sin_senal_desde },
+  });
+
+  // Al abrir con señal: reenvía lo que quedó guardado de sesiones anteriores.
+  // Devuelve el envío aceptado (para mostrarlo) y el aviso de uno rechazado por validación.
+  async function vaciarBandeja() {
+    const propios = (await bandeja.all()).filter((i) => i && i.user_id === usuarioId())
+      .sort((a, b) => Date.parse(a.sin_senal_desde) - Date.parse(b.sin_senal_desde));
+    let aceptado = null, aviso = "";
+    for (const item of propios) {
+      if (Date.now() - Date.parse(item.sin_senal_desde) > BANDEJA_MAX_MS) { await bandeja.del(item.uuid); continue; }
+      try {
+        aceptado = await api("/api/ast", { method: "POST", body: cuerpoDiferido(item) });
+        await bandeja.del(item.uuid);
+      } catch (err) {
+        if (err.network || err.status === 401 || (err.status && err.status >= 500)) break;  // se intenta en la próxima apertura
+        await bandeja.del(item.uuid);
+        // 410 = vencido: queda como auditoría en el servidor y no se avisa al conductor.
+        if (err.status !== 410) aviso = `Tu AST guardado sin señal no fue aceptado: ${err.message}\nDiligencia uno nuevo.`;
+      }
+    }
+    return { aceptado, aviso };
+  }
+
+  function detenerReintentos() {
+    if (state.reintento) { clearInterval(state.reintento); state.reintento = null; }
+    window.removeEventListener("online", reintentarSiPendiente);
+  }
+
+  function reintentarSiPendiente() {
+    if (!state.pendiente || state.sending || state.finished) return;
+    if (vencidoLocal(state.pendiente)) { vencer(); return; }
+    submit();
+  }
+
+  function modoSinSenal(guardado) {
+    $("next").textContent = "Reintentar ahora";
+    $("next").disabled = false;
+    setMsg(guardado
+      ? "📥 Sin señal. Tu AST quedó guardado en este teléfono y se enviará solo cuando vuelva la señal (hasta 1 hora).\n" +
+        "Mantén abierto el formulario; si lo cierras, vuelve a abrirlo cuando tengas señal."
+      : "📵 Sin señal y no se pudo guardar en el teléfono. No cierres el formulario: se enviará solo cuando vuelva la señal (hasta 1 hora).",
+    true);
+    if (!state.reintento) {
+      state.reintento = setInterval(reintentarSiPendiente, REINTENTO_MS);
+      window.addEventListener("online", reintentarSiPendiente);
+    }
+  }
+
+  // Pasó la hora sin señal: el formulario ya no se procesará.
+  function vencer() {
+    detenerReintentos();
+    state.finished = true;
+    if (tg && tg.disableClosingConfirmation) tg.disableClosingConfirmation();
+    document.querySelectorAll("section[data-step]").forEach((s) => { s.hidden = true; });
+    $("stepper").hidden = true;
+    $("actions").hidden = true;
+    block("No se pudo enviar a tiempo",
+      "Pasó más de 1 hora sin señal y este AST ya no se puede enviar.\nDiligencia uno nuevo cuando tengas señal.");
+  }
+
+  function confirmAsync(text) {
+    return new Promise((resolve) => {
+      if (tg && tg.showConfirm) tg.showConfirm(text, (ok) => resolve(Boolean(ok)));
+      else resolve(window.confirm(text));
+    });
+  }
+
+  // ── Paso 1 ───────────────────────────────────────────────────────────────
+  const med = () => state.form.medicamento;
+  const tomaMedicamento = () => state.answers[med().pregunta] === med().si;
+
+  function fillContratos() {
+    const sel = $("contrato");
+    const contratos = state.ctx.contratos;
+    const opts = contratos.map((c) => el("option", { value: String(c.id_contrato), text: c.nombre }));
+    if (contratos.length === 1) {
+      sel.replaceChildren(...opts);
+      sel.disabled = true;  // uno solo: se asigna y se bloquea
+    } else {
+      sel.replaceChildren(el("option", { value: "", text: "Selecciona un contrato…" }), ...opts);
+    }
+  }
+
+  function setAnswer(key, value) {
+    state.answers[key] = value;
+    markDirty();
+    document.querySelectorAll(`[data-q="${key}"] .opts button`).forEach((b) => {
+      b.setAttribute("aria-pressed", String(b.dataset.value === value));
+    });
+    $(`q-${key}`).classList.remove("missing");
+    if (key === med().pregunta) {
+      $("med-box").hidden = !tomaMedicamento();
+      if (tomaMedicamento()) setTimeout(() => $("med-nombre").focus(), 50);
+    }
+    if (tg && tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
+    refresh();
+  }
+
+  function renderPreguntas() {
+    const nodes = state.form.preguntas.map((p, i) => {
+      const esMed = p.key === med().pregunta;
+      const opts = el("div", { class: "opts" }, p.options.map((o) => {
+        const b = el("button", { type: "button", class: o.value === p.alerta ? "v-bad" : "v-good", "aria-pressed": "false", text: o.label });
+        b.dataset.value = o.value;
+        b.addEventListener("click", () => setAnswer(p.key, o.value));
+        return b;
+      }));
+      const name = el("div", { class: "name" }, [
+        el("span", { class: "num", text: `${i + 1}.` }), p.label, " ", el("span", { class: "req", text: "*" }),
+      ]);
+      const q = el("div", { class: esMed ? "q med" : "q", id: `q-${p.key}` }, [name, opts]);
+      q.dataset.q = p.key;
+      if (esMed) {
+        const input = el("input", { id: "med-nombre", type: "text", maxlength: String(med().max), autocomplete: "off",
+          placeholder: "Ej.: Loratadina", enterkeyhint: "done" });
+        input.addEventListener("input", () => { markDirty(); refresh(); });
+        q.append(el("div", { id: "med-box", hidden: "" }, [
+          el("label", { class: "field", for: "med-nombre" }, ["Nombre del medicamento ", el("span", { class: "req", text: "*" })]),
+          input,
+          el("div", { class: "field-hint", text: "Escribe el nombre del medicamento que consumiste." }),
+        ]));
+      }
+      return q;
+    });
+    $("preguntas").replaceChildren(...nodes);
+  }
+
+  // Todo lo que falta para pasar al resumen (cada elemento lleva a su campo).
+  function pendientes() {
+    const out = [];
+    if (!$("contrato").value) out.push({ text: "Contrato", go: () => jump($("contrato")) });
+    state.form.preguntas.forEach((p, i) => {
+      if (p.obligatorio && !state.answers[p.key]) out.push({ text: `Pregunta ${i + 1}: ${p.corto}`, go: () => jumpQ(p.key) });
+    });
+    if (tomaMedicamento() && $("med-nombre").value.trim().length < 3) {
+      out.push({ text: "Nombre del medicamento", go: () => jump($("med-nombre")) });
+    }
+    return out;
+  }
+
+  function renderPendientes(show) {
+    const faltan = pendientes();
+    const box = $("pendientes");
+    box.hidden = !show || faltan.length === 0;
+    if (box.hidden) return;
+    box.replaceChildren(el("div", {}, [
+      el("strong", { text: `Falta completar (${faltan.length}):` }),
+      el("ul", {}, faltan.map((f) => {
+        const b = el("button", { type: "button", class: "jump", text: f.text });
+        b.addEventListener("click", f.go);
+        return el("li", {}, [b]);
+      })),
+    ]));
+    state.form.preguntas.forEach((p) => $(`q-${p.key}`).classList.toggle("missing", p.obligatorio && !state.answers[p.key]));
+    $("med-nombre").classList.toggle("invalid", tomaMedicamento() && $("med-nombre").value.trim().length < 3);
+  }
+
+  function jump(node) {
+    if (state.step !== 1) goTo(1);
+    node.scrollIntoView({ behavior: "smooth", block: "center" });
+    setTimeout(() => node.focus && node.focus(), 300);
+  }
+
+  function jumpQ(key) {
+    if (state.step !== 1) goTo(1);
+    const q = $(`q-${key}`);
+    q.scrollIntoView({ behavior: "smooth", block: "center" });
+    q.classList.remove("flash"); void q.offsetWidth; q.classList.add("flash");
+  }
+
+  // ── Paso 2: Resumen ──────────────────────────────────────────────────────
+  function etiqueta(p) {
+    const v = state.answers[p.key];
+    const o = p.options.find((x) => x.value === v);
+    return o ? o.label : "—";
+  }
+
+  function alertas() {
+    return state.form.preguntas.filter((p) => state.answers[p.key] === p.alerta);
+  }
+
+  function renderSummary() {
+    const sel = $("contrato");
+    const rows = [
+      ["Empleado", state.ctx.empleado.nombre],
+      ["Contrato", sel.value ? sel.options[sel.selectedIndex].text : "—"],
+      ["Responsable", state.ctx.empleado.responsable || "—"],
+    ];
+    $("summary").replaceChildren(...rows.flatMap(([k, v]) => [el("dt", { text: k }), el("dd", { text: v })]));
+
+    $("sum-preguntas").replaceChildren(...state.form.preguntas.map((p) => {
+      const alerta = state.answers[p.key] === p.alerta;
+      let texto = etiqueta(p);
+      if (p.key === med().pregunta && tomaMedicamento()) texto += ` · ${$("med-nombre").value.trim()}`;
+      const node = el(alerta ? "button" : "div", alerta ? { type: "button", class: "sum-item" } : { class: "sum-item" }, [
+        el("span", { class: alerta ? "ic bad" : "ic ok", text: alerta ? "!" : "✓" }),
+        el("span", { text: p.corto }),
+        el("span", { class: alerta ? "val bad" : "val", text: texto }),
+      ]);
+      if (alerta) node.addEventListener("click", () => jumpQ(p.key));
+      return node;
+    }));
+
+    const obs = $("observaciones").value.trim();
+    $("sum-obs").textContent = obs || "Sin observaciones.";
+    $("sum-obs").classList.toggle("hint", !obs);
+
+    const a = alertas();
+    $("alerts-box").hidden = a.length === 0;
+    $("alerts-ok").hidden = a.length > 0;
+    $("alerts-text").textContent =
+      `Alertas: ${a.length} respuesta(s) requieren plan de acción y se informarán a tu jefe inmediato. ` +
+      "Toca una alerta para corregirla. Puedes enviar de todos modos.";
+  }
+
+  // ── Navegación ───────────────────────────────────────────────────────────
+  function refresh() {
+    if (state.finished) return;
+    if (state.step === 1) {
+      $("next").disabled = false;  // al tocar "Siguiente" con pendientes se listan (nunca deshabilitado sin explicación)
+      if (!$("pendientes").hidden) renderPendientes(true);
+    } else {
+      $("next").disabled = state.sending;
+    }
+  }
+
+  function goTo(n) {
+    state.step = n;
+    document.querySelectorAll("section[data-step]").forEach((s) => { s.hidden = Number(s.dataset.step) !== n; });
+    document.querySelectorAll(".step").forEach((s) => {
+      const k = Number(s.dataset.n);
+      s.classList.toggle("active", k === n);
+      s.classList.toggle("done", k < n);
+    });
+    $("bar").style.width = `${((n - 1) / (STEPS - 1)) * 50}%`;
+    $("prev").hidden = n === 1;
+    $("next").textContent = n === STEPS ? "Enviar formulario" : "Siguiente →";
+    $("next").classList.toggle("finish", n === STEPS);
+    if (tg && tg.BackButton) { if (n > 1) tg.BackButton.show(); else tg.BackButton.hide(); }
+    if (n === STEPS) renderSummary();
+    setMsg("");
+    refresh();
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  async function next() {
+    if (state.finished) { tg.close(); return; }
+    // Cierra el teclado: en Android la última palabra en composición no queda en el campo hasta perder el foco.
+    if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+    if (state.step === 1) {
+      if (pendientes().length) {
+        renderPendientes(true);
+        $("pendientes").scrollIntoView({ behavior: "smooth", block: "center" });
+        if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("error");
+        return;
+      }
+      goTo(2);
+      return;
+    }
+    const a = alertas().length;
+    const pregunta = a
+      ? `El AST tiene ${a} alerta(s) que se informarán a tu jefe inmediato. ¿Deseas enviarlo?`
+      : "¿Confirmas el envío del Análisis Seguro de Trabajo?";
+    if (!(await confirmAsync(pregunta))) return;
+    await submit();
+  }
+
+  function prev() {
+    if (state.finished) return;
+    if (state.step > 1) goTo(state.step - 1);
+  }
+
+  // ── Envío ────────────────────────────────────────────────────────────────
+  async function submit() {
+    if (state.sending) return;
+    state.sending = true;
+    $("next").disabled = true;
+    $("next").textContent = "Enviando…";
+    const payload = {
+      uuid: state.uuid,
+      contrato_odoo_id: $("contrato").value ? Number($("contrato").value) : null,
+      respuestas: { ...state.answers },
+      nombre_medicamento: tomaMedicamento() ? $("med-nombre").value.trim() : null,
+      observaciones: $("observaciones").value.trim() || null,
+    };
+    // Si ya falló por falta de señal, se reenvía como diferido (con el payload actual: el
+    // conductor pudo corregir algo mientras tanto).
+    if (state.pendiente) {
+      state.pendiente.payload = payload;
+      await bandeja.put(state.pendiente);
+    }
+    try {
+      // Reintentar con el mismo uuid no duplica (idempotencia del servidor).
+      const body = state.pendiente ? cuerpoDiferido(state.pendiente) : JSON.stringify(payload);
+      const out = await api("/api/ast", { method: "POST", body });
+      if (state.pendiente) { detenerReintentos(); await bandeja.del(state.uuid); }
+      showDone(out, Boolean(state.pendiente));
+    } catch (err) {
+      state.sending = false;
+      if (err.network) {
+        if (!state.pendiente) {
+          state.pendiente = {
+            uuid: state.uuid, user_id: usuarioId(), payload,
+            init_data_original: state.initDataOriginal, sin_senal_desde: new Date().toISOString(),
+          };
+          state.pendienteGuardado = await bandeja.put(state.pendiente);
+        }
+        if (vencidoLocal(state.pendiente)) vencer(); else modoSinSenal(state.pendienteGuardado);
+        return;
+      }
+      if (err.status === 410) {  // fuera de la ventana: el servidor lo guardó solo como auditoría
+        await bandeja.del(state.uuid);
+        vencer();
+        return;
+      }
+      // Error de validación o sesión: se detienen los reintentos automáticos (repetirían el
+      // mismo error) y el conductor corrige y reintenta. Sigue en la bandeja si estaba.
+      detenerReintentos();
+      const sesion = err.status === 401 ? "\nCierra y vuelve a abrir el formulario: lo que guardaste se enviará al abrirlo." : "";
+      setMsg(`No se pudo enviar: ${err.message}${sesion}\nPuedes reintentar: no se duplicará.`, true);
+      $("next").textContent = "Reintentar envío";
+      $("next").disabled = false;
+      if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("error");
+    }
+  }
+
+  function showDone(out, diferido = false) {
+    state.finished = true;
+    if (tg && tg.disableClosingConfirmation) tg.disableClosingConfirmation();
+    if (tg && tg.BackButton) tg.BackButton.hide();
+    document.querySelectorAll("section[data-step]").forEach((s) => { s.hidden = true; });
+    $("stepper").hidden = true;
+    $("prev").hidden = true;
+    $("next").textContent = "Cerrar";
+    $("next").classList.remove("finish");
+    $("next").disabled = false;
+    setMsg("");
+    $("done").hidden = false;
+    $("actions").hidden = false;
+    $("done-title").textContent = out.duplicado ? "Este formulario ya había sido recibido"
+      : diferido ? "AST recibido al recuperar la señal" : "AST recibido";
+    const nc = out.no_conformes
+      ? `\n\n⚠️ ${out.no_conformes} respuesta(s) con alerta: se informará a tu jefe inmediato.` : "";
+    $("done-text").textContent = `Se está registrando en Odoo y te llegará la confirmación en el chat.${nc}`;
+    if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+  }
+
+  function block(title, text) {
+    $("blocked").hidden = false;
+    $("blocked-title").textContent = title;
+    $("blocked-text").textContent = text;
+    setMsg("");
+  }
+
+  // ── Arranque ─────────────────────────────────────────────────────────────
+  async function init() {
+    if (!tg || !tg.initData) {
+      block("Abre el formulario desde Telegram", "Usa el botón «📋 Formularios» del bot y elige «⚠️ AST».");
+      return;
+    }
+    tg.ready();
+    tg.expand();
+    if (tg.setHeaderColor) { try { tg.setHeaderColor("#ffffff"); } catch (_) { /* versión antigua */ } }
+    // Antes de vaciar la bandeja: si se acepta un AST guardado, el botón "Cerrar" debe funcionar.
+    $("next").addEventListener("click", next);
+    $("prev").addEventListener("click", prev);
+    if (tg.BackButton) tg.BackButton.onClick(prev);
+    try {
+      const [form, ctx] = await Promise.all([api("/api/ast/form"), api("/api/ast/context")]);
+      state.form = form;
+      state.ctx = ctx;
+      // Hay señal: primero se envía lo que quedó guardado en una sesión anterior.
+      const previo = await vaciarBandeja();
+      if (previo.aceptado) { showDone(previo.aceptado, true); return; }
+      state.avisoBandeja = previo.aviso;
+    } catch (err) {
+      if (err.status === 403) block("Usuario no registrado", `${err.message}.\nPide a Recursos Humanos que lo registre.`);
+      else block("No se pudo cargar el formulario", err.message);
+      return;
+    }
+    if (!state.ctx.validado) {
+      block("Sin extracto aprobado",
+        "No tienes un extracto aprobado y vigente como conductor.\nPide a tu responsable que apruebe tu extracto y vuelve a abrir el formulario.");
+      return;
+    }
+    state.uuid = newUuid();
+    state.initDataOriginal = tg.initData;
+    $("empleado").value = state.ctx.empleado.nombre;
+    $("responsable").value = state.ctx.empleado.responsable || "—";
+    fillContratos();
+    renderPreguntas();
+    $("contrato").addEventListener("change", () => { markDirty(); refresh(); });
+    $("observaciones").addEventListener("input", markDirty);
+    $("stepper").hidden = false;
+    $("actions").hidden = false;
+    goTo(1);
+    if (state.avisoBandeja) setMsg(state.avisoBandeja, true);
+  }
+
+  init();
+})();
+</script>
+</body>
+</html>

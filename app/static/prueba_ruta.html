@@ -1,0 +1,862 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Prueba de Ruta</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root {
+    color-scheme: light dark;
+    /* Identidad VIACOTUR (igual que el preoperacional y el AST). */
+    --brand: #1b1f5e;
+    --brand-2: #1f6fb8;
+    --brand-soft: color-mix(in srgb, var(--brand-2) 12%, transparent);
+    --bg: var(--tg-theme-secondary-bg-color, #eef2f8);
+    --surface: var(--tg-theme-bg-color, #ffffff);
+    --fg: var(--tg-theme-text-color, #14172f);
+    --hint: var(--tg-theme-hint-color, #6b7085);
+    --line: color-mix(in srgb, var(--hint) 28%, transparent);
+    --ok: #1f9d55; --bad: #d64545; --warn: #c27a12;
+    --radius: 14px;
+    --tap: 44px; /* área táctil mínima */
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg); color: var(--fg);
+    padding-bottom: calc(88px + env(safe-area-inset-bottom));
+    -webkit-text-size-adjust: 100%;
+  }
+  header.brand { background: #fff; padding: 12px 16px 8px; text-align: center; border-bottom: 3px solid var(--brand); }
+  header.brand img { height: 52px; width: auto; display: block; margin: 0 auto 4px; }
+  header.brand h1 { margin: 0; font-size: 17px; color: var(--brand); letter-spacing: .2px; }
+
+  /* Barra de progreso (6 pasos, etiquetas cortas para que no se trunquen en móvil) */
+  .stepper { display: grid; grid-template-columns: repeat(6, 1fr); padding: 12px 4px 2px; position: relative; }
+  .stepper::before { content: ""; position: absolute; left: 8.33%; right: 8.33%; top: 25px; height: 3px; background: var(--line); }
+  .stepper .bar { position: absolute; left: 8.33%; top: 25px; height: 3px; width: 0; background: var(--brand-2); transition: width .25s; }
+  .step { position: relative; text-align: center; font-size: 11px; color: var(--hint); white-space: nowrap; }
+  .step .dot {
+    width: 28px; height: 28px; margin: 0 auto 4px; border-radius: 50%; display: grid; place-items: center;
+    background: var(--surface); border: 3px solid var(--line); font-weight: 700; font-size: 13px; color: var(--hint); position: relative; z-index: 1;
+  }
+  .step.active .dot { border-color: var(--brand-2); color: var(--brand-2); }
+  .step.done .dot { background: var(--brand-2); border-color: var(--brand-2); color: #fff; }
+  .step.active, .step.done { color: var(--fg); font-weight: 600; }
+
+  main { padding: 4px 16px 16px; max-width: 640px; margin: 0 auto; }
+  .card { background: var(--surface); border-radius: var(--radius); padding: 14px; margin: 12px 0; box-shadow: 0 1px 2px rgb(0 0 0 / 6%); }
+  .card h2 { font-size: 16px; margin: 0 0 4px; color: var(--brand-2); }
+  .hint { color: var(--hint); font-size: 13px; }
+  label.field { display: block; margin: 12px 0 4px; font-weight: 600; font-size: 14px; }
+  .req { color: var(--bad); }
+  input[type=text], textarea {
+    width: 100%; min-height: var(--tap); padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line);
+    background: var(--surface); color: var(--fg); font: inherit; font-size: 16px;
+  }
+  input[readonly] { background: color-mix(in srgb, var(--hint) 10%, var(--surface)); color: var(--fg); opacity: 1; }
+  textarea { min-height: 110px; resize: vertical; }
+  ol.proc { margin: 8px 0 0; padding-left: 22px; }
+  ol.proc li { padding: 4px 0; }
+  .banner { display: flex; gap: 8px; align-items: flex-start; padding: 10px 12px; border-radius: 10px; font-size: 14px; margin-top: 12px; }
+  .banner.ok { background: color-mix(in srgb, var(--ok) 14%, transparent); color: var(--ok); }
+  .banner.warn { background: color-mix(in srgb, var(--warn) 16%, transparent); color: var(--warn); }
+  .banner.bad { background: color-mix(in srgb, var(--bad) 12%, transparent); color: var(--bad); }
+  .banner ul { margin: 4px 0 0; padding-left: 18px; }
+  .banner button.jump { background: none; border: 0; padding: 4px 0; color: inherit; font: inherit; text-decoration: underline; text-align: left; min-height: 28px; }
+
+  .q { padding: 12px 0; border-top: 1px solid var(--line); scroll-margin-top: 16px; }
+  .q:first-of-type { border-top: 0; }
+  .q .num { color: var(--brand-2); font-weight: 700; margin-right: 4px; }
+  .q.missing .name { color: var(--bad); font-weight: 600; }
+  .q.flash { animation: flash 1.6s ease-out; }
+  @keyframes flash { 0%, 40% { background: color-mix(in srgb, var(--warn) 22%, transparent); } 100% { background: transparent; } }
+  .opts { display: flex; gap: 6px; margin-top: 8px; }
+  .opts button {
+    flex: 1 1 0; min-height: var(--tap); padding: 6px 4px; border-radius: 10px; border: 1px solid var(--line);
+    background: var(--surface); color: var(--fg); font: inherit; font-size: 14px;
+  }
+  .opts button[aria-pressed="true"].v-good { background: var(--ok); border-color: var(--ok); color: #fff; }
+  .opts button[aria-pressed="true"].v-bad { background: var(--bad); border-color: var(--bad); color: #fff; }
+
+  /* Fotos */
+  .photo-zone {
+    display: grid; place-items: center; gap: 6px; min-height: 160px; border: 2px dashed color-mix(in srgb, var(--brand-2) 55%, transparent);
+    border-radius: var(--radius); background: var(--brand-soft); color: var(--brand-2); text-align: center; padding: 16px; margin-top: 10px;
+  }
+  .photo-zone.missing { border-color: var(--bad); color: var(--bad); }
+  .photo-zone .big { font-size: 38px; }
+  .photo-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; width: 100%; margin-top: 8px; }
+  .btn-photo {
+    min-height: var(--tap); border-radius: 10px; border: 1px solid var(--brand-2); background: var(--surface);
+    color: var(--brand-2); font: inherit; font-size: 14px; font-weight: 600; padding: 6px;
+  }
+  .photo-preview { width: 100%; max-height: 320px; object-fit: contain; border-radius: var(--radius); background: #000; margin-top: 10px; }
+  .camara { position: fixed; inset: 0; z-index: 50; background: #000; display: flex; flex-direction: column; }
+  .camara video { flex: 1; width: 100%; min-height: 0; object-fit: contain; background: #000; }
+  .cam-bar { display: flex; align-items: center; justify-content: space-between; gap: 16px;
+             padding: 16px 16px calc(16px + env(safe-area-inset-bottom)); }
+  .cam-cancel, .cam-spacer { width: 96px; }
+  .cam-cancel { min-height: var(--tap); border: 0; border-radius: 10px; background: rgba(255,255,255,.18); color: #fff; font: inherit; }
+  .cam-shutter { width: 68px; height: 68px; border-radius: 50%; border: 4px solid #fff;
+                 background: color-mix(in srgb, #fff 85%, transparent); padding: 0; }
+
+  /* Resumen */
+  dl.summary { display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; margin: 8px 0 0; font-size: 14px; }
+  dl.summary dt { color: var(--hint); }
+  dl.summary dd { margin: 0; font-weight: 600; overflow-wrap: anywhere; }
+  .sum-list { display: grid; gap: 2px; margin-top: 8px; }
+  .sum-item {
+    display: flex; gap: 8px; align-items: flex-start; padding: 6px 4px; border: 0; background: none;
+    color: var(--fg); text-align: left; font: inherit; font-size: 14px; border-radius: 8px; min-height: 32px; width: 100%;
+  }
+  button.sum-item { cursor: pointer; }
+  button.sum-item:active { background: var(--brand-soft); }
+  .sum-item .val { margin-left: auto; font-weight: 600; white-space: nowrap; }
+  .sum-item .val.bad { color: var(--bad); }
+  .ic { flex: 0 0 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; font-weight: 700; color: #fff; }
+  .ic.ok { background: var(--ok); }
+  .ic.bad { background: var(--bad); }
+  .thumbs { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 8px; }
+  .thumbs figure { margin: 0; text-align: center; font-size: 12px; color: var(--hint); }
+  .thumbs img { width: 100%; height: 110px; object-fit: cover; border-radius: 10px; background: #000; }
+
+  footer.actions {
+    position: fixed; left: 0; right: 0; bottom: 0; display: flex; gap: 10px; z-index: 10;
+    padding: 12px 16px calc(12px + env(safe-area-inset-bottom)); background: var(--surface);
+    box-shadow: 0 -2px 10px rgb(0 0 0 / 8%);
+  }
+  footer.actions button { flex: 1; min-height: 50px; padding: 12px; border-radius: 12px; font: inherit; font-size: 16px; font-weight: 600; border: 0; }
+  .btn-primary { background: var(--brand-2); color: #fff; }
+  .btn-primary.finish { background: var(--ok); }
+  .btn-primary:disabled { opacity: .45; }
+  .btn-secondary { background: color-mix(in srgb, var(--hint) 16%, transparent); color: var(--fg); flex: 0 0 34% !important; }
+
+  #msg { white-space: pre-line; margin: 10px 0 0; }
+  #msg.error { color: var(--bad); font-weight: 600; }
+  .center { text-align: center; }
+  .state-icon { font-size: 52px; text-align: center; margin: 8px 0; }
+  #blocked.warn { border: 2px solid var(--warn); }
+  #blocked.warn h2 { color: var(--warn); }
+  #done-text, #blocked-text { white-space: pre-line; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<header class="brand">
+  <img src="/static/viacotur-logo.png" alt="VIACOTUR S.A. — Transporte especial y de carga">
+  <h1>Prueba de Ruta</h1>
+</header>
+<nav class="stepper" id="stepper" aria-label="Progreso" hidden>
+  <div class="bar" id="bar"></div>
+  <div class="step" data-n="1"><div class="dot">1</div>Info</div>
+  <div class="step" data-n="2"><div class="dot">2</div>Inicio</div>
+  <div class="step" data-n="3"><div class="dot">3</div>Preg. 1</div>
+  <div class="step" data-n="4"><div class="dot">4</div>Preg. 2</div>
+  <div class="step" data-n="5"><div class="dot">5</div>Final</div>
+  <div class="step" data-n="6"><div class="dot">6</div>Resumen</div>
+</nav>
+
+<main>
+  <p id="msg" class="hint center">Cargando…</p>
+
+  <!-- Paso 1: Información de la prueba -->
+  <section data-step="1" hidden>
+    <div class="card">
+      <h2>Información de la Prueba de Ruta</h2>
+      <p class="hint">Hay novedades del vehículo que no se detectan visualmente. Por eso se hace una prueba de ruta
+        con foto del odómetro al inicio y al final. Sigue este procedimiento:</p>
+      <ol class="proc" id="procedimiento"></ol>
+    </div>
+  </section>
+
+  <!-- Paso 2: Datos iniciales -->
+  <section data-step="2" hidden>
+    <div class="card">
+      <h2>Información general</h2>
+      <label class="field" for="empleado">Empleado</label>
+      <input id="empleado" type="text" readonly>
+      <label class="field" for="contrato">Contrato</label>
+      <input id="contrato" type="text" readonly>
+      <label class="field" for="vehiculo">Vehículo</label>
+      <input id="vehiculo" type="text" readonly>
+      <div class="banner ok">✔ <span>Vehículo reservado con tu preoperacional de la jornada</span></div>
+    </div>
+    <div class="card" data-foto="km1"></div>
+  </section>
+
+  <!-- Pasos 3 y 4: cuestionario -->
+  <section data-step="3" hidden>
+    <div class="card"><h2>Cuestionario (1 de 2)</h2>
+      <div class="hint">Responde según lo que percibiste en la prueba. «Sí» indica una novedad. Todas son obligatorias (<span class="req">*</span>).</div>
+      <div data-bloque="1"></div>
+    </div>
+  </section>
+  <section data-step="4" hidden>
+    <div class="card"><h2>Cuestionario (2 de 2)</h2>
+      <div class="hint">«Sí» indica una novedad: se abre plan de acción y se informa a tu jefe inmediato.</div>
+      <div data-bloque="2"></div>
+    </div>
+  </section>
+
+  <!-- Paso 5: Odómetro final -->
+  <section data-step="5" hidden>
+    <div class="card" data-foto="km2"></div>
+    <div class="card">
+      <h2>Observaciones finales</h2>
+      <textarea id="observaciones" maxlength="2000" placeholder="Ingrese sus observaciones aquí…"></textarea>
+    </div>
+  </section>
+
+  <!-- Paso 6: Resumen -->
+  <section data-step="6" hidden>
+    <div id="alerts-box" class="banner warn" hidden>⚠️ <span id="alerts-text"></span></div>
+    <div id="alerts-ok" class="banner ok" hidden>✔ <span>Sin novedades en la prueba de ruta.</span></div>
+    <div class="card"><h2>Información general</h2><dl class="summary" id="summary"></dl></div>
+    <div class="card"><h2>Cuestionario</h2><div class="sum-list" id="sum-preguntas"></div></div>
+    <div class="card"><h2>Odómetro</h2><div class="thumbs" id="sum-fotos"></div></div>
+    <div class="card"><h2>Observaciones</h2><p id="sum-obs" style="white-space: pre-line; margin: 4px 0 0;"></p></div>
+  </section>
+
+  <div id="pendientes" class="banner bad" hidden></div>
+
+  <section id="blocked" class="card" hidden>
+    <div class="state-icon" id="blocked-icon">🚫</div>
+    <h2 class="center" id="blocked-title"></h2>
+    <p class="hint center" id="blocked-text"></p>
+  </section>
+
+  <section id="done" class="card" hidden>
+    <div class="state-icon">✅</div>
+    <h2 class="center" id="done-title"></h2>
+    <p class="hint center" id="done-text"></p>
+  </section>
+</main>
+
+<div id="camara" class="camara" hidden>
+  <video id="cam-video" autoplay playsinline muted></video>
+  <div class="cam-bar">
+    <button type="button" class="cam-cancel" id="cam-cerrar">Cancelar</button>
+    <button type="button" class="cam-shutter" id="cam-capturar" aria-label="Capturar foto"></button>
+    <span class="cam-spacer"></span>
+  </div>
+</div>
+<input id="foto-camara" type="file" accept="image/*" capture="environment" hidden>
+<input id="foto-galeria" type="file" accept="image/*" hidden>
+
+<footer class="actions" id="actions" hidden>
+  <button type="button" class="btn-secondary" id="prev">← Atrás</button>
+  <button type="button" class="btn-primary" id="next">Siguiente →</button>
+</footer>
+
+<script>
+(() => {
+  "use strict";
+  const tg = window.Telegram && window.Telegram.WebApp;
+  const $ = (id) => document.getElementById(id);
+  const el = (tag, props = {}, children = []) => {
+    const n = document.createElement(tag);
+    for (const [k, v] of Object.entries(props)) {
+      if (k === "text") n.textContent = v;
+      else if (k === "class") n.className = v;
+      else n.setAttribute(k, v);
+    }
+    for (const c of children) n.append(c);
+    return n;
+  };
+
+  const STEPS = 6;
+  const PHOTO_MAX_SIDE = 1600;
+  const state = {
+    step: 1, form: null, ctx: null, answers: {}, fotos: {}, fotoDestino: null, stream: null,
+    uuid: null, sending: false, finished: false, dirty: false,
+    initDataOriginal: "", pendiente: null, pendienteGuardado: false, reintento: null, avisoBandeja: "",
+  };
+
+  function setMsg(text, isError = false) {
+    $("msg").textContent = text;
+    $("msg").className = isError ? "error" : "hint center";
+    $("msg").hidden = !text;
+  }
+
+  function markDirty() {
+    if (!state.dirty && tg && tg.enableClosingConfirmation) tg.enableClosingConfirmation();
+    state.dirty = true;
+  }
+
+  function newUuid() {
+    if (crypto.randomUUID) return crypto.randomUUID();
+    const b = crypto.getRandomValues(new Uint8Array(16));
+    b[6] = (b[6] & 0x0f) | 0x40; b[8] = (b[8] & 0x3f) | 0x80;
+    const h = [...b].map((x) => x.toString(16).padStart(2, "0")).join("");
+    return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+  }
+
+  // Sin respuesta del servidor (sin señal) o el túnel/proxy no llega al bot: se puede reintentar.
+  const SIN_RED = [502, 503, 504];
+
+  async function api(path, options = {}) {
+    let res;
+    try {
+      res = await fetch(path, {
+        ...options,
+        headers: { "Content-Type": "application/json", "X-Telegram-Init-Data": tg ? tg.initData : "", ...(options.headers || {}) },
+      });
+    } catch (_) {
+      const err = new Error("Sin conexión");
+      err.network = true;
+      throw err;
+    }
+    if (SIN_RED.includes(res.status)) {
+      const err = new Error(`Error ${res.status}`);
+      err.status = res.status;
+      err.network = true;
+      throw err;
+    }
+    let body = null;
+    try { body = await res.json(); } catch (_) { /* sin JSON */ }
+    if (!res.ok) {
+      let detail = body && body.detail;
+      if (Array.isArray(detail)) detail = detail.map((d) => d.msg).join("\n");
+      const err = new Error(detail || `Error ${res.status}`);
+      err.status = res.status;
+      throw err;
+    }
+    return body;
+  }
+
+  // ── Bandeja de salida (formularios guardados sin señal) ─────────────────
+  // Regla de todos los formularios (docs/GUIA_NUEVOS_BOTS.md § 5): sin señal, la prueba (con
+  // sus fotos) se guarda en el teléfono y se reenvía sola al volver la red, como máximo 1 hora
+  // después de perderla. Pasada la hora el servidor la guarda solo como auditoría (410).
+  const VENTANA_MS = 60 * 60 * 1000;
+  const REINTENTO_MS = 15 * 1000;
+  const BANDEJA_MAX_MS = 7 * 24 * 60 * 60 * 1000;
+  const IDB_NAME = "prueba-ruta-offline", IDB_STORE = "bandeja", LS_PREFIX = "prueba-ruta-bandeja:";
+
+  function idb() {
+    return new Promise((resolve, reject) => {
+      if (!window.indexedDB) { reject(new Error("sin IndexedDB")); return; }
+      const req = indexedDB.open(IDB_NAME, 1);
+      req.onupgradeneeded = () => req.result.createObjectStore(IDB_STORE, { keyPath: "uuid" });
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  }
+
+  async function idbRun(mode, fn) {
+    const db = await idb();
+    try {
+      return await new Promise((resolve, reject) => {
+        const tx = db.transaction(IDB_STORE, mode);
+        const req = fn(tx.objectStore(IDB_STORE));
+        tx.oncomplete = () => resolve(req && req.result);
+        tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error);
+      });
+    } finally { db.close(); }
+  }
+
+  const bandeja = {
+    async put(item) {
+      try { await idbRun("readwrite", (s) => s.put(item)); return true; } catch (_) { /* respaldo */ }
+      try { localStorage.setItem(LS_PREFIX + item.uuid, JSON.stringify(item)); return true; } catch (_) { return false; }
+    },
+    async all() {
+      let items = [];
+      try { items = (await idbRun("readonly", (s) => s.getAll())) || []; } catch (_) { /* respaldo */ }
+      try {
+        for (let i = 0; i < localStorage.length; i++) {
+          const k = localStorage.key(i);
+          if (k && k.startsWith(LS_PREFIX) && !items.some((x) => LS_PREFIX + x.uuid === k)) items.push(JSON.parse(localStorage.getItem(k)));
+        }
+      } catch (_) { /* sin almacenamiento */ }
+      return items;
+    },
+    async del(uuid) {
+      try { await idbRun("readwrite", (s) => s.delete(uuid)); } catch (_) { /* respaldo */ }
+      try { localStorage.removeItem(LS_PREFIX + uuid); } catch (_) { /* sin almacenamiento */ }
+    },
+  };
+
+  const usuarioId = () => (tg && tg.initDataUnsafe && tg.initDataUnsafe.user ? tg.initDataUnsafe.user.id : null);
+  const vencidoLocal = (item) => Date.now() - Date.parse(item.sin_senal_desde) > VENTANA_MS;
+  const cuerpoDiferido = (item) => JSON.stringify({
+    ...item.payload, diferido: { init_data_original: item.init_data_original, sin_senal_desde: item.sin_senal_desde },
+  });
+
+  async function vaciarBandeja() {
+    const propios = (await bandeja.all()).filter((i) => i && i.user_id === usuarioId())
+      .sort((a, b) => Date.parse(a.sin_senal_desde) - Date.parse(b.sin_senal_desde));
+    let aceptado = null, aviso = "";
+    for (const item of propios) {
+      if (Date.now() - Date.parse(item.sin_senal_desde) > BANDEJA_MAX_MS) { await bandeja.del(item.uuid); continue; }
+      try {
+        aceptado = await api("/api/prueba-ruta", { method: "POST", body: cuerpoDiferido(item) });
+        await bandeja.del(item.uuid);
+      } catch (err) {
+        if (err.network || err.status === 401 || (err.status && err.status >= 500)) break;
+        await bandeja.del(item.uuid);
+        if (err.status !== 410) aviso = `Tu prueba de ruta guardada sin señal no fue aceptada: ${err.message}\nDiligencia una nueva.`;
+      }
+    }
+    return { aceptado, aviso };
+  }
+
+  function detenerReintentos() {
+    if (state.reintento) { clearInterval(state.reintento); state.reintento = null; }
+    window.removeEventListener("online", reintentarSiPendiente);
+  }
+
+  function reintentarSiPendiente() {
+    if (!state.pendiente || state.sending || state.finished) return;
+    if (vencidoLocal(state.pendiente)) { vencer(); return; }
+    submit();
+  }
+
+  function modoSinSenal(guardado) {
+    $("next").textContent = "Reintentar ahora";
+    $("next").disabled = false;
+    setMsg(guardado
+      ? "📥 Sin señal. Tu prueba de ruta quedó guardada en este teléfono y se enviará sola cuando vuelva la señal (hasta 1 hora).\n" +
+        "Mantén abierto el formulario; si lo cierras, vuelve a abrirlo cuando tengas señal."
+      : "📵 Sin señal y no se pudo guardar en el teléfono. No cierres el formulario: se enviará solo cuando vuelva la señal (hasta 1 hora).",
+    true);
+    if (!state.reintento) {
+      state.reintento = setInterval(reintentarSiPendiente, REINTENTO_MS);
+      window.addEventListener("online", reintentarSiPendiente);
+    }
+  }
+
+  function vencer() {
+    detenerReintentos();
+    state.finished = true;
+    if (tg && tg.disableClosingConfirmation) tg.disableClosingConfirmation();
+    document.querySelectorAll("section[data-step]").forEach((s) => { s.hidden = true; });
+    $("stepper").hidden = true;
+    $("actions").hidden = true;
+    block("No se pudo enviar a tiempo",
+      "Pasó más de 1 hora sin señal y esta prueba de ruta ya no se puede enviar.\nDiligencia una nueva cuando tengas señal.");
+  }
+
+  function confirmAsync(text) {
+    return new Promise((resolve) => {
+      if (tg && tg.showConfirm) tg.showConfirm(text, (ok) => resolve(Boolean(ok)));
+      else resolve(window.confirm(text));
+    });
+  }
+
+  // ── Preguntas ────────────────────────────────────────────────────────────
+  function setAnswer(key, value) {
+    state.answers[key] = value;
+    markDirty();
+    document.querySelectorAll(`[data-q="${key}"] .opts button`).forEach((b) => {
+      b.setAttribute("aria-pressed", String(b.dataset.value === value));
+    });
+    $(`q-${key}`).classList.remove("missing");
+    if (tg && tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
+    if (!$("pendientes").hidden) renderPendientes();
+  }
+
+  function renderPreguntas() {
+    for (const bloque of [1, 2]) {
+      const nodes = state.form.preguntas.filter((p) => p.bloque === bloque).map((p) => {
+        const n = state.form.preguntas.indexOf(p) + 1;
+        const opts = el("div", { class: "opts" }, p.options.map((o) => {
+          const b = el("button", { type: "button", class: o.value === p.alerta ? "v-bad" : "v-good", "aria-pressed": "false", text: o.label });
+          b.dataset.value = o.value;
+          b.addEventListener("click", () => setAnswer(p.key, o.value));
+          return b;
+        }));
+        const q = el("div", { class: "q", id: `q-${p.key}` }, [
+          el("div", { class: "name" }, [el("span", { class: "num", text: `${n}.` }), p.label, " ", el("span", { class: "req", text: "*" })]),
+          opts,
+        ]);
+        q.dataset.q = p.key;
+        return q;
+      });
+      document.querySelector(`[data-bloque="${bloque}"]`).replaceChildren(...nodes);
+    }
+  }
+
+  // ── Fotos del odómetro (cámara dentro del formulario, como el preoperacional) ─────────
+  const fotoLabel = (key) => state.form.fotos.find((f) => f.key === key).label;
+
+  function renderFotoCard(key) {
+    const card = document.querySelector(`[data-foto="${key}"]`);
+    const zone = el("div", { class: "photo-zone", id: `zone-${key}` }, [
+      el("span", { class: "big", text: "📷" }), el("strong", { text: "+ Agregar foto" }),
+      el("span", { class: "hint", text: "Que se lea claramente el kilometraje" }),
+    ]);
+    const acciones = (txtCam, txtGal) => {
+      const cam = el("button", { type: "button", class: "btn-photo", text: txtCam });
+      const gal = el("button", { type: "button", class: "btn-photo", text: txtGal });
+      cam.addEventListener("click", () => abrirCamara(key));
+      gal.addEventListener("click", () => { state.fotoDestino = key; $("foto-galeria").click(); });
+      return el("div", { class: "photo-actions" }, [cam, gal]);
+    };
+    zone.append(acciones("📷 Tomar foto", "🖼️ Elegir de la galería"));
+    const preview = el("img", { class: "photo-preview", id: `prev-${key}`, alt: fotoLabel(key), hidden: "" });
+    const cambiar = acciones("📷 Tomar otra", "🖼️ Cambiar de la galería");
+    cambiar.id = `cambiar-${key}`;
+    cambiar.hidden = true;
+    card.replaceChildren(
+      el("h2", {}, [fotoLabel(key), " ", el("span", { class: "req", text: "*" })]),
+      el("div", { class: "hint", text: key === "km1"
+        ? "Toma la foto del odómetro antes de iniciar la prueba."
+        : "Al terminar la prueba, toma la foto del odómetro final." }),
+      zone, preview, cambiar,
+    );
+  }
+
+  function loadImage(file) {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
+      img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("No se pudo leer la imagen. Intenta de nuevo.")); };
+      img.src = url;
+    });
+  }
+
+  function toJpeg(source, width, height) {
+    const scale = Math.min(1, PHOTO_MAX_SIDE / Math.max(width, height));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(width * scale);
+    canvas.height = Math.round(height * scale);
+    canvas.getContext("2d").drawImage(source, 0, 0, canvas.width, canvas.height);
+    let data = canvas.toDataURL("image/jpeg", 0.8);
+    if (data.length > 1_400_000) data = canvas.toDataURL("image/jpeg", 0.6);
+    return data;
+  }
+
+  function setFoto(key, data) {
+    state.fotos[key] = data;
+    markDirty();
+    $(`prev-${key}`).src = data;
+    $(`prev-${key}`).hidden = false;
+    $(`cambiar-${key}`).hidden = false;
+    $(`zone-${key}`).hidden = true;
+    setMsg("");
+    if (!$("pendientes").hidden) renderPendientes();
+  }
+
+  async function onPhoto(ev) {
+    const file = ev.target.files && ev.target.files[0];
+    ev.target.value = "";
+    if (!file || !state.fotoDestino) return;
+    setMsg("Procesando foto…");
+    try {
+      const img = await loadImage(file);
+      setFoto(state.fotoDestino, toJpeg(img, img.naturalWidth, img.naturalHeight));
+    } catch (err) {
+      setMsg(err.message, true);
+    }
+  }
+
+  // Telegram en Android ignora <input capture> y abre la galería: la cámara se abre aquí con getUserMedia.
+  async function abrirCamara(key) {
+    state.fotoDestino = key;
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { $("foto-camara").click(); return; }
+    try {
+      state.stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false,
+      });
+    } catch (err) {
+      setMsg(err && err.name === "NotAllowedError"
+        ? "Permite el acceso a la cámara a Telegram para tomar la foto, o elígela de la galería."
+        : "No se pudo abrir la cámara. Elige la foto de la galería.", true);
+      return;
+    }
+    const video = $("cam-video");
+    video.srcObject = state.stream;
+    $("camara").hidden = false;
+    try { await video.play(); } catch (_) { /* se reproduce al tocar */ }
+  }
+
+  function cerrarCamara() {
+    if (state.stream) state.stream.getTracks().forEach((t) => t.stop());
+    state.stream = null;
+    $("cam-video").srcObject = null;
+    $("camara").hidden = true;
+  }
+
+  function capturar() {
+    const video = $("cam-video");
+    if (!video.videoWidth) return;
+    const data = toJpeg(video, video.videoWidth, video.videoHeight);
+    cerrarCamara();
+    setFoto(state.fotoDestino, data);
+    if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+  }
+
+  // ── Pendientes por paso (cada uno lleva a su campo) ──────────────────────
+  function pendientesDe(step) {
+    const out = [];
+    if (step === 2 && !state.fotos.km1) out.push({ text: fotoLabel("km1"), go: () => jumpFoto("km1") });
+    if (step === 3 || step === 4) {
+      state.form.preguntas.filter((p) => p.bloque === step - 2 && p.obligatorio && !state.answers[p.key]).forEach((p) => {
+        out.push({ text: `Pregunta ${state.form.preguntas.indexOf(p) + 1}: ${p.corto}`, go: () => jumpQ(p.key) });
+      });
+    }
+    if (step === 5 && !state.fotos.km2) out.push({ text: fotoLabel("km2"), go: () => jumpFoto("km2") });
+    return out;
+  }
+
+  function renderPendientes(show = true) {
+    const faltan = pendientesDe(state.step);
+    const box = $("pendientes");
+    box.hidden = !show || faltan.length === 0;
+    document.querySelectorAll(".q").forEach((q) => q.classList.toggle("missing", show && !state.answers[q.dataset.q]));
+    for (const k of ["km1", "km2"]) $(`zone-${k}`).classList.toggle("missing", show && !state.fotos[k]);
+    if (box.hidden) return;
+    box.replaceChildren(el("div", {}, [
+      el("strong", { text: `Falta completar (${faltan.length}):` }),
+      el("ul", {}, faltan.map((f) => {
+        const b = el("button", { type: "button", class: "jump", text: f.text });
+        b.addEventListener("click", f.go);
+        return el("li", {}, [b]);
+      })),
+    ]));
+  }
+
+  function jumpQ(key) {
+    const p = state.form.preguntas.find((x) => x.key === key);
+    if (state.step !== p.bloque + 2) goTo(p.bloque + 2);
+    const q = $(`q-${key}`);
+    q.scrollIntoView({ behavior: "smooth", block: "center" });
+    q.classList.remove("flash"); void q.offsetWidth; q.classList.add("flash");
+  }
+
+  function jumpFoto(key) {
+    const step = key === "km1" ? 2 : 5;
+    if (state.step !== step) goTo(step);
+    document.querySelector(`[data-foto="${key}"]`).scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+
+  // ── Resumen ──────────────────────────────────────────────────────────────
+  const novedades = () => state.form.preguntas.filter((p) => state.answers[p.key] === p.alerta);
+
+  function renderSummary() {
+    const v = state.ctx.vehiculo;
+    const rows = [
+      ["Empleado", state.ctx.empleado.nombre],
+      ["Contrato", state.ctx.contrato || "—"],
+      ["Responsable", state.ctx.empleado.responsable || "—"],
+      ["Vehículo", v.placa],
+      ["Número interno", v.numero_interno || "—"],
+    ];
+    $("summary").replaceChildren(...rows.flatMap(([k, val]) => [el("dt", { text: k }), el("dd", { text: val })]));
+    $("sum-preguntas").replaceChildren(...state.form.preguntas.map((p) => {
+      const alerta = state.answers[p.key] === p.alerta;
+      const o = p.options.find((x) => x.value === state.answers[p.key]);
+      const node = el(alerta ? "button" : "div", alerta ? { type: "button", class: "sum-item" } : { class: "sum-item" }, [
+        el("span", { class: alerta ? "ic bad" : "ic ok", text: alerta ? "!" : "✓" }),
+        el("span", { text: p.corto }),
+        el("span", { class: alerta ? "val bad" : "val", text: o ? o.label : "—" }),
+      ]);
+      if (alerta) node.addEventListener("click", () => jumpQ(p.key));
+      return node;
+    }));
+    $("sum-fotos").replaceChildren(...state.form.fotos.map((f) => {
+      const img = el("img", { alt: f.label });
+      img.src = state.fotos[f.key];
+      return el("figure", {}, [img, el("figcaption", { text: f.label })]);
+    }));
+    const obs = $("observaciones").value.trim();
+    $("sum-obs").textContent = obs || "Sin observaciones.";
+    $("sum-obs").classList.toggle("hint", !obs);
+    const n = novedades().length;
+    $("alerts-box").hidden = n === 0;
+    $("alerts-ok").hidden = n > 0;
+    $("alerts-text").textContent = `Novedades: ${n}. Se abrirá plan de acción y se informará a tu jefe inmediato. ` +
+      "Toca una novedad para corregirla. Puedes enviar de todos modos.";
+  }
+
+  // ── Navegación ───────────────────────────────────────────────────────────
+  function goTo(n) {
+    state.step = n;
+    document.querySelectorAll("section[data-step]").forEach((s) => { s.hidden = Number(s.dataset.step) !== n; });
+    document.querySelectorAll(".step").forEach((s) => {
+      const k = Number(s.dataset.n);
+      s.classList.toggle("active", k === n);
+      s.classList.toggle("done", k < n);
+    });
+    $("bar").style.width = `${((n - 1) / (STEPS - 1)) * 83.34}%`;
+    $("prev").hidden = n === 1;
+    $("next").textContent = n === STEPS ? "Enviar formulario" : n === 1 ? "Iniciar prueba →" : "Siguiente →";
+    $("next").classList.toggle("finish", n === STEPS);
+    $("next").disabled = state.sending;
+    if (tg && tg.BackButton) { if (n > 1) tg.BackButton.show(); else tg.BackButton.hide(); }
+    if (n === STEPS) renderSummary();
+    renderPendientes(false);
+    setMsg("");
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  async function next() {
+    if (state.finished) { tg.close(); return; }
+    if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+    if (state.step < STEPS) {
+      if (pendientesDe(state.step).length) {
+        renderPendientes(true);
+        $("pendientes").scrollIntoView({ behavior: "smooth", block: "center" });
+        if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("error");
+        return;
+      }
+      goTo(state.step + 1);
+      return;
+    }
+    const n = novedades().length;
+    const pregunta = n
+      ? `La prueba tiene ${n} novedad(es) que se informarán a tu jefe inmediato. ¿Deseas enviarla?`
+      : "¿Confirmas el envío de la Prueba de Ruta?";
+    if (!(await confirmAsync(pregunta))) return;
+    await submit();
+  }
+
+  function prev() {
+    if (!$("camara").hidden) { cerrarCamara(); return; }
+    if (state.finished) return;
+    if (state.step > 1) goTo(state.step - 1);
+  }
+
+  // ── Envío ────────────────────────────────────────────────────────────────
+  async function submit() {
+    if (state.sending) return;
+    state.sending = true;
+    $("next").disabled = true;
+    $("next").textContent = "Enviando…";
+    const payload = {
+      uuid: state.uuid,
+      vehiculo_id: state.ctx.vehiculo.id,
+      respuestas: { ...state.answers },
+      observaciones: $("observaciones").value.trim() || null,
+      km1: state.fotos.km1,
+      km2: state.fotos.km2,
+    };
+    if (state.pendiente) {
+      state.pendiente.payload = payload;
+      await bandeja.put(state.pendiente);
+    }
+    try {
+      const body = state.pendiente ? cuerpoDiferido(state.pendiente) : JSON.stringify(payload);
+      const out = await api("/api/prueba-ruta", { method: "POST", body });
+      if (state.pendiente) { detenerReintentos(); await bandeja.del(state.uuid); }
+      showDone(out, Boolean(state.pendiente));
+    } catch (err) {
+      state.sending = false;
+      if (err.network) {
+        if (!state.pendiente) {
+          state.pendiente = {
+            uuid: state.uuid, user_id: usuarioId(), payload,
+            init_data_original: state.initDataOriginal, sin_senal_desde: new Date().toISOString(),
+          };
+          state.pendienteGuardado = await bandeja.put(state.pendiente);
+        }
+        if (vencidoLocal(state.pendiente)) vencer(); else modoSinSenal(state.pendienteGuardado);
+        return;
+      }
+      if (err.status === 410) { await bandeja.del(state.uuid); vencer(); return; }
+      detenerReintentos();
+      const sesion = err.status === 401 ? "\nCierra y vuelve a abrir el formulario: lo que guardaste se enviará al abrirlo." : "";
+      setMsg(`No se pudo enviar: ${err.message}${sesion}\nPuedes reintentar: no se duplicará.`, true);
+      $("next").textContent = "Reintentar envío";
+      $("next").disabled = false;
+      if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("error");
+    }
+  }
+
+  function showDone(out, diferido = false) {
+    state.finished = true;
+    if (tg && tg.disableClosingConfirmation) tg.disableClosingConfirmation();
+    if (tg && tg.BackButton) tg.BackButton.hide();
+    document.querySelectorAll("section[data-step]").forEach((s) => { s.hidden = true; });
+    $("stepper").hidden = true;
+    $("pendientes").hidden = true;
+    $("actions").hidden = false;
+    $("prev").hidden = true;
+    $("next").textContent = "Cerrar";
+    $("next").classList.remove("finish");
+    $("next").disabled = false;
+    setMsg("");
+    $("done").hidden = false;
+    $("done-title").textContent = out.duplicado ? "Este formulario ya había sido recibido"
+      : diferido ? "Prueba de Ruta recibida al recuperar la señal" : "Prueba de Ruta recibida";
+    const nc = out.no_conformes ? `\n\n⚠️ ${out.no_conformes} novedad(es): se informará a tu jefe inmediato.` : "";
+    $("done-text").textContent = `Se está registrando en Odoo y te llegará la confirmación en el chat.${nc}`;
+    if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+  }
+
+  function block(title, text, aviso = false) {
+    $("blocked").hidden = false;
+    $("blocked").classList.toggle("warn", aviso);
+    $("blocked-icon").textContent = aviso ? "⚠️" : "🚫";
+    $("blocked-title").textContent = title;
+    $("blocked-text").textContent = text;
+    setMsg("");
+  }
+
+  // ── Arranque ─────────────────────────────────────────────────────────────
+  async function init() {
+    if (!tg || !tg.initData) {
+      block("Abre el formulario desde Telegram", "Usa el botón «📋 Formularios» del bot y elige «🗺️ Prueba de Ruta».");
+      return;
+    }
+    tg.ready();
+    tg.expand();
+    if (tg.setHeaderColor) { try { tg.setHeaderColor("#ffffff"); } catch (_) { /* versión antigua */ } }
+    // Antes de vaciar la bandeja: si se acepta una prueba guardada, el botón "Cerrar" debe funcionar.
+    $("next").addEventListener("click", next);
+    $("prev").addEventListener("click", prev);
+    if (tg.BackButton) tg.BackButton.onClick(prev);
+    try {
+      const [form, ctx] = await Promise.all([api("/api/prueba-ruta/form"), api("/api/prueba-ruta/context")]);
+      state.form = form;
+      state.ctx = ctx;
+      const previo = await vaciarBandeja();
+      if (previo.aceptado) { showDone(previo.aceptado, true); return; }
+      state.avisoBandeja = previo.aviso;
+    } catch (err) {
+      if (err.status === 403) block("Usuario no registrado", `${err.message}.\nPide a Recursos Humanos que lo registre.`);
+      else block("No se pudo cargar el formulario", err.message);
+      return;
+    }
+    if (!state.ctx.autorizado) {
+      block(state.ctx.mensaje || "Contrato No Autorizado",
+        `Tu contrato (${state.ctx.empleado.contrato || "sin contrato"}) no está autorizado para la Prueba de Ruta.\n` +
+        "Si crees que es un error, comunícate con tu jefe inmediato.", true);
+      return;
+    }
+    if (!state.ctx.vehiculo) {
+      block("Primero el Preoperacional",
+        "No tienes un vehículo reservado.\nDiligencia primero el «✅ Preoperacional» del vehículo y luego vuelve a abrir la Prueba de Ruta.");
+      return;
+    }
+    state.uuid = newUuid();
+    state.initDataOriginal = tg.initData;
+    $("procedimiento").replaceChildren(...state.form.procedimiento.map((t) => el("li", { text: t })));
+    $("empleado").value = state.ctx.empleado.nombre;
+    $("contrato").value = state.ctx.contrato || "—";
+    $("vehiculo").value = [state.ctx.vehiculo.placa, state.ctx.vehiculo.numero_interno && `N.º interno ${state.ctx.vehiculo.numero_interno}`]
+      .filter(Boolean).join(" · ");
+    renderPreguntas();
+    renderFotoCard("km1");
+    renderFotoCard("km2");
+    for (const id of ["foto-camara", "foto-galeria"]) $(id).addEventListener("change", onPhoto);
+    $("cam-capturar").addEventListener("click", capturar);
+    $("cam-cerrar").addEventListener("click", cerrarCamara);
+    $("observaciones").addEventListener("input", markDirty);
+    $("stepper").hidden = false;
+    $("actions").hidden = false;
+    goTo(1);
+    if (state.avisoBandeja) setMsg(state.avisoBandeja, true);
+  }
+
+  init();
+})();
+</script>
+</body>
+</html>

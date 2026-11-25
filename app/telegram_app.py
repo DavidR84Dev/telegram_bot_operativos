@@ -5,7 +5,7 @@ referencia (@viacoturform_bot), el teclado de respuesta es plegable: Telegram lo
 muestra detrás de su botón de teclado (``toggle-reply-markup``) y solo tiene:
 
     📋 Formularios      -> panel inline, en este orden:
-                             • formularios de ``FORMULARIOS`` (✅ Preoperacional, …)
+                             • formularios de ``FORMULARIOS`` (✅ Preoperacional, ⚠️ AST, 🗺️ Prueba de Ruta)
                              • 📷 Escanear QR (Mini App del escáner)
                              • 🔴 Finalizar   (fin de jornada: libera el vehículo reservado)
     📍 Enviar ubicación -> comparte la ubicación (se guarda en la BD del bot)
@@ -74,6 +74,8 @@ BTN_FORMULARIOS = "📋 Formularios"
 BTN_ESCANEAR = "📷 Escanear QR Tickets"
 BTN_UBICACION = "📍 Enviar ubicación"
 BTN_PREOP = "✅ Preoperacional"
+BTN_AST = "⚠️ AST"
+BTN_PRUEBA_RUTA = "🗺️ Prueba de Ruta"
 BTN_FINALIZAR = "🔴 Finalizar"
 CB_FINALIZAR_SI = "finalizar:si"
 CB_FINALIZAR_NO = "finalizar:no"
@@ -150,6 +152,8 @@ BOT_COMMANDS = [
     BotCommand("registro", "Registrarte como conductor en Viacotur"),
     BotCommand("formularios", "Ver los formularios disponibles"),
     BotCommand("preoperacional", "Diligenciar la inspección preoperacional"),
+    BotCommand("ast", "Diligenciar el Análisis Seguro de Trabajo (AST)"),
+    BotCommand("prueba_ruta", "Diligenciar la Prueba de Ruta del vehículo"),
     BotCommand("escanear", "Abrir el escáner de QR"),
     BotCommand("finalizar", "Finalizar la jornada y liberar el vehículo reservado"),
     BotCommand("ayuda", "Qué hace cada opción del menú"),
@@ -163,6 +167,17 @@ def scanner_url(base: str) -> str:
 def preop_url(settings: Settings) -> str:
     base = settings.preop_base_url or settings.scanner_base_url
     return f"{base.rstrip('/')}/preoperacional"
+
+
+def ast_url(settings: Settings) -> str:
+    # Lo sirve este mismo servicio, junto al preoperacional.
+    base = settings.preop_base_url or settings.scanner_base_url
+    return f"{base.rstrip('/')}/ast"
+
+
+def prueba_ruta_url(settings: Settings) -> str:
+    base = settings.preop_base_url or settings.scanner_base_url
+    return f"{base.rstrip('/')}/prueba-ruta"
 
 
 def scanner_inline(base: str) -> InlineKeyboardMarkup:
@@ -179,6 +194,21 @@ FORMULARIOS: tuple[MenuOption, ...] = (
         prompt="Toca para abrir el formulario preoperacional:",
         help="inspección preoperacional del vehículo antes de salir.",
         url=preop_url,
+    ),
+    MenuOption(
+        label=BTN_AST,
+        open_text=BTN_AST,
+        prompt="Toca para abrir el Análisis Seguro de Trabajo:",
+        help="Análisis Seguro de Trabajo: verifica tus condiciones de seguridad antes de la operación.",
+        url=ast_url,
+    ),
+    MenuOption(
+        label=BTN_PRUEBA_RUTA,
+        open_text=BTN_PRUEBA_RUTA,
+        prompt="Toca para abrir la Prueba de Ruta:",
+        help=("prueba de ruta del vehículo reservado con tu preoperacional (fotos del odómetro inicial y final). "
+              "Solo para contratos autorizados."),
+        url=prueba_ruta_url,
     ),
 )
 _FORM_BY_LABEL = {option.label: option for option in FORMULARIOS}
@@ -297,6 +327,8 @@ def build_application(settings: Settings, odoo: OdooClient, store: WatchStore) -
     application.add_handler(CommandHandler("ayuda", cmd_start))
     application.add_handler(CommandHandler("formularios", cmd_formularios))
     application.add_handler(CommandHandler("preoperacional", cmd_preop))
+    application.add_handler(CommandHandler("ast", cmd_ast))
+    application.add_handler(CommandHandler("prueba_ruta", cmd_prueba_ruta))
     application.add_handler(CommandHandler("escanear", cmd_escanear))
     application.add_handler(CommandHandler("finalizar", cmd_finalizar))
     application.add_handler(CallbackQueryHandler(on_finalizar_confirm, pattern=r"^finalizar:(si|no|pedir)$"))
@@ -462,6 +494,14 @@ async def _open_option(update: Update, context: ContextTypes.DEFAULT_TYPE, optio
 
 async def cmd_preop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await _open_option(update, context, _FORM_BY_LABEL[BTN_PREOP])
+
+
+async def cmd_ast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _open_option(update, context, _FORM_BY_LABEL[BTN_AST])
+
+
+async def cmd_prueba_ruta(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _open_option(update, context, _FORM_BY_LABEL[BTN_PRUEBA_RUTA])
 
 
 async def cmd_escanear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

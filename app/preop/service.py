@@ -15,6 +15,7 @@ from typing import Any, Callable
 
 from sqlalchemy import and_, or_, select, update
 from sqlalchemy.exc import IntegrityError
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from .checklist import (
@@ -226,7 +227,7 @@ class EnvioVencidoError(Exception):
     """El envío diferido llegó fuera de la ventana: quedó solo como auditoría."""
 
 
-def payload_sha256(data: PreoperacionalIn) -> str:
+def payload_sha256(data: BaseModel) -> str:
     """Huella del formulario tal como llegó (sin los datos de autenticación del envío diferido)."""
     return hashlib.sha256(data.model_dump_json(exclude={"diferido"}).encode("utf-8")).hexdigest()
 
@@ -389,28 +390,31 @@ def backoff(attempts: int) -> timedelta:
     return timedelta(seconds=min(BACKOFF_BASE_SECONDS * 2 ** max(attempts - 1, 0), BACKOFF_MAX_SECONDS))
 
 
-def claim_batch(db: Database, limit: int, lease_seconds: int, now: datetime | None = None) -> list[int]:
+def claim_batch(db: Database, limit: int, lease_seconds: int, now: datetime | None = None,
+                model: Any = Preoperacional) -> list[int]:
     """Toma registros listos para enviar y los marca ``enviando`` (lease).
 
-    En PostgreSQL usa ``FOR UPDATE SKIP LOCKED``: varios workers no toman el mismo registro.
+    ``model`` es la tabla de la cola (``Preoperacional`` o ``AnalisisSeguro``): ambas tienen
+    las mismas columnas de sincronización. En PostgreSQL usa ``FOR UPDATE SKIP LOCKED``:
+    varios workers no toman el mismo registro.
     """
     now = now or utc_now()
     stale = now - timedelta(seconds=lease_seconds)
     ready = or_(
-        Preoperacional.sync_status == SyncStatus.PENDIENTE,
-        and_(Preoperacional.sync_status == SyncStatus.ERROR, Preoperacional.next_attempt_at <= now),
-        and_(Preoperacional.sync_status == SyncStatus.ENVIANDO, Preoperacional.last_attempt_at < stale),
+        model.sync_status == SyncStatus.PENDIENTE,
+        and_(model.sync_status == SyncStatus.ERROR, model.next_attempt_at <= now),
+        and_(model.sync_status == SyncStatus.ENVIANDO, model.last_attempt_at < stale),
     )
     with db.session() as session:
         ids = list(session.scalars(
-            select(Preoperacional.id).where(ready).order_by(Preoperacional.created_at).limit(limit)
+            select(model.id).where(ready).order_by(model.created_at).limit(limit)
             .with_for_update(skip_locked=True)
         ))
         if ids:
             session.execute(
-                update(Preoperacional).where(Preoperacional.id.in_(ids))
+                update(model).where(model.id.in_(ids))
                 .values(sync_status=SyncStatus.ENVIANDO, last_attempt_at=now,
-                        attempts=Preoperacional.attempts + 1)
+                        attempts=model.attempts + 1)
                 .execution_options(synchronize_session=False)
             )
     return ids
@@ -525,11 +529,11 @@ def send_one(db: Database, writer: OdooWriter, preop_id: int, max_attempts: int)
                        aviso if status == SyncStatus.ENVIADO else None)
 
 
-def requeue_failed(db: Database, preop_ids: list[int] | None = None) -> int:
+def requeue_failed(db: Database, preop_ids: list[int] | None = None, model: Any = Preoperacional) -> int:
     """Devuelve a ``pendiente`` registros ``fallido`` (tras corregir la causa). None = todos."""
-    stmt = update(Preoperacional).where(Preoperacional.sync_status == SyncStatus.FALLIDO)
+    stmt = update(model).where(model.sync_status == SyncStatus.FALLIDO)
     if preop_ids:
-        stmt = stmt.where(Preoperacional.id.in_(preop_ids))
+        stmt = stmt.where(model.id.in_(preop_ids))
     with db.session() as session:
         result = session.execute(
             # attempts=1: el siguiente envío se trata como "resultado previo incierto" y busca

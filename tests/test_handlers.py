@@ -91,11 +91,37 @@ def test_formularios_lists_preoperacional_first():
     call = upd.message.reply_text.await_args
     assert call.args[0] == "📂 Formularios disponibles:"
     rows = call.kwargs["reply_markup"].inline_keyboard
-    # Formularios -> Preoperacional -> Escanear QR -> Finalizar.
-    assert [row[0].text for row in rows] == [tga.BTN_PREOP, tga.BTN_ESCANEAR, tga.BTN_FINALIZAR]
+    # Preoperacional -> AST -> Prueba de Ruta -> Escanear QR -> Finalizar (orden del bot de referencia).
+    assert [row[0].text for row in rows] == [tga.BTN_PREOP, tga.BTN_AST, tga.BTN_PRUEBA_RUTA,
+                                             tga.BTN_ESCANEAR, tga.BTN_FINALIZAR]
     assert rows[0][0].web_app.url == "https://scan.example.com/preoperacional"
-    assert rows[1][0].web_app.url == "https://scan.example.com/scanner"
-    assert rows[2][0].web_app is None and rows[2][0].callback_data == tga.CB_FINALIZAR_PEDIR
+    assert rows[1][0].web_app.url == "https://scan.example.com/ast"
+    assert rows[2][0].web_app.url == "https://scan.example.com/prueba-ruta"
+    assert rows[3][0].web_app.url == "https://scan.example.com/scanner"
+    assert rows[4][0].web_app is None and rows[4][0].callback_data == tga.CB_FINALIZAR_PEDIR
+
+
+def test_prueba_ruta_command_opens_mini_app():
+    upd = _update(text="/prueba_ruta")
+    asyncio.run(tga.cmd_prueba_ruta(upd, _ctx(_services())))
+    button = upd.message.reply_text.await_args.kwargs["reply_markup"].inline_keyboard[0][0]
+    assert button.text == tga.BTN_PRUEBA_RUTA and button.web_app.url == "https://scan.example.com/prueba-ruta"
+    assert "prueba_ruta" in [c.command for c in tga.BOT_COMMANDS]
+
+
+def test_ast_command_opens_mini_app_and_is_registered():
+    upd = _update(text="/ast")
+    asyncio.run(tga.cmd_ast(upd, _ctx(_services())))
+    button = upd.message.reply_text.await_args.kwargs["reply_markup"].inline_keyboard[0][0]
+    assert button.text == tga.BTN_AST and button.web_app.url == "https://scan.example.com/ast"
+    assert "ast" in [c.command for c in tga.BOT_COMMANDS]
+    assert tga.BTN_AST in tga.HELP_TEXT
+
+
+def test_ast_command_requires_authorization():
+    upd = _update(user_id=111, text="/ast")
+    asyncio.run(tga.cmd_ast(upd, _ctx(_services())))
+    assert "no autorizado" in upd.message.reply_text.await_args.args[0]
 
 
 def test_scanner_button_opens_scanner():

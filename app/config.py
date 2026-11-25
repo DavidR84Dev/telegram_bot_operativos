@@ -79,10 +79,18 @@ class Settings(BaseSettings):
     # Antigüedad máxima de initData en la Mini App del preoperacional: el formulario es largo
     # (se diligencia en varios minutos), por eso es mayor que la del escáner.
     preop_auth_max_age_seconds: int = 3600
+    # Acuerdos (agreement) cuyos conductores pueden hacer la Prueba de Ruta, separados por ";".
+    # Se comparan normalizados (sin mayúsculas, tildes, puntuación ni prefijo "[código]").
+    # Agregar un contrato = sumarlo aquí y reiniciar.
+    prueba_ruta_acuerdos: str = "MINERA DE COBRE QUEBRADONA;SERVICIOS HIDROGEOLÓGICOS INTEGRALES S.A.S."
 
     @property
     def api_company_ids(self) -> list[int]:
         return [int(part) for part in self.odoo_api_company_ids.split(",") if part.strip()]
+
+    @property
+    def prueba_ruta_acuerdos_lista(self) -> list[str]:
+        return [part.strip() for part in self.prueba_ruta_acuerdos.split(";") if part.strip()]
 
     @property
     def master_sync_enabled(self) -> bool:

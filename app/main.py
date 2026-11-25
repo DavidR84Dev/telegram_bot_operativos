@@ -1,4 +1,4 @@
-"""Entrypoint FastAPI: validador de QR (solo lectura en Odoo) y preoperacional (Mini App + cola a Odoo)."""
+"""Entrypoint FastAPI: validador de QR (solo lectura en Odoo), preoperacional, AST y Prueba de Ruta."""
 from __future__ import annotations
 
 import logging
@@ -8,6 +8,10 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from telegram import Update
 
 from . import formatting
+from .ast_trabajo.router import AstServices
+from .ast_trabajo.router import router as ast_router
+from .ast_trabajo.service import AstOutcome
+from .ast_trabajo.worker import AstSender
 from .config import get_settings
 from .odoo_client import OdooClient
 from .preop.db import Database
@@ -17,6 +21,11 @@ from .preop.router import PreopServices
 from .preop.router import router as preop_router
 from .preop.service import SendOutcome
 from .preop.worker import MasterSync, PreopSender, build_writer
+from .prueba_ruta.acuerdos import acuerdos_sin_sincronizar, normalizar_lista
+from .prueba_ruta.router import PruebaRutaServices
+from .prueba_ruta.router import router as prueba_ruta_router
+from .prueba_ruta.service import PruebaRutaOutcome
+from .prueba_ruta.worker import PruebaRutaSender
 from .telegram_app import (
     BOT_COMMANDS,
     PREOP_DB_KEY,
@@ -62,6 +71,8 @@ def _start_preop(app: FastAPI, application) -> list:
     )
     sender.start()
     tasks: list = [sender]
+    tasks.append(_start_ast(app, application, db, writer))
+    tasks.append(_start_prueba_ruta(app, application, db, writer))
     # El handler de 📍 Enviar ubicación guarda en esta misma BD.
     application.bot_data[PREOP_DB_KEY] = db
     app.state.preop = PreopServices(
@@ -87,6 +98,70 @@ def _start_preop(app: FastAPI, application) -> list:
         logger.warning("ODOO_API_LOGIN/ODOO_API_PASSWORD vacíos: tablas maestras sin sincronizar "
                        "y 📝 Registro desactivado")
     return tasks
+
+
+def _start_ast(app: FastAPI, application, db: Database, writer) -> AstSender:
+    """Arranca el AST: misma BD, mismo usuario de escritura y su propia cola hacia el modelo ``ast``."""
+
+    async def notify(outcome: AstOutcome) -> None:
+        await application.bot.send_message(
+            chat_id=outcome.telegram_user_id, text=formatting.ast_result(outcome), parse_mode="HTML"
+        )
+        if outcome.aviso_jefe is not None:
+            try:
+                await application.bot.send_message(
+                    chat_id=outcome.aviso_jefe.telegram_id,
+                    text=formatting.ast_aviso_jefe(outcome.aviso_jefe, outcome.odoo_name), parse_mode="HTML",
+                )
+            except Exception:  # p. ej. el jefe nunca abrió el bot: Telegram no permite escribirle
+                logger.exception("No se pudo avisar al jefe del AST (Telegram %s)", outcome.aviso_jefe.telegram_id)
+
+    sender = AstSender(
+        db, writer, settings.preop_worker_interval_seconds, settings.preop_max_attempts,
+        settings.preop_sending_lease_seconds, notify=notify,
+    )
+    sender.start()
+    app.state.ast = AstServices(
+        db=db, bot_token=settings.telegram_bot_token.get_secret_value(),
+        max_age_seconds=settings.preop_auth_max_age_seconds, wake_worker=sender.wake,
+    )
+    return sender
+
+
+def _start_prueba_ruta(app: FastAPI, application, db: Database, writer) -> PruebaRutaSender:
+    """Arranca la Prueba de Ruta: misma BD y usuario de escritura; cola propia hacia ``prueba.ruta``."""
+
+    async def notify(outcome: PruebaRutaOutcome) -> None:
+        await application.bot.send_message(
+            chat_id=outcome.telegram_user_id, text=formatting.prueba_ruta_result(outcome), parse_mode="HTML"
+        )
+        if outcome.aviso_jefe is not None:
+            try:
+                await application.bot.send_message(
+                    chat_id=outcome.aviso_jefe.telegram_id,
+                    text=formatting.prueba_ruta_aviso_jefe(outcome.aviso_jefe, outcome.odoo_name), parse_mode="HTML",
+                )
+            except Exception:  # p. ej. el jefe nunca abrió el bot: Telegram no permite escribirle
+                logger.exception("No se pudo avisar al jefe de la prueba de ruta (Telegram %s)",
+                                 outcome.aviso_jefe.telegram_id)
+
+    autorizados = normalizar_lista(settings.prueba_ruta_acuerdos_lista)
+    if not autorizados:
+        logger.warning("PRUEBA_RUTA_ACUERDOS vacío: ningún conductor podrá hacer la Prueba de Ruta")
+    with db.session() as session:
+        faltan = acuerdos_sin_sincronizar(session, autorizados)
+    if faltan:
+        logger.warning("PRUEBA_RUTA_ACUERDOS: sin acuerdo sincronizado con ese nombre (aún): %s", "; ".join(faltan))
+    sender = PruebaRutaSender(
+        db, writer, settings.preop_worker_interval_seconds, settings.preop_max_attempts,
+        settings.preop_sending_lease_seconds, notify=notify,
+    )
+    sender.start()
+    app.state.prueba_ruta = PruebaRutaServices(
+        db=db, bot_token=settings.telegram_bot_token.get_secret_value(),
+        max_age_seconds=settings.preop_auth_max_age_seconds, autorizados=autorizados, wake_worker=sender.wake,
+    )
+    return sender
 
 
 @asynccontextmanager
@@ -133,9 +208,11 @@ async def lifespan(app: FastAPI):
         await application.shutdown()
 
 
-app = FastAPI(title="Telegram Bot Operativos", version="1.2.0", lifespan=lifespan)
+app = FastAPI(title="Telegram Bot Operativos", version="1.4.0", lifespan=lifespan)
 app.include_router(web_router)
 app.include_router(preop_router)
+app.include_router(ast_router)
+app.include_router(prueba_ruta_router)
 
 
 @app.get("/health")

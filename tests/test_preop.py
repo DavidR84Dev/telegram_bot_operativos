@@ -163,6 +163,16 @@ def test_extracto_maps_nested_vehicle_and_client_mobile():
     assert row["contratos_list"] == [{"id_contrato": 55, "nombre": "Contrato Minera"}]
 
 
+def test_decimales_con_coma_se_normalizan_a_punto():
+    # Odoo solo admite punto decimal en los float.
+    preop = _payload(1, 1, kilometraje="1510,5", llantas={"llanta_1": "5,5", "llanta_2": " 6.25 ", "llanta_1_pre": "32"})
+    assert preop.kilometraje == 1510.5
+    assert (preop.llantas["llanta_1"], preop.llantas["llanta_2"], preop.llantas["llanta_1_pre"]) == (5.5, 6.25, 32.0)
+    assert all(isinstance(v, float) for v in preop.llantas.values())
+    with pytest.raises(ValueError):
+        _payload(1, 1, llantas={"llanta_1": "1,2,3"})
+
+
 def test_preop_input_unchecked_box_is_no_conforme_and_unanswered_radio_is_empty():
     obligatorios = {"pico_pala": "no aplica", "eslingas": "conforme", "cables_de_arranque": "conforme",
                     "camaras": "conforme", "barra": "conforme", "extintor_2": "no aplica"}
