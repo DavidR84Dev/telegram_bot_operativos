@@ -150,18 +150,59 @@ def test_contrato_autorizado_por_id_del_acuerdo_o_por_nombre(seeded):
         assert acuerdos_sin_sincronizar(s, AUTORIZADOS) == ["SERVICIOS HIDROGEOLOGICOS INTEGRALES SAS"]
 
 
-def test_contrato_temporal_tambien_autoriza(seeded):
-    etl.sync_all(seeded, FakeRest({
-        "/api/flota": [_flota()],
-        "/api/empleados": [_empleado(contrato_temporal_id=132,
-                                     contrato_temporal="SERVICIOS HIDROGEOLÓGICOS INTEGRALES S.A.S.")],
-        "/api/extractos": [_extracto()],
+def _sync_extractos(db, *extractos: dict, **empleado: Any) -> None:
+    etl.sync_all(db, FakeRest({
+        "/api/flota": [_flota(), _flota(11, "VAN 02/XYZ987")],
+        "/api/empleados": [_empleado(**empleado)],
+        "/api/extractos": list(extractos),
     }), [1])
+
+
+def _autorizado(db):
     from app.preop.service import employee_for_telegram
 
-    with seeded.session() as s:
-        autorizado = contrato_autorizado(s, employee_for_telegram(seeded, TG_USER), AUTORIZADOS)
-    assert autorizado is not None and autorizado.odoo_id == 132
+    with db.session() as s:
+        return contrato_autorizado(s, employee_for_telegram(db, TG_USER), AUTORIZADOS)
+
+
+INTEGRAL = [{"id_contrato": 132, "nombre": "SERVICIOS HIDROGEOLÓGICOS INTEGRALES S.A.S."}]
+
+
+def test_autoriza_el_contrato_del_extracto_aprobado(seeded):
+    _sync_extractos(seeded, _extracto(contratos_list=INTEGRAL))
+    autorizado = _autorizado(seeded)
+    assert autorizado is not None and autorizado.odoo_id == 132 and autorizado.extracto_codigo == "EXT-500"
+
+
+def test_el_contrato_de_la_ficha_del_empleado_ya_no_autoriza(seeded):
+    # La ficha dice Integral, pero el extracto aprobado es de otro contrato.
+    _sync_extractos(seeded, _extracto(), contrato_temporal_id=132,
+                    contrato_temporal="SERVICIOS HIDROGEOLÓGICOS INTEGRALES S.A.S.")
+    assert _autorizado(seeded) is None
+
+
+@pytest.mark.parametrize("cambio", [
+    {"estado": "draft"},
+    {"fecha_hora_inicio": (utc_now() - timedelta(days=5)).strftime("%Y-%m-%d %H:%M:%S"),
+     "fecha_hora_fin": (utc_now() - timedelta(days=3)).strftime("%Y-%m-%d %H:%M:%S")},
+    {"conductor": "Otro Conductor"},
+])
+def test_solo_cuenta_el_extracto_aprobado_vigente_y_propio(seeded, cambio):
+    _sync_extractos(seeded, _extracto(contratos_list=INTEGRAL, **cambio))
+    assert _autorizado(seeded) is None
+
+
+def test_con_reserva_cuenta_solo_el_extracto_del_vehiculo_reservado(seeded):
+    # Extracto 500 (bus 01, otro contrato) y 501 (van 02, Integral): reserva el bus 01.
+    _sync_extractos(seeded, _extracto(), _extracto(501, "VAN 02/XYZ987", codigo="EXT-501", contratos_list=INTEGRAL))
+    assert _autorizado(seeded).extracto_codigo == "EXT-501"
+    _reservar(seeded)
+    from app.preop.service import employee_for_telegram
+
+    ctx = service.form_context(seeded, employee_for_telegram(seeded, TG_USER), TG_USER, AUTORIZADOS)
+    assert ctx["autorizado"] is False and ctx["contratos_extracto"] == ["Contrato Minera"]
+    with pytest.raises(SubmissionError, match=CONTRATO_NO_AUTORIZADO):
+        service.submit(seeded, IDENTITY, _payload(), AUTORIZADOS)
 
 
 # ───────────────────────────────────────── contexto y recepción ─────────────────────────────────────
@@ -171,7 +212,7 @@ def test_contexto_contrato_no_autorizado(seeded):
 
     ctx = service.form_context(seeded, employee_for_telegram(seeded, TG_USER), TG_USER, AUTORIZADOS)
     assert ctx["autorizado"] is False and ctx["mensaje"] == CONTRATO_NO_AUTORIZADO and ctx["vehiculo"] is None
-    assert ctx["empleado"]["contrato"] == "Contrato Minera"
+    assert ctx["empleado"]["contrato"] == "Contrato Minera" and ctx["contratos_extracto"] == ["Contrato Minera"]
 
 
 def test_contexto_autorizado_sin_y_con_vehiculo_reservado(seeded):
@@ -184,7 +225,7 @@ def test_contexto_autorizado_sin_y_con_vehiculo_reservado(seeded):
     vehiculo = _reservar(seeded)
     ctx = service.form_context(seeded, empleado, TG_USER, AUTORIZADOS)
     assert ctx["vehiculo"]["id"] == vehiculo and ctx["vehiculo"]["placa"]
-    assert ctx["contrato"] == "Contrato Minera"
+    assert ctx["contrato"] == "Contrato Minera" and ctx["extracto"] == "EXT-500"
 
 
 def test_submit_rechaza_contrato_no_autorizado(seeded):

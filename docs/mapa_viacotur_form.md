@@ -381,7 +381,8 @@ Responde la pregunta abierta 5 (§ 6): los pasos 3–4 son el cuestionario de 6 
 - **Modelo de Odoo:** `prueba.ruta` (`user_id`, `vehicle_id`, `jefe_inmediato`, 6 preguntas `si`/`no`, fotos
   `km1`/`km2`, observaciones). "Sí" = novedad: Odoo abre plan de acción. No tiene campo de contrato.
 - **Decisiones del usuario:**
-  1. Acceso solo para conductores cuyo **contrato del empleado** es un acuerdo autorizado; los demás ven
+  1. Acceso solo para conductores con un **extracto de contrato aprobado y vigente** cuyo contrato es un
+     acuerdo autorizado (el de la reserva del vehículo, si ya la hay; antes era el contrato del empleado); los demás ven
      **"Contrato No Autorizado"**. Lista inicial: MINERA DE COBRE QUEBRADONA y SERVICIOS HIDROGEOLÓGICOS
      INTEGRALES S.A.S. ("Integral"), en la variable `PRUEBA_RUTA_ACUERDOS` para sumar contratos sin código.
   2. El vehículo es el reservado por el preoperacional de la jornada.

@@ -825,8 +825,11 @@
       return;
     }
     if (!state.ctx.autorizado) {
+      const contratos = state.ctx.contratos_extracto || [];
       block(state.ctx.mensaje || "Contrato No Autorizado",
-        `Tu contrato (${state.ctx.empleado.contrato || "sin contrato"}) no está autorizado para la Prueba de Ruta.\n` +
+        (contratos.length
+          ? `El contrato de tu extracto aprobado (${contratos.join(", ")}) no está autorizado para la Prueba de Ruta.\n`
+          : "No tienes un extracto de contrato aprobado y vigente a tu nombre.\n") +
         "Si crees que es un error, comunícate con tu jefe inmediato.", true);
       return;
     }

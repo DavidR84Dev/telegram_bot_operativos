@@ -14,7 +14,7 @@ Referencia funcional: `docs/mapa_viacotur_form.md` § 3.2. Infraestructura compa
 | Tema | Decisión |
 |---|---|
 | Ubicación | Mini App en @OperativosViacoturBot, debajo de ⚠️ AST; comando `/prueba_ruta`. |
-| **Restricción de acceso** | Solo conductores cuyo **contrato del empleado** (`id_contract` o contrato temporal, ambos `agreement`) es un acuerdo autorizado. Los demás ven **"Contrato No Autorizado"** (Mini App) y el servidor rechaza el envío (403). |
+| **Restricción de acceso** | Solo conductores con un **extracto de contrato aprobado y vigente** (`car.extractos` en estado "Aprobado", mismo criterio del preoperacional: `extractos_del_conductor`) cuyo `contratos_list` incluye un acuerdo autorizado. Si ya reservó el vehículo, cuenta **solo el extracto de esa reserva**. El contrato de la ficha del empleado (`id_contract` / temporal) **ya no autoriza** (cambio del 2026-11-25). Los demás ven **"Contrato No Autorizado"** (Mini App) y el servidor rechaza el envío (403). |
 | Acuerdos autorizados | Variable **`PRUEBA_RUTA_ACUERDOS`** (nombres separados por `;`). Hoy: `MINERA DE COBRE QUEBRADONA` (id 121 en qa2) y `SERVICIOS HIDROGEOLÓGICOS INTEGRALES S.A.S.` (id 132, "Integral"). **Agregar un contrato = sumarlo a la variable y reiniciar**, sin código ni migración. |
 | Comparación | Nombres normalizados: sin mayúsculas, tildes ni puntuación, sin el prefijo `[código]` de `/api/acuerdos`, y los puntos de siglas no separan (`S.A.S.` = `SAS`). Se acepta el contrato si coincide su nombre o si su id es el de un acuerdo sincronizado con un nombre de la lista. Al arrancar se registra en el log cualquier nombre de la lista sin acuerdo sincronizado (posible error de digitación). |
 | Vehículo | El **reservado a su nombre por el preoperacional de la jornada** (`reservas_vehiculo`). Sin reserva (no ha hecho el preoperacional, ya tocó 🔴 Finalizar o venció a las 24 h): "Primero el Preoperacional" (409). |
@@ -75,7 +75,7 @@ Asistente de 6 pasos como la referencia, con etiquetas cortas para que no se tru
 **Info → Inicio → Preg. 1 → Preg. 2 → Final → Resumen**.
 
 1. **Info:** procedimiento de la prueba (13 pasos).
-2. **Inicio:** empleado, contrato autorizado y vehículo reservado (solo lectura) y **foto del odómetro inicial** `*`.
+2. **Inicio:** empleado, contrato autorizado (del extracto) y vehículo reservado (solo lectura) y **foto del odómetro inicial** `*`.
 3. **Preg. 1 / 4. Preg. 2:** 3 preguntas por pantalla, botones Sí (rojo) / No (verde) de 44 px.
 5. **Final:** **foto del odómetro final** `*` y observaciones.
 6. **Resumen:** datos, cada pregunta con ✔ o **!** (novedad, toca para corregir) y miniaturas de las fotos.
@@ -92,7 +92,7 @@ Android ignora `capture`) o de la galería, y se comprimen antes de enviar. Pant
 |---|---|
 | `GET /prueba-ruta` | HTML (sin caché; logo versionado) |
 | `GET /api/prueba-ruta/form` | procedimiento, preguntas y fotos |
-| `GET /api/prueba-ruta/context` | `empleado`, `autorizado`, `mensaje` ("Contrato No Autorizado"), `contrato` y `vehiculo` reservado (o `null`); 403 sin PIN |
+| `GET /api/prueba-ruta/context` | `empleado`, `autorizado`, `mensaje` ("Contrato No Autorizado"), `contrato` y `extracto` (código) que autorizaron, `contratos_extracto` (contratos de sus extractos aprobados, para el bloqueo) y `vehiculo` reservado (o `null`); 403 sin PIN |
 | `POST /api/prueba-ruta` | **202**; 401 firma, **403 "Contrato No Autorizado"** o sin empleado, 409 sin preoperacional / vehículo distinto / uuid ajeno, 422 validación, **410** reenvío sin señal vencido |
 | `GET /api/prueba-ruta/{uuid}` | estado de un envío propio |
 

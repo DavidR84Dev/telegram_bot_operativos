@@ -3,8 +3,9 @@
 Orden de las reglas de acceso (igual en el contexto de la Mini App y al recibir):
 
 1. El id de Telegram es el PIN de un empleado activo (si no, 403).
-2. Su contrato es un acuerdo autorizado (``acuerdos.contrato_autorizado``); si no,
-   **"Contrato No Autorizado"** (403).
+2. Tiene un extracto **aprobado y vigente** con un acuerdo autorizado
+   (``acuerdos.contrato_autorizado``); si ya reservó el vehículo, debe serlo el extracto de esa
+   reserva. Si no, **"Contrato No Autorizado"** (403).
 3. Tiene un vehículo reservado por su preoperacional de la jornada (``reservas_vehiculo``);
    si no, debe hacer primero el preoperacional (409).
 
@@ -46,7 +47,7 @@ from ..preop.service import (
     TiemposDiferido,
     payload_sha256,
 )
-from .acuerdos import CONTRATO_NO_AUTORIZADO, contrato_autorizado
+from .acuerdos import CONTRATO_NO_AUTORIZADO, contrato_autorizado, contratos_extractos
 from .catalogo import FOTOS, PREGUNTAS_BY_KEY, con_novedad
 from .schemas import PruebaRutaIn
 
@@ -66,12 +67,14 @@ def _reserva_propia(session: Session, telegram_user_id: int) -> ReservaVehiculo 
 
 def form_context(db: Database, empleado: Empleado, telegram_user_id: int,
                  autorizados: frozenset[str]) -> dict[str, Any]:
-    """Empleado, autorización por contrato y vehículo reservado por su preoperacional."""
+    """Empleado, autorización por el extracto aprobado y vehículo reservado por su preoperacional."""
     with db.session() as session:
-        contrato = contrato_autorizado(session, empleado, autorizados)
-        reserva = _reserva_propia(session, telegram_user_id) if contrato else None
+        reserva = _reserva_propia(session, telegram_user_id)
+        extracto_id = reserva.extracto_id if reserva is not None else None
+        contrato = contrato_autorizado(session, empleado, autorizados, extracto_id)
+        contratos = contratos_extractos(session, empleado, extracto_id)
         vehiculo = None
-        if reserva is not None:
+        if reserva is not None and contrato is not None:
             v = reserva.vehiculo
             vehiculo = {"id": v.id, "nombre": v.nombre, "matricula": v.matricula,
                         "numero_interno": v.numero_interno, "placa": reservas.placa(v)}
@@ -82,6 +85,9 @@ def form_context(db: Database, empleado: Empleado, telegram_user_id: int,
         "autorizado": contrato is not None,
         "mensaje": None if contrato else CONTRATO_NO_AUTORIZADO,
         "contrato": contrato.nombre if contrato else None,
+        "extracto": contrato.extracto_codigo if contrato else None,
+        # Contratos de sus extractos aprobados y vigentes (los de la reserva, si la hay): para el bloqueo.
+        "contratos_extracto": contratos,
         "vehiculo": vehiculo,
     }
 
@@ -147,10 +153,11 @@ def submit(db: Database, identity: TelegramIdentity, data: PruebaRutaIn, autoriz
         )
         if empleado is None:
             raise SubmissionError("Tu usuario de Telegram no está asociado a un empleado activo", 403)
-        contrato = contrato_autorizado(session, empleado, autorizados)
+        reserva = _reserva_propia(session, identity.user_id)
+        contrato = contrato_autorizado(session, empleado, autorizados,
+                                       reserva.extracto_id if reserva is not None else None)
         if contrato is None:
             raise SubmissionError(CONTRATO_NO_AUTORIZADO, 403)
-        reserva = _reserva_propia(session, identity.user_id)
         if reserva is None:
             raise SubmissionError(MSG_SIN_PREOP, 409)
         if data.vehiculo_id is not None and data.vehiculo_id != reserva.vehiculo_id:
