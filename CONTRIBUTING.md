@@ -80,10 +80,11 @@ El teclado principal de @OperativosViacoturBot es plegable (`is_persistent=False
 4. Tablas nuevas: van en la BD del bot (`app/preop/models.py` o un módulo hermano con la misma `Base`); `create_all` las crea al arrancar. Para **cambiar** columnas de tablas existentes hace falta Alembic.
 5. Las Mini Apps se abren siempre con botón **inline** `web_app`: desde un botón de teclado llegan sin `initData`.
 6. Cubrir el orden y la apertura en `tests/test_handlers.py`.
+7. **Envío sin señal** (obligatorio en todo formulario): bandeja en el teléfono, reenvío automático y ventana de 1 h en el servidor; ver `docs/GUIA_NUEVOS_BOTS.md` § 5.
 
 ## Agregar un nuevo bot operativo al mismo patrón
 
-Antes de empezar, lee **`docs/GUIA_NUEVOS_BOTS.md`**: convenciones que todo bot nuevo debe seguir (decimales con punto para Odoo, campos obligatorios validados en la Mini App y en el servidor, revisión ítem por ítem y registro de usuarios nuevos).
+Antes de empezar, lee **`docs/GUIA_NUEVOS_BOTS.md`**: convenciones que todo bot nuevo debe seguir (decimales con punto para Odoo, campos obligatorios validados en la Mini App y en el servidor, revisión ítem por ítem, registro de usuarios nuevos y **envío sin señal**, obligatorio en todo formulario).
 
 La intención de este repositorio es centralizar varios bots de Telegram conectados a Odoo (ver "Por qué existe este proyecto" en `README.md`). Un bot nuevo **no se mezcla dentro de `app/`** de este proyecto: se crea como una carpeta hermana independiente, replicando esta misma estructura:
 

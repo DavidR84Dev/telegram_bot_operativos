@@ -352,6 +352,36 @@ class PreopEnvioDiferido(TimestampMixin, Base):
     __table_args__ = (Index("ix_preop_diferidos_estado_fecha", "estado", "recibido_at"),)
 
 
+class AstEnvioDiferido(TimestampMixin, Base):
+    """Trazabilidad de los AST guardados en el teléfono por falta de señal.
+
+    Misma regla y mismas horas que ``PreopEnvioDiferido`` (ver ``app/preop/diferido.py``):
+    se reenvían como máximo 1 hora después de perder la señal; fuera de la ventana quedan
+    ``vencido`` (solo auditoría, con el formulario completo en ``payload``).
+    """
+
+    __tablename__ = "ast_envios_diferidos"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    uuid: Mapped[str] = mapped_column(String(36), nullable=False, unique=True)
+    telegram_user_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    estado: Mapped[EstadoDiferido] = mapped_column(
+        Enum(EstadoDiferido, name="ast_estado_diferido", native_enum=False, length=16,
+             values_callable=lambda e: [m.value for m in e]),
+        nullable=False,
+    )
+    motivo: Mapped[str | None] = mapped_column(Text)
+    ast_id: Mapped[int | None] = mapped_column(ForeignKey("ast_trabajo.id", ondelete="SET NULL"))
+    apertura_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    sin_senal_desde: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    recibido_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+    retraso_segundos: Mapped[int] = mapped_column(Integer, nullable=False)
+    payload_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload: Mapped[dict[str, Any] | None] = mapped_column(JsonType)
+
+    __table_args__ = (Index("ix_ast_diferidos_estado_fecha", "estado", "recibido_at"),)
+
+
 class Ubicacion(TimestampMixin, Base):
     """Ubicación compartida desde el chat (botón 📍 Enviar ubicación).
 

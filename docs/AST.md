@@ -87,6 +87,15 @@ llega a Odoo. Cerrar con cambios sin enviar pide confirmación. Los datos se pin
 
 Sin empleado (PIN) o sin extracto aprobado se muestra una pantalla de bloqueo que explica qué hacer.
 
+### Envío sin señal (regla de todos los formularios, 2026-11-25)
+
+Igual que el preoperacional (`docs/GUIA_NUEVOS_BOTS.md` § 5): si el envío falla por red, el AST se guarda
+en el teléfono (IndexedDB `ast-offline`; respaldo `localStorage`) y se reenvía solo, cada 15 s y al volver
+la red, o al reabrir la Mini App con señal. El servidor lo acepta hasta **1 hora después de perder la señal**
+(`app/preop/diferido.py`) y deja la trazabilidad en `ast_envios_diferidos` (`aceptado` / `vencido`). Un
+envío vencido responde **410**, queda solo como auditoría (con el formulario completo) y no va a Odoo ni
+avisa a nadie.
+
 ## 5. Rutas
 
 | Ruta | Respuesta |
@@ -94,7 +103,7 @@ Sin empleado (PIN) o sin extracto aprobado se muestra una pantalla de bloqueo qu
 | `GET /ast` | HTML de la Mini App (sin caché; logo versionado) |
 | `GET /api/ast/form` | catálogo de preguntas |
 | `GET /api/ast/context` | empleado, responsable, `validado` y contratos de sus extractos aprobados; **403** si el id de Telegram no es PIN de un empleado activo |
-| `POST /api/ast` | **202** `{id, uuid, sync_status: "pendiente", no_conformes, duplicado}`; 401 (firma), 403 (sin empleado o sin extracto), 409 (uuid ajeno), 422 (validación o contrato ajeno) |
+| `POST /api/ast` | **202** `{id, uuid, sync_status: "pendiente", no_conformes, duplicado}`; 401 (firma), 403 (sin empleado o sin extracto), 409 (uuid ajeno), 422 (validación o contrato ajeno); **410** si es un reenvío sin señal fuera de la ventana de 1 h |
 | `GET /api/ast/{uuid}` | estado de un envío propio |
 
 Seguridad: igual que el preoperacional (`initData` con HMAC-SHA256 del token del bot y antigüedad máxima
@@ -109,13 +118,12 @@ No hay variables de entorno nuevas: usa las del preoperacional (`ODOO_WRITE_*`, 
 |---|---|
 | Cola | `SELECT sync_status, count(*) FROM ast_trabajo GROUP BY 1;` |
 | Fallidos | `SELECT id, uuid, attempts, error_log FROM ast_trabajo WHERE sync_status='fallido';` |
+| Envíos sin señal | `SELECT estado, uuid, telegram_user_id, apertura_at, sin_senal_desde, recibido_at, motivo FROM ast_envios_diferidos ORDER BY recibido_at DESC;` |
 | Procesar la cola a mano | `docker compose exec app python -m app.ast_trabajo.worker --once` |
 | Reencolar | `docker compose exec app python -m app.ast_trabajo.worker --requeue 3 4` (o `--requeue-all`) |
 
 ## 7. Pendientes
 
 - [ ] Prueba de punta a punta en qa2 (crear un `AST-xxxx` real) y desde un móvil por el túnel.
-- [ ] Envío sin señal (bandeja de salida en el teléfono, como el preoperacional): no incluido en esta
-      primera versión; hoy, sin señal, la Mini App muestra el error y permite reintentar sin duplicar.
 - [ ] ¿Límite de un AST por jornada o por día? Hoy no hay límite (igual que el bot de referencia).
 - [ ] El jefe debe tener su id de Telegram en el PIN y haber abierto el bot para recibir el aviso.

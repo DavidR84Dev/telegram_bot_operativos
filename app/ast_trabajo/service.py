@@ -20,9 +20,24 @@ from sqlalchemy.exc import IntegrityError
 
 from ..preop import service as preop_service
 from ..preop.db import Database
-from ..preop.models import AnalisisSeguro, Empleado, Extracto, SyncStatus, utc_now
+from ..preop.diferido import motivo_vencido
+from ..preop.models import (
+    AnalisisSeguro,
+    AstEnvioDiferido,
+    Empleado,
+    EstadoDiferido,
+    Extracto,
+    SyncStatus,
+    utc_now,
+)
 from ..preop.odoo_writer import OdooPermanentError, OdooTransientError, OdooWriter
-from ..preop.service import SubmissionError, TelegramIdentity
+from ..preop.service import (
+    EnvioVencidoError,
+    SubmissionError,
+    TelegramIdentity,
+    TiemposDiferido,
+    payload_sha256,
+)
 from .catalogo import MEDICAMENTOS, PREGUNTAS_BY_KEY, SI, con_alerta
 from .schemas import AstIn
 
@@ -60,10 +75,52 @@ def form_context(db: Database, empleado: Empleado, now: datetime | None = None) 
 
 # ───────────────────────────────────── recepción ──────────────────────────────────────
 
-def submit(db: Database, identity: TelegramIdentity, data: AstIn) -> tuple[AnalisisSeguro, bool]:
+def submit_diferido(db: Database, identity: TelegramIdentity, data: AstIn,
+                    tiempos: TiemposDiferido) -> tuple[AnalisisSeguro, bool]:
+    """Recibe un AST guardado en el teléfono por falta de señal (regla de ``app/preop/diferido.py``).
+
+    Dentro de la ventana sigue el flujo normal (mismas validaciones, Odoo y avisos) y deja su
+    trazabilidad. Fuera de ella lo guarda solo como auditoría y lanza ``EnvioVencidoError``:
+    no va a Odoo y no se notifica al conductor ni al jefe.
+    """
+    with db.session() as session:
+        # El primer intento pudo llegar aunque el teléfono no recibió la respuesta: es el mismo formulario.
+        existing = session.scalar(select(AnalisisSeguro).where(AnalisisSeguro.uuid == data.uuid))
+        if existing is not None:
+            if existing.telegram_user_id != identity.user_id:
+                raise SubmissionError("Identificador de formulario en uso", status_code=409)
+            return existing, True
+        previo = session.scalar(select(AstEnvioDiferido).where(AstEnvioDiferido.uuid == data.uuid))
+        if previo is not None:
+            if previo.telegram_user_id != identity.user_id:
+                raise SubmissionError("Identificador de formulario en uso", status_code=409)
+            raise EnvioVencidoError(previo.motivo or "Envío vencido")
+
+    motivo = motivo_vencido(tiempos.apertura, tiempos.sin_senal_desde, tiempos.recibido)
+    if motivo is None:
+        return submit(db, identity, data, diferido=tiempos)
+
+    with db.session() as session:
+        session.add(AstEnvioDiferido(
+            uuid=data.uuid, telegram_user_id=identity.user_id, estado=EstadoDiferido.VENCIDO, motivo=motivo,
+            apertura_at=tiempos.apertura, sin_senal_desde=tiempos.sin_senal_desde, recibido_at=tiempos.recibido,
+            retraso_segundos=tiempos.retraso_segundos, payload_sha256=payload_sha256(data),
+            payload=data.model_dump(mode="json", exclude={"diferido"}),
+        ))
+        try:
+            session.flush()
+        except IntegrityError as exc:  # el mismo uuid llegó dos veces en paralelo
+            raise EnvioVencidoError(motivo) from exc
+    logger.warning("AST diferido VENCIDO uuid=%s usuario=%s: %s", data.uuid, identity.user_id, motivo)
+    raise EnvioVencidoError(motivo)
+
+
+def submit(db: Database, identity: TelegramIdentity, data: AstIn,
+           diferido: TiemposDiferido | None = None) -> tuple[AnalisisSeguro, bool]:
     """Guarda el AST como ``pendiente``. Devuelve (registro, era_duplicado).
 
     Idempotente por ``uuid``: un reenvío (doble toque, red inestable) devuelve el original.
+    ``diferido`` (ya validado dentro de la ventana) deja la trazabilidad del envío sin señal.
     """
     with db.session() as session:
         existing = session.scalar(select(AnalisisSeguro).where(AnalisisSeguro.uuid == data.uuid))
@@ -112,6 +169,14 @@ def submit(db: Database, identity: TelegramIdentity, data: AstIn) -> tuple[Anali
         session.add(ast)
         try:
             session.flush()
+            if diferido is not None:
+                session.add(AstEnvioDiferido(
+                    uuid=ast.uuid, telegram_user_id=identity.user_id, estado=EstadoDiferido.ACEPTADO,
+                    ast_id=ast.id, apertura_at=diferido.apertura, sin_senal_desde=diferido.sin_senal_desde,
+                    recibido_at=diferido.recibido, retraso_segundos=diferido.retraso_segundos,
+                    payload_sha256=payload_sha256(data),
+                ))
+                session.flush()
         except IntegrityError as exc:  # el mismo uuid llegó dos veces en paralelo
             raise SubmissionError("Formulario ya recibido", status_code=409) from exc
         return ast, False

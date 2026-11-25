@@ -8,6 +8,7 @@ ahí, nunca del cuerpo.
 * ``GET  /api/ast/form``     catálogo de preguntas
 * ``GET  /api/ast/context``  empleado, responsable y contratos de sus extractos aprobados
 * ``POST /api/ast``          recibe el formulario -> 202 + estado ``pendiente``
+  (reenvío sin señal fuera de la ventana de 1 h -> 410, solo auditoría)
 * ``GET  /api/ast/{uuid}``   estado de sincronización de un envío propio
 """
 from __future__ import annotations
@@ -25,7 +26,7 @@ from sqlalchemy import select
 from ..preop import service as preop_service
 from ..preop.db import Database
 from ..preop.models import AnalisisSeguro
-from ..preop.router import _LOGO_URL, _identity, _logo_version, _validar
+from ..preop.router import _LOGO_URL, _identity, _logo_version, firma_previa_diferida, tiempos_diferido
 from . import service
 from .catalogo import form_definition
 from .schemas import AstIn, AstOut
@@ -64,9 +65,10 @@ Identity = Annotated[preop_service.TelegramIdentity, Depends(telegram_identity)]
 
 
 def _firma_previa(request: Request, x_telegram_init_data: Annotated[str | None, Header()] = None) -> None:
-    """Rechaza (401) sin firma válida **antes** de validar el cuerpo."""
+    """Rechaza (401) sin firma válida **antes** de validar el cuerpo (admite la antigüedad de un
+    reenvío sin señal; la exacta se revisa en la ruta)."""
     svc = _services(request)
-    _validar(x_telegram_init_data, svc.bot_token, svc.max_age_seconds)
+    firma_previa_diferida(x_telegram_init_data, svc.bot_token, svc.max_age_seconds)
 
 
 @router.get("/ast", response_class=HTMLResponse, include_in_schema=False)
@@ -99,17 +101,34 @@ def _out(ast: AnalisisSeguro, duplicated: bool = False) -> AstOut:
 
 @router.post("/api/ast", status_code=status.HTTP_202_ACCEPTED, response_model=AstOut,
              dependencies=[Depends(_firma_previa)])
-async def ast_submit(body: AstIn, request: Request, identity: Identity) -> AstOut:
-    """Guarda y responde de inmediato (202). El envío a Odoo lo hace el worker en segundo plano."""
+async def ast_submit(
+    body: AstIn,
+    request: Request,
+    x_telegram_init_data: Annotated[str | None, Header()] = None,
+) -> AstOut:
+    """Guarda y responde de inmediato (202). El envío a Odoo lo hace el worker en segundo plano.
+
+    Un reenvío de un AST guardado sin señal (``diferido``) responde 410 si llegó fuera de la
+    ventana de 1 h (queda solo como auditoría; misma regla del preoperacional).
+    """
     svc = _services(request)
     try:
-        ast, duplicated = await asyncio.to_thread(service.submit, svc.db, identity, body)
+        if body.diferido is None:
+            identity = _identity(x_telegram_init_data, svc.bot_token, svc.max_age_seconds)
+            ast, duplicated = await asyncio.to_thread(service.submit, svc.db, identity, body)
+        else:
+            identity, tiempos = tiempos_diferido(body.diferido, x_telegram_init_data, svc.bot_token,
+                                                 svc.max_age_seconds)
+            ast, duplicated = await asyncio.to_thread(service.submit_diferido, svc.db, identity, body, tiempos)
+    except preop_service.EnvioVencidoError as exc:
+        # Sin aviso al conductor (misma decisión del preoperacional): la Mini App lo descarta en silencio.
+        raise HTTPException(status.HTTP_410_GONE, "Envío vencido: superó 1 hora sin señal") from exc
     except preop_service.SubmissionError as exc:
         raise HTTPException(exc.status_code, str(exc)) from exc
     if not duplicated and svc.wake_worker is not None:
         svc.wake_worker()
-    logger.info("AST recibido id=%s uuid=%s usuario=%s duplicado=%s alertas=%s",
-                ast.id, ast.uuid, identity.user_id, duplicated, ast.no_conformes)
+    logger.info("AST recibido id=%s uuid=%s usuario=%s duplicado=%s alertas=%s diferido=%s",
+                ast.id, ast.uuid, identity.user_id, duplicated, ast.no_conformes, body.diferido is not None)
     return _out(ast, duplicated)
 
 

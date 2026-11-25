@@ -15,6 +15,7 @@ from typing import Any, Callable
 
 from sqlalchemy import and_, or_, select, update
 from sqlalchemy.exc import IntegrityError
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from .checklist import (
@@ -226,7 +227,7 @@ class EnvioVencidoError(Exception):
     """El envío diferido llegó fuera de la ventana: quedó solo como auditoría."""
 
 
-def payload_sha256(data: PreoperacionalIn) -> str:
+def payload_sha256(data: BaseModel) -> str:
     """Huella del formulario tal como llegó (sin los datos de autenticación del envío diferido)."""
     return hashlib.sha256(data.model_dump_json(exclude={"diferido"}).encode("utf-8")).hexdigest()
 

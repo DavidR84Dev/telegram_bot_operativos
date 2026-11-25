@@ -1304,6 +1304,10 @@
     tg.ready();
     tg.expand();
     if (tg.setHeaderColor) { try { tg.setHeaderColor("#ffffff"); } catch (_) { /* versión antigua */ } }
+    // Antes de vaciar la bandeja: si se acepta un formulario guardado, el botón "Cerrar" debe funcionar.
+    $("next").addEventListener("click", next);
+    $("prev").addEventListener("click", prev);
+    if (tg.BackButton) tg.BackButton.onClick(prev);
     try {
       const [form, ctx] = await Promise.all([api("/api/preop/form"), api("/api/preop/context")]);
       state.form = form;
@@ -1345,9 +1349,6 @@
     $("cam-capturar").addEventListener("click", capturar);
     $("cam-cerrar").addEventListener("click", cerrarCamara);
     $("sum-foto").addEventListener("click", () => { if (!state.foto) goTo(3); });
-    $("next").addEventListener("click", next);
-    $("prev").addEventListener("click", prev);
-    if (tg.BackButton) tg.BackButton.onClick(prev);
     $("stepper").hidden = false;
     $("actions").hidden = false;
     goTo(1);

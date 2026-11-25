@@ -216,7 +216,11 @@
   };
 
   const STEPS = 2;
-  const state = { step: 1, form: null, ctx: null, answers: {}, uuid: null, sending: false, finished: false, dirty: false };
+  const state = {
+    step: 1, form: null, ctx: null, answers: {}, uuid: null, sending: false, finished: false, dirty: false,
+    // Envío sin señal: initData de la apertura, formulario pendiente y temporizador de reintento.
+    initDataOriginal: "", pendiente: null, pendienteGuardado: false, reintento: null, avisoBandeja: "",
+  };
 
   function setMsg(text, isError = false) {
     $("msg").textContent = text;
@@ -237,6 +241,9 @@
     return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
   }
 
+  // Sin respuesta del servidor (sin señal) o el túnel/proxy no llega al bot: se puede reintentar.
+  const SIN_RED = [502, 503, 504];
+
   async function api(path, options = {}) {
     let res;
     try {
@@ -245,7 +252,13 @@
         headers: { "Content-Type": "application/json", "X-Telegram-Init-Data": tg ? tg.initData : "", ...(options.headers || {}) },
       });
     } catch (_) {
-      const err = new Error("Sin conexión. Revisa tu señal e intenta de nuevo.");
+      const err = new Error("Sin conexión");
+      err.network = true;
+      throw err;
+    }
+    if (SIN_RED.includes(res.status)) {
+      const err = new Error(`Error ${res.status}`);
+      err.status = res.status;
       err.network = true;
       throw err;
     }
@@ -259,6 +272,125 @@
       throw err;
     }
     return body;
+  }
+
+  // ── Bandeja de salida (formularios guardados sin señal) ─────────────────
+  // Regla de todos los formularios (igual que el preoperacional, ver app/preop/diferido.py): un
+  // AST que no se pudo enviar por falta de señal se guarda en el teléfono (IndexedDB; si no está
+  // disponible, localStorage) y se reenvía solo al volver la señal, como máximo 1 hora después de
+  // perderla. Pasada la hora el servidor lo guarda solo como auditoría (410) y aquí se descarta.
+  const VENTANA_MS = 60 * 60 * 1000;
+  const REINTENTO_MS = 15 * 1000;
+  const BANDEJA_MAX_MS = 7 * 24 * 60 * 60 * 1000;  // el servidor ya no lo audita después
+  const IDB_NAME = "ast-offline", IDB_STORE = "bandeja", LS_PREFIX = "ast-bandeja:";
+
+  function idb() {
+    return new Promise((resolve, reject) => {
+      if (!window.indexedDB) { reject(new Error("sin IndexedDB")); return; }
+      const req = indexedDB.open(IDB_NAME, 1);
+      req.onupgradeneeded = () => req.result.createObjectStore(IDB_STORE, { keyPath: "uuid" });
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  }
+
+  async function idbRun(mode, fn) {
+    const db = await idb();
+    try {
+      return await new Promise((resolve, reject) => {
+        const tx = db.transaction(IDB_STORE, mode);
+        const req = fn(tx.objectStore(IDB_STORE));
+        tx.oncomplete = () => resolve(req && req.result);
+        tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error);
+      });
+    } finally { db.close(); }
+  }
+
+  const bandeja = {
+    async put(item) {
+      try { await idbRun("readwrite", (s) => s.put(item)); return true; } catch (_) { /* respaldo */ }
+      try { localStorage.setItem(LS_PREFIX + item.uuid, JSON.stringify(item)); return true; } catch (_) { return false; }
+    },
+    async all() {
+      let items = [];
+      try { items = (await idbRun("readonly", (s) => s.getAll())) || []; } catch (_) { /* respaldo */ }
+      try {
+        for (let i = 0; i < localStorage.length; i++) {
+          const k = localStorage.key(i);
+          if (k && k.startsWith(LS_PREFIX) && !items.some((x) => LS_PREFIX + x.uuid === k)) items.push(JSON.parse(localStorage.getItem(k)));
+        }
+      } catch (_) { /* sin almacenamiento */ }
+      return items;
+    },
+    async del(uuid) {
+      try { await idbRun("readwrite", (s) => s.delete(uuid)); } catch (_) { /* respaldo */ }
+      try { localStorage.removeItem(LS_PREFIX + uuid); } catch (_) { /* sin almacenamiento */ }
+    },
+  };
+
+  const usuarioId = () => (tg && tg.initDataUnsafe && tg.initDataUnsafe.user ? tg.initDataUnsafe.user.id : null);
+  const vencidoLocal = (item) => Date.now() - Date.parse(item.sin_senal_desde) > VENTANA_MS;
+  const cuerpoDiferido = (item) => JSON.stringify({
+    ...item.payload, diferido: { init_data_original: item.init_data_original, sin_senal_desde: item.sin_senal_desde },
+  });
+
+  // Al abrir con señal: reenvía lo que quedó guardado de sesiones anteriores.
+  // Devuelve el envío aceptado (para mostrarlo) y el aviso de uno rechazado por validación.
+  async function vaciarBandeja() {
+    const propios = (await bandeja.all()).filter((i) => i && i.user_id === usuarioId())
+      .sort((a, b) => Date.parse(a.sin_senal_desde) - Date.parse(b.sin_senal_desde));
+    let aceptado = null, aviso = "";
+    for (const item of propios) {
+      if (Date.now() - Date.parse(item.sin_senal_desde) > BANDEJA_MAX_MS) { await bandeja.del(item.uuid); continue; }
+      try {
+        aceptado = await api("/api/ast", { method: "POST", body: cuerpoDiferido(item) });
+        await bandeja.del(item.uuid);
+      } catch (err) {
+        if (err.network || err.status === 401 || (err.status && err.status >= 500)) break;  // se intenta en la próxima apertura
+        await bandeja.del(item.uuid);
+        // 410 = vencido: queda como auditoría en el servidor y no se avisa al conductor.
+        if (err.status !== 410) aviso = `Tu AST guardado sin señal no fue aceptado: ${err.message}\nDiligencia uno nuevo.`;
+      }
+    }
+    return { aceptado, aviso };
+  }
+
+  function detenerReintentos() {
+    if (state.reintento) { clearInterval(state.reintento); state.reintento = null; }
+    window.removeEventListener("online", reintentarSiPendiente);
+  }
+
+  function reintentarSiPendiente() {
+    if (!state.pendiente || state.sending || state.finished) return;
+    if (vencidoLocal(state.pendiente)) { vencer(); return; }
+    submit();
+  }
+
+  function modoSinSenal(guardado) {
+    $("next").textContent = "Reintentar ahora";
+    $("next").disabled = false;
+    setMsg(guardado
+      ? "📥 Sin señal. Tu AST quedó guardado en este teléfono y se enviará solo cuando vuelva la señal (hasta 1 hora).\n" +
+        "Mantén abierto el formulario; si lo cierras, vuelve a abrirlo cuando tengas señal."
+      : "📵 Sin señal y no se pudo guardar en el teléfono. No cierres el formulario: se enviará solo cuando vuelva la señal (hasta 1 hora).",
+    true);
+    if (!state.reintento) {
+      state.reintento = setInterval(reintentarSiPendiente, REINTENTO_MS);
+      window.addEventListener("online", reintentarSiPendiente);
+    }
+  }
+
+  // Pasó la hora sin señal: el formulario ya no se procesará.
+  function vencer() {
+    detenerReintentos();
+    state.finished = true;
+    if (tg && tg.disableClosingConfirmation) tg.disableClosingConfirmation();
+    document.querySelectorAll("section[data-step]").forEach((s) => { s.hidden = true; });
+    $("stepper").hidden = true;
+    $("actions").hidden = true;
+    block("No se pudo enviar a tiempo",
+      "Pasó más de 1 hora sin señal y este AST ya no se puede enviar.\nDiligencia uno nuevo cuando tengas señal.");
   }
 
   function confirmAsync(text) {
@@ -486,13 +618,40 @@
       nombre_medicamento: tomaMedicamento() ? $("med-nombre").value.trim() : null,
       observaciones: $("observaciones").value.trim() || null,
     };
+    // Si ya falló por falta de señal, se reenvía como diferido (con el payload actual: el
+    // conductor pudo corregir algo mientras tanto).
+    if (state.pendiente) {
+      state.pendiente.payload = payload;
+      await bandeja.put(state.pendiente);
+    }
     try {
       // Reintentar con el mismo uuid no duplica (idempotencia del servidor).
-      const out = await api("/api/ast", { method: "POST", body: JSON.stringify(payload) });
-      showDone(out);
+      const body = state.pendiente ? cuerpoDiferido(state.pendiente) : JSON.stringify(payload);
+      const out = await api("/api/ast", { method: "POST", body });
+      if (state.pendiente) { detenerReintentos(); await bandeja.del(state.uuid); }
+      showDone(out, Boolean(state.pendiente));
     } catch (err) {
       state.sending = false;
-      const sesion = err.status === 401 ? "\nCierra y vuelve a abrir el formulario." : "";
+      if (err.network) {
+        if (!state.pendiente) {
+          state.pendiente = {
+            uuid: state.uuid, user_id: usuarioId(), payload,
+            init_data_original: state.initDataOriginal, sin_senal_desde: new Date().toISOString(),
+          };
+          state.pendienteGuardado = await bandeja.put(state.pendiente);
+        }
+        if (vencidoLocal(state.pendiente)) vencer(); else modoSinSenal(state.pendienteGuardado);
+        return;
+      }
+      if (err.status === 410) {  // fuera de la ventana: el servidor lo guardó solo como auditoría
+        await bandeja.del(state.uuid);
+        vencer();
+        return;
+      }
+      // Error de validación o sesión: se detienen los reintentos automáticos (repetirían el
+      // mismo error) y el conductor corrige y reintenta. Sigue en la bandeja si estaba.
+      detenerReintentos();
+      const sesion = err.status === 401 ? "\nCierra y vuelve a abrir el formulario: lo que guardaste se enviará al abrirlo." : "";
       setMsg(`No se pudo enviar: ${err.message}${sesion}\nPuedes reintentar: no se duplicará.`, true);
       $("next").textContent = "Reintentar envío";
       $("next").disabled = false;
@@ -500,7 +659,7 @@
     }
   }
 
-  function showDone(out) {
+  function showDone(out, diferido = false) {
     state.finished = true;
     if (tg && tg.disableClosingConfirmation) tg.disableClosingConfirmation();
     if (tg && tg.BackButton) tg.BackButton.hide();
@@ -512,7 +671,9 @@
     $("next").disabled = false;
     setMsg("");
     $("done").hidden = false;
-    $("done-title").textContent = out.duplicado ? "Este formulario ya había sido recibido" : "AST recibido";
+    $("actions").hidden = false;
+    $("done-title").textContent = out.duplicado ? "Este formulario ya había sido recibido"
+      : diferido ? "AST recibido al recuperar la señal" : "AST recibido";
     const nc = out.no_conformes
       ? `\n\n⚠️ ${out.no_conformes} respuesta(s) con alerta: se informará a tu jefe inmediato.` : "";
     $("done-text").textContent = `Se está registrando en Odoo y te llegará la confirmación en el chat.${nc}`;
@@ -535,10 +696,18 @@
     tg.ready();
     tg.expand();
     if (tg.setHeaderColor) { try { tg.setHeaderColor("#ffffff"); } catch (_) { /* versión antigua */ } }
+    // Antes de vaciar la bandeja: si se acepta un AST guardado, el botón "Cerrar" debe funcionar.
+    $("next").addEventListener("click", next);
+    $("prev").addEventListener("click", prev);
+    if (tg.BackButton) tg.BackButton.onClick(prev);
     try {
       const [form, ctx] = await Promise.all([api("/api/ast/form"), api("/api/ast/context")]);
       state.form = form;
       state.ctx = ctx;
+      // Hay señal: primero se envía lo que quedó guardado en una sesión anterior.
+      const previo = await vaciarBandeja();
+      if (previo.aceptado) { showDone(previo.aceptado, true); return; }
+      state.avisoBandeja = previo.aviso;
     } catch (err) {
       if (err.status === 403) block("Usuario no registrado", `${err.message}.\nPide a Recursos Humanos que lo registre.`);
       else block("No se pudo cargar el formulario", err.message);
@@ -550,18 +719,17 @@
       return;
     }
     state.uuid = newUuid();
+    state.initDataOriginal = tg.initData;
     $("empleado").value = state.ctx.empleado.nombre;
     $("responsable").value = state.ctx.empleado.responsable || "—";
     fillContratos();
     renderPreguntas();
     $("contrato").addEventListener("change", () => { markDirty(); refresh(); });
     $("observaciones").addEventListener("input", markDirty);
-    $("next").addEventListener("click", next);
-    $("prev").addEventListener("click", prev);
-    if (tg.BackButton) tg.BackButton.onClick(prev);
     $("stepper").hidden = false;
     $("actions").hidden = false;
     goTo(1);
+    if (state.avisoBandeja) setMsg(state.avisoBandeja, true);
   }
 
   init();

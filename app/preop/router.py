@@ -31,7 +31,7 @@ from . import diferido, service
 from .checklist import form_definition
 from .db import Database
 from .models import Preoperacional, utc_now
-from .schemas import PreoperacionalIn, PreoperacionalOut
+from .schemas import EnvioDiferidoIn, PreoperacionalIn, PreoperacionalOut
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -128,27 +128,32 @@ async def preop_context(request: Request, identity: Identity) -> dict[str, Any]:
     return await asyncio.to_thread(service.form_context, svc.db, empleado, None, svc.odometro)
 
 
-def _tiempos_diferido(body: PreoperacionalIn, init_data: str | None,
-                     svc: PreopServices) -> tuple[service.TelegramIdentity, service.TiemposDiferido]:
-    """Autentica un reenvío diferido y arma sus horas.
+def tiempos_diferido(diferido_in: EnvioDiferidoIn, init_data: str | None, bot_token: str,
+                     max_age_seconds: int) -> tuple[service.TelegramIdentity, service.TiemposDiferido]:
+    """Autentica un reenvío diferido (de cualquier formulario) y arma sus horas.
 
     La cabecera puede ser el initData original (el Mini App siguió abierto sin señal) o uno
     nuevo (se volvió a abrir): se acepta hasta el tope de la ventana. El initData original
     solo sirve para fechar la apertura y debe ser del mismo usuario.
     """
-    assert body.diferido is not None
-    max_age = max(svc.max_age_seconds, int(diferido.TOPE_DESDE_APERTURA.total_seconds()))
-    identity = _identity(init_data, svc.bot_token, max_age)
-    original = body.diferido.init_data_original
-    user = _validar(original, svc.bot_token, int(diferido.ANTIGUEDAD_MAXIMA_AUDITORIA.total_seconds()))
+    max_age = max(max_age_seconds, int(diferido.TOPE_DESDE_APERTURA.total_seconds()))
+    identity = _identity(init_data, bot_token, max_age)
+    original = diferido_in.init_data_original
+    user = _validar(original, bot_token, int(diferido.ANTIGUEDAD_MAXIMA_AUDITORIA.total_seconds()))
     if int(user["id"]) != identity.user_id:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "El formulario guardado es de otro usuario")
     tiempos = service.TiemposDiferido(
         apertura=datetime.fromtimestamp(init_data_auth_date(original), UTC),
-        sin_senal_desde=body.diferido.sin_senal_desde.astimezone(UTC),
+        sin_senal_desde=diferido_in.sin_senal_desde.astimezone(UTC),
         recibido=utc_now(),
     )
     return identity, tiempos
+
+
+def firma_previa_diferida(init_data: str | None, bot_token: str, max_age_seconds: int) -> None:
+    """Rechaza (401) sin firma válida antes de validar el cuerpo. Admite la antigüedad de un
+    reenvío sin señal; la antigüedad exacta se revisa en la ruta."""
+    _validar(init_data, bot_token, max(max_age_seconds, int(diferido.TOPE_DESDE_APERTURA.total_seconds())))
 
 
 def _out(preop: Preoperacional, duplicated: bool = False) -> PreoperacionalOut:
@@ -160,10 +165,9 @@ def _out(preop: Preoperacional, duplicated: bool = False) -> PreoperacionalOut:
 
 def _firma_previa(request: Request, x_telegram_init_data: Annotated[str | None, Header()] = None) -> None:
     """Rechaza (401) sin firma válida **antes** de validar el cuerpo: así un cliente sin sesión
-    no ve los errores de validación del formulario. La antigüedad exacta se revisa en la ruta."""
+    no ve los errores de validación del formulario."""
     svc = _services(request)
-    _validar(x_telegram_init_data, svc.bot_token,
-             max(svc.max_age_seconds, int(diferido.TOPE_DESDE_APERTURA.total_seconds())))
+    firma_previa_diferida(x_telegram_init_data, svc.bot_token, svc.max_age_seconds)
 
 
 @router.post("/api/preop", status_code=status.HTTP_202_ACCEPTED, response_model=PreoperacionalOut,
@@ -184,7 +188,9 @@ async def preop_submit(
             identity = _identity(x_telegram_init_data, svc.bot_token, svc.max_age_seconds)
             preop, duplicated = await asyncio.to_thread(service.submit, svc.db, identity, body, svc.odometro)
         else:
-            identity, tiempos = _tiempos_diferido(body, x_telegram_init_data, svc)
+            assert body.diferido is not None
+            identity, tiempos = tiempos_diferido(body.diferido, x_telegram_init_data, svc.bot_token,
+                                                 svc.max_age_seconds)
             preop, duplicated = await asyncio.to_thread(
                 service.submit_diferido, svc.db, identity, body, tiempos, svc.odometro)
     except service.EnvioVencidoError as exc:

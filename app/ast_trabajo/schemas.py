@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from ..preop.schemas import EnvioDiferidoIn
 from .catalogo import MEDICAMENTOS, NOMBRE_MEDICAMENTO_MAX, PREGUNTAS, PREGUNTAS_BY_KEY, SI
 
 
@@ -18,6 +19,9 @@ class AstIn(BaseModel):
     respuestas: dict[str, str]
     nombre_medicamento: str | None = Field(default=None, max_length=NOMBRE_MEDICAMENTO_MAX)
     observaciones: str | None = Field(default=None, max_length=2000)
+    # Solo en reenvíos de un formulario guardado sin señal (misma regla del preoperacional,
+    # ver app/preop/diferido.py).
+    diferido: EnvioDiferidoIn | None = None
 
     @field_validator("respuestas")
     @classmethod
