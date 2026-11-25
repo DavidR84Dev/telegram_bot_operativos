@@ -22,7 +22,7 @@ graph TD
     ODOO -->|odoo_id / Fault| W
     W -->|"enviado + odoo_id<br/>error + backoff · fallido"| DB
     W -->|aviso final| BOT
-    MS[MasterSync<br/>cada 15 min] -->|"JWT /api/authenticate<br/>GET /api/flota · /api/empleados · /api/extractos"| REST[API REST Odoo<br/>viacotur_api]
+    MS[MasterSync<br/>cada 5 min] -->|"JWT /api/authenticate<br/>GET /api/flota · /api/empleados · /api/extractos"| REST[API REST Odoo<br/>viacotur_api]
     MS -->|"UPSERT ON CONFLICT (odoo_id)"| DB
     SVC -->|autocompletado| DB
 ```
@@ -205,7 +205,7 @@ tests/test_preop.py              29 pruebas (SQLite; opcional PostgreSQL real)
 | `ODOO_API_LOGIN` / `ODOO_API_PASSWORD` | — | Usuario de la API. **Contraseña real**: `/api/authenticate` es un login interactivo y no acepta API keys. Sin estas variables no hay sincronización maestra |
 | `ODOO_API_COMPANY_IDS` | `1` | Compañías a sincronizar, p. ej. `1,2` |
 | `ODOO_API_PAGE_SIZE` / `ODOO_API_TIMEOUT_SECONDS` | `500` / `60` | |
-| `MASTER_SYNC_INTERVAL_SECONDS` | `900` | |
+| `MASTER_SYNC_INTERVAL_SECONDS` | `900` | En `.env.example` y en producción: `300` (cada 5 min) |
 | `ODOO_WRITE_USERNAME` / `ODOO_WRITE_PASSWORD` | `ODOO_USERNAME` / `ODOO_PASSWORD` | Usuario XML-RPC con permiso de crear `preoperacional` (API key válida) |
 | `PREOP_WORKER_INTERVAL_SECONDS` | `10` | |
 | `PREOP_MAX_ATTEMPTS` | `8` | |
