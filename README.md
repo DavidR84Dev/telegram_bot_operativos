@@ -1,10 +1,10 @@
-# Telegram Bot Operativos — Validador de QR de abordaje, Preoperacional y AST
+# Telegram Bot Operativos — Validador de QR de abordaje, Preoperacional, AST y Prueba de Ruta
 
 Servicio independiente (FastAPI + `python-telegram-bot`) detrás de **@OperativosViacoturBot**, el punto de entrada de las funcionalidades operativas. Su diseño sigue al bot de referencia `@viacoturform_bot` ([docs/mapa_viacotur_form.md](docs/mapa_viacotur_form.md)). Menú principal: como el bot de referencia, un teclado de respuesta **plegable** (Telegram lo abre y cierra con su botón de teclado ⌨️, `toggle-reply-markup`) con dos opciones:
 
 | Botón | Comando | Qué hace |
 |---|---|---|
-| 📋 Formularios | `/formularios` | Panel inline, en orden: los formularios de `FORMULARIOS` (hoy **✅ Preoperacional**, `/preoperacional`, y **⚠️ AST**, `/ast`), **📷 Escanear QR** (`/escanear`, Mini App del escáner) y **🔴 Finalizar** (`/finalizar`, fin de jornada) |
+| 📋 Formularios | `/formularios` | Panel inline, en orden: los formularios de `FORMULARIOS` (hoy **✅ Preoperacional**, `/preoperacional`, **⚠️ AST**, `/ast`, y **🗺️ Prueba de Ruta**, `/prueba_ruta`), **📷 Escanear QR** (`/escanear`, Mini App del escáner) y **🔴 Finalizar** (`/finalizar`, fin de jornada) |
 | 📍 Enviar ubicación | — | Comparte la ubicación (`request_location`); se guarda en la BD del bot y se asocia al preoperacional de los últimos 10 min |
 
 `/start` (y `/ayuda`) muestra la bienvenida y el teclado. Para agregar un formulario, ver CONTRIBUTING.md → *Agregar una opción al menú del bot*.
@@ -14,8 +14,9 @@ Funcionalidades actuales:
 1. **Validador de QR de abordaje**: el validador (conductor/auxiliar) lee el QR del ticket del pasajero y confirma el abordaje en Odoo.
 2. **Preoperacional vehicular** (`/preoperacional`): el conductor diligencia la inspección; se guarda en PostgreSQL y un worker la crea en Odoo por XML-RPC. Documentación completa: **[docs/PREOPERACIONAL.md](docs/PREOPERACIONAL.md)**.
 3. **AST, Análisis Seguro de Trabajo** (`/ast`): el conductor responde las 10 preguntas de seguridad antes de la operación; misma cola y conector hacia el modelo `ast` de Odoo, con aviso al jefe si hay alertas. Documentación: **[docs/AST.md](docs/AST.md)**.
+4. **Prueba de Ruta** (`/prueba_ruta`): prueba del vehículo reservado por el preoperacional, con fotos del odómetro inicial y final y 6 preguntas; solo para conductores de los acuerdos de `PRUEBA_RUTA_ACUERDOS` (los demás ven "Contrato No Autorizado"). Documentación: **[docs/PRUEBA_RUTA.md](docs/PRUEBA_RUTA.md)**.
 
-- **Escritura en Odoo**: el validador de QR **no** escribe (XML-RPC `search_read`; la confirmación la hace la página web de Odoo de `programacion_operativos`). Las únicas escrituras del servicio son `create` de los modelos `preoperacional` y `ast`, aisladas en `app/preop/odoo_writer.py` y siempre a través de una cola local.
+- **Escritura en Odoo**: el validador de QR **no** escribe (XML-RPC `search_read`; la confirmación la hace la página web de Odoo de `programacion_operativos`). Las únicas escrituras del servicio son `create` de los modelos `preoperacional`, `ast` y `prueba.ruta`, aisladas en `app/preop/odoo_writer.py` y siempre a través de una cola local.
 - **Quién lo usa**: personal autorizado (validadores) cuyo Telegram ID está en el campo `pin` de su `hr.employee` en Odoo, con `active = True`.
 - **Stack**: FastAPI, `python-telegram-bot` 22.x, SQLAlchemy (SQLite en desarrollo/pruebas, PostgreSQL en Docker/producción), XML-RPC hacia Odoo.
 - **Puerto**: `127.0.0.1:8011` (sin exponer directamente; en producción va detrás de nginx/TLS).
@@ -88,12 +89,15 @@ app/
   static/scanner.html   Página de la Mini App (escáner nativo + ficha del ticket)
   static/preoperacional.html  Mini App del preoperacional
   static/ast.html    Mini App del AST
+  static/prueba_ruta.html  Mini App de la Prueba de Ruta
   preop/             Preoperacional: ORM, ETL de maestros (API REST), cola y conector XML-RPC (ver docs/PREOPERACIONAL.md)
   ast_trabajo/       AST: catálogo de preguntas, API, cola y worker hacia el modelo `ast` (ver docs/AST.md)
+  prueba_ruta/       Prueba de Ruta: catálogo, acuerdos autorizados, API, cola y worker hacia `prueba.ruta` (ver docs/PRUEBA_RUTA.md)
 scripts/introspect_endpoint.py  Genera modelos SQLAlchemy/Pydantic a partir de un endpoint de la API
 docs/PREOPERACIONAL.md          Arquitectura, BD, ETL, seguridad, despliegue y BotFather del preoperacional
 docs/AST.md                     Decisiones, modelo de Odoo, Mini App, rutas y operación del AST
-tests/               222 pruebas (pytest), ver CONTRIBUTING.md
+docs/PRUEBA_RUTA.md             Decisiones, restricción por acuerdo, modelo de Odoo, Mini App y operación de la Prueba de Ruta
+tests/               263 pruebas (pytest), ver CONTRIBUTING.md
 Dockerfile           Imagen de la app (también usada para correr los tests en CI/local)
 docker-compose.yml   Servicios "app" (este bot) y "db" (PostgreSQL) para desarrollo/producción
 pyproject.toml       Configuración de ruff, mypy, pytest y cobertura (gate de calidad)
@@ -127,6 +131,7 @@ Todo se configura por `.env` (no hay modelo de configuración en Odoo para este 
 | `DATABASE_URL` | Backend del estado de vigilancias: `sqlite:///run/watches.sqlite3` (desarrollo/manual) o `postgresql+psycopg2://user:pass@host:5432/db` (Docker/producción). Al correr con `docker-compose`, se sobreescribe automáticamente apuntando al contenedor `db` |
 | `POSTGRES_PASSWORD` | Solo la usa `docker-compose` para el contenedor `db` |
 | `ODOO_API_*`, `ODOO_WRITE_*`, `PREOP_*`, `MASTER_SYNC_INTERVAL_SECONDS` | Preoperacional: ver [docs/PREOPERACIONAL.md](docs/PREOPERACIONAL.md#env-además-de-las-variables-existentes) |
+| `PRUEBA_RUTA_ACUERDOS` | Acuerdos (agreement) autorizados para la Prueba de Ruta, separados por `;` (por defecto `MINERA DE COBRE QUEBRADONA;SERVICIOS HIDROGEOLÓGICOS INTEGRALES S.A.S.`). Ver [docs/PRUEBA_RUTA.md](docs/PRUEBA_RUTA.md) |
 
 Plantilla completa: `.env.example`.
 
@@ -263,12 +268,13 @@ WantedBy=multi-user.target
 | Sincronizar maestros del preoperacional | `docker compose exec app python -m app.preop.etl` |
 | Reencolar preoperacionales fallidos | `docker compose exec app python -m app.preop.worker --requeue-all` |
 | Reencolar AST fallidos | `docker compose exec app python -m app.ast_trabajo.worker --requeue-all` |
+| Reencolar pruebas de ruta fallidas | `docker compose exec app python -m app.prueba_ruta.worker --requeue-all` |
 
 Antes de reiniciar el contenedor `app` en caliente: revisar que no haya vigilancias importantes en curso (`docker compose exec db psql -U watcher -d watches -c "SELECT COUNT(*) FROM watches"`). Al estar en PostgreSQL (volumen `pgdata`), las vigilancias sobreviven al reinicio; el sondeo simplemente se reanuda al arrancar `lifespan` (`watcher.ensure_running()`).
 
 ## Pendientes y riesgos conocidos
 
-- **Usuario de Odoo**: en QA se usa un usuario admin; en producción debe ser un usuario técnico dedicado (grupo `hr.group_hr_user` o similar) para lectura, y uno con permiso de crear `preoperacional` y `ast` para `ODOO_WRITE_USERNAME`.
+- **Usuario de Odoo**: en QA se usa un usuario admin; en producción debe ser un usuario técnico dedicado (grupo `hr.group_hr_user` o similar) para lectura, y uno con permiso de crear `preoperacional`, `ast` y `prueba.ruta` para `ODOO_WRITE_USERNAME`.
 - **Preoperacional**: riesgos propios (credenciales de la API REST, campos anidados pendientes en `viacotur_api`) en [docs/PREOPERACIONAL.md](docs/PREOPERACIONAL.md#riesgos-y-pendientes).
 - **Cookies de Odoo en el webview**: la página de abordaje se abre por navegación (no en `iframe`, por ser origen distinto). Confirmar en un móvil real que el botón "Confirmar" funciona dentro de la Mini App.
 - **Dispositivos**: requiere un cliente de Telegram con `showScanQrPopup` (Bot API ≥ 6.4). Clientes antiguos no pueden usar el escáner.

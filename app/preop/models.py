@@ -382,6 +382,109 @@ class AstEnvioDiferido(TimestampMixin, Base):
     __table_args__ = (Index("ix_ast_diferidos_estado_fecha", "estado", "recibido_at"),)
 
 
+class PruebaRuta(TimestampMixin, Base):
+    """Prueba de Ruta de la inspección preoperacional (Mini App 🗺️ Prueba de Ruta).
+
+    Misma cola que ``preoperacional`` y ``ast_trabajo`` hacia el modelo ``prueba.ruta`` de
+    Odoo. Solo para conductores cuyo contrato es un acuerdo autorizado
+    (``PRUEBA_RUTA_ACUERDOS``). El vehículo es el reservado a su nombre por el
+    preoperacional de la jornada (``preop_id`` es ese preoperacional, trazabilidad local).
+    Las fotos del odómetro van en ``prueba_ruta_fotos``.
+    """
+
+    __tablename__ = "prueba_ruta"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    uuid: Mapped[str] = mapped_column(String(36), nullable=False, unique=True, default=lambda: str(uuid.uuid4()))
+
+    telegram_user_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    telegram_username: Mapped[str | None] = mapped_column(String(64))
+    firma_nombre: Mapped[str] = mapped_column(String(255), nullable=False)
+
+    empleado_id: Mapped[int] = mapped_column(ForeignKey("empleados.id", ondelete="RESTRICT"), nullable=False)
+    vehiculo_id: Mapped[int] = mapped_column(ForeignKey("flota.id", ondelete="RESTRICT"), nullable=False)
+    preop_id: Mapped[int | None] = mapped_column(ForeignKey("preoperacional.id", ondelete="SET NULL"))
+    # Acuerdo autorizado del empleado con el que se habilitó (id de `agreement` y nombre).
+    contrato_odoo_id: Mapped[int | None] = mapped_column(Integer)
+    contrato: Mapped[str | None] = mapped_column(String(255))
+    fecha: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+
+    # {campo_odoo: "si" | "no"} (validado contra app/prueba_ruta/catalogo.py). "si" = novedad.
+    respuestas: Mapped[dict[str, str]] = mapped_column(JsonType, nullable=False, default=dict)
+    observaciones: Mapped[str | None] = mapped_column(Text)
+    no_conformes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    sync_status: Mapped[SyncStatus] = mapped_column(
+        Enum(SyncStatus, name="prueba_ruta_sync_status", native_enum=False, length=16,
+             values_callable=lambda e: [m.value for m in e]),
+        nullable=False,
+        default=SyncStatus.PENDIENTE,
+    )
+    odoo_id: Mapped[int | None] = mapped_column(Integer, unique=True)
+    odoo_name: Mapped[str | None] = mapped_column(String(64))
+    error_log: Mapped[str | None] = mapped_column(Text)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    empleado: Mapped[Empleado] = relationship(lazy="joined")
+    vehiculo: Mapped[Flota] = relationship(lazy="joined")
+
+    __table_args__ = (
+        CheckConstraint("attempts >= 0", name="ck_prueba_ruta_attempts_no_negativo"),
+        Index("ix_prueba_ruta_cola", "sync_status", "next_attempt_at"),
+        Index("ix_prueba_ruta_vehiculo_fecha", "vehiculo_id", "fecha"),
+    )
+
+
+class PruebaRutaFoto(TimestampMixin, Base):
+    """Fotos del odómetro de una prueba de ruta: ``km1`` (inicial) y ``km2`` (final), campos binarios de Odoo."""
+
+    __tablename__ = "prueba_ruta_fotos"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    prueba_id: Mapped[int] = mapped_column(ForeignKey("prueba_ruta.id", ondelete="CASCADE"), nullable=False)
+    tipo: Mapped[str] = mapped_column(String(16), nullable=False)
+    mime: Mapped[str] = mapped_column(String(32), nullable=False)
+    contenido: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    tamano: Mapped[int] = mapped_column(Integer, nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    __table_args__ = (UniqueConstraint("prueba_id", "tipo", name="uq_prueba_ruta_fotos_tipo"),)
+
+
+class PruebaRutaEnvioDiferido(TimestampMixin, Base):
+    """Trazabilidad de las pruebas de ruta guardadas en el teléfono por falta de señal.
+
+    Misma regla que ``PreopEnvioDiferido`` (``app/preop/diferido.py``). Un envío vencido
+    guarda el formulario en ``payload`` (sin fotos) y las fotos en ``foto_km1``/``foto_km2``.
+    """
+
+    __tablename__ = "prueba_ruta_envios_diferidos"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    uuid: Mapped[str] = mapped_column(String(36), nullable=False, unique=True)
+    telegram_user_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    estado: Mapped[EstadoDiferido] = mapped_column(
+        Enum(EstadoDiferido, name="prueba_ruta_estado_diferido", native_enum=False, length=16,
+             values_callable=lambda e: [m.value for m in e]),
+        nullable=False,
+    )
+    motivo: Mapped[str | None] = mapped_column(Text)
+    prueba_id: Mapped[int | None] = mapped_column(ForeignKey("prueba_ruta.id", ondelete="SET NULL"))
+    apertura_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    sin_senal_desde: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    recibido_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+    retraso_segundos: Mapped[int] = mapped_column(Integer, nullable=False)
+    payload_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload: Mapped[dict[str, Any] | None] = mapped_column(JsonType)
+    foto_km1: Mapped[bytes | None] = mapped_column(LargeBinary)
+    foto_km2: Mapped[bytes | None] = mapped_column(LargeBinary)
+
+    __table_args__ = (Index("ix_prueba_ruta_diferidos_estado_fecha", "estado", "recibido_at"),)
+
+
 class Ubicacion(TimestampMixin, Base):
     """Ubicación compartida desde el chat (botón 📍 Enviar ubicación).
 

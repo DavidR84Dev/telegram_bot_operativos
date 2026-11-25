@@ -9,6 +9,7 @@ from . import ticket_state
 if TYPE_CHECKING:
     from .ast_trabajo.service import AstOutcome, AvisoJefeAst
     from .preop.reservas import Liberacion
+    from .prueba_ruta.service import AvisoJefePrueba, PruebaRutaOutcome
     from .preop.service import AvisoJefe, SendOutcome, UbicacionRegistrada
 
 
@@ -108,6 +109,37 @@ def ast_aviso_jefe(aviso: AvisoJefeAst, odoo_name: str | None) -> str:
     lines += [f"• {escape(label)}" for label in aviso.alertas]
     if aviso.medicamento:
         lines.append(f"💊 Medicamento: {escape(aviso.medicamento)}")
+    return "\n".join(lines)
+
+
+def prueba_ruta_result(outcome: PruebaRutaOutcome) -> str:
+    """Aviso al conductor cuando su prueba de ruta llega a Odoo (o falla definitivamente)."""
+    if outcome.status.value == "enviado":
+        name = escape(outcome.odoo_name or f"#{outcome.prueba_id}")
+        text = f"✅ <b>Prueba de Ruta registrada en Odoo</b>\n\n📄 {name}"
+        if outcome.no_conformes:
+            text += (f"\n⚠️ {outcome.no_conformes} novedad(es): Odoo abrió un plan de acción "
+                     "y se avisó a tu jefe inmediato.")
+        return text
+    return (
+        "❌ <b>Tu Prueba de Ruta no pudo registrarse en Odoo</b>\n\n"
+        f"Referencia local: #{outcome.prueba_id}. El área de sistemas ya tiene el detalle; "
+        "no es necesario diligenciarla de nuevo."
+    )
+
+
+def prueba_ruta_aviso_jefe(aviso: AvisoJefePrueba, odoo_name: str | None) -> str:
+    """Aviso al jefe inmediato cuando una prueba de ruta de su equipo trae novedades."""
+    lines = [
+        "⚠️ <b>Prueba de Ruta con novedades</b>",
+        "",
+        f"👤 Conductor: <b>{escape(aviso.conductor)}</b>",
+        f"🚌 Vehículo: {escape(aviso.vehiculo or '—')}",
+    ]
+    if odoo_name:
+        lines.append(f"📄 {escape(odoo_name)}")
+    lines += ["", f"<b>Novedades ({len(aviso.novedades)}):</b>"]
+    lines += [f"• {escape(label)}" for label in aviso.novedades]
     return "\n".join(lines)
 
 

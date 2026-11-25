@@ -369,3 +369,20 @@ Segundo formulario implementado en @OperativosViacoturBot, después del Preopera
 - **Diseño:** dos pasos (Verificación → Resumen) con la identidad del preoperacional; botones Conforme /
   No conforme de 44 px; aviso de pendientes que lleva a cada pregunta; resumen con alertas que regresan a la
   pregunta; confirmación al enviar y mensaje en el chat con el número AST-xxxx.
+
+---
+
+## 11. Prueba de Ruta: decisiones e implementación (2026-11-25)
+
+Tercer formulario de @OperativosViacoturBot, debajo de ⚠️ AST. Detalle técnico en [`docs/PRUEBA_RUTA.md`](PRUEBA_RUTA.md).
+Responde la pregunta abierta 5 (§ 6): los pasos 3–4 son el cuestionario de 6 preguntas Sí/No del modelo
+`prueba.ruta` y el paso 5 es la foto del odómetro final.
+
+- **Modelo de Odoo:** `prueba.ruta` (`user_id`, `vehicle_id`, `jefe_inmediato`, 6 preguntas `si`/`no`, fotos
+  `km1`/`km2`, observaciones). "Sí" = novedad: Odoo abre plan de acción. No tiene campo de contrato.
+- **Decisiones del usuario:**
+  1. Acceso solo para conductores cuyo **contrato del empleado** es un acuerdo autorizado; los demás ven
+     **"Contrato No Autorizado"**. Lista inicial: MINERA DE COBRE QUEBRADONA y SERVICIOS HIDROGEOLÓGICOS
+     INTEGRALES S.A.S. ("Integral"), en la variable `PRUEBA_RUTA_ACUERDOS` para sumar contratos sin código.
+  2. El vehículo es el reservado por el preoperacional de la jornada.
+  3. Las dos fotos del odómetro son obligatorias.

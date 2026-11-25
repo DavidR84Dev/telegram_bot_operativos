@@ -169,4 +169,5 @@ Este plan asume las opciones **A**; si el usuario elige otra, se ajusta la fase 
 - [ ] Revisar por qué `/api/empleados` devuelve solo 12 empleados en qa2.
 - [ ] Borrar el registro de prueba `PRE-000009912` en qa2 (opcional).
 - [x] AST implementado el 2026-11-25 (`docs/AST.md`); falta la prueba de punta a punta en qa2.
-- [ ] Preguntas abiertas del mapa: otros formularios (Prueba de Ruta, Pos-Operacional, Combustible, Gastos) para fases futuras.
+- [x] Prueba de Ruta implementada el 2026-11-25 (`docs/PRUEBA_RUTA.md`), restringida a `PRUEBA_RUTA_ACUERDOS`; falta la prueba de punta a punta en qa2.
+- [ ] Preguntas abiertas del mapa: otros formularios (Pos-Operacional, Combustible, Gastos) para fases futuras.

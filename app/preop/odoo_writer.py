@@ -1,9 +1,9 @@
 """Conector XML-RPC de ESCRITURA a Odoo para los formularios (preoperacional y AST).
 
 Se mantiene separado de ``app.odoo_client.OdooClient`` (solo lectura, usado por
-el validador de QR) para que el permiso de escritura quede acotado a dos
-métodos de creación: ``create_preoperacional`` y ``create_ast``. Ambos siguen el
-mismo flujo; solo cambian el modelo y la llave natural (``_Destino``).
+el validador de QR) para que el permiso de escritura quede acotado a métodos de
+creación: ``create_preoperacional``, ``create_ast`` y ``create_prueba_ruta``. Todos
+siguen el mismo flujo; solo cambian el modelo y la llave natural (``_Destino``).
 
 Flujo de creación:
 
@@ -65,6 +65,7 @@ PREOPERACIONAL = _Destino("preoperacional", "preop", ("employee_id", "vehicle_id
 # Un AST no tiene vehículo ni odómetro: otro AST del mismo empleado dentro de la ventana de
 # 2 min de un envío incierto es, en la práctica, el mismo formulario reenviado.
 AST = _Destino("ast", "ast", ("employee_id",))
+PRUEBA_RUTA = _Destino("prueba.ruta", "prueba_ruta", ("user_id", "vehicle_id"))
 ODOO_MODEL = PREOPERACIONAL.model
 
 # Fallos de Odoo que dependen del momento (concurrencia), no de los datos.
@@ -251,6 +252,11 @@ class OdooWriter:
                    previous_attempt_uncertain: bool) -> tuple[int, str | None, bool]:
         """Crea el Análisis Seguro de Trabajo (modelo ``ast``). Devuelve (odoo_id, name, ya_existía)."""
         return self._create(AST, external_ref, vals, submitted_at, previous_attempt_uncertain)
+
+    def create_prueba_ruta(self, external_ref: str, vals: dict[str, Any], submitted_at: datetime,
+                           previous_attempt_uncertain: bool) -> tuple[int, str | None, bool]:
+        """Crea la Prueba de Ruta (modelo ``prueba.ruta``). Devuelve (odoo_id, name, ya_existía)."""
+        return self._create(PRUEBA_RUTA, external_ref, vals, submitted_at, previous_attempt_uncertain)
 
     def _create(self, destino: _Destino, external_ref: str, vals: dict[str, Any], submitted_at: datetime,
                 previous_attempt_uncertain: bool) -> tuple[int, str | None, bool]:
