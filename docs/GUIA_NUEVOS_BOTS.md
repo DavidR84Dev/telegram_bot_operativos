@@ -91,14 +91,14 @@ Implementación: `app/preop/registro.py` (servicio) y la conversación 📝 Regi
 
 Regla del usuario (2026-11-25): **todo formulario** de este proyecto, el actual y los que se agreguen,
 sigue la misma directriz del preoperacional cuando el conductor se queda sin señal. Implementado en el
-preoperacional y en el AST.
+preoperacional, el AST, la Prueba de Ruta y Combustible.
 
 | Capa | Regla | Implementación de referencia |
 |---|---|---|
-| Mini App | Si el envío falla por red (sin respuesta, o 502/503/504 del túnel), el formulario se guarda en una **bandeja temporal en el teléfono** (IndexedDB; respaldo `localStorage`) con su `uuid`, el `initData` de la apertura y `sin_senal_desde`. Base IndexedDB **propia por formulario** (`preop-offline`, `ast-offline`). | `bandeja`, `vaciarBandeja`, `modoSinSenal`, `vencer` en `app/static/ast.html` |
+| Mini App | Si el envío falla por red (sin respuesta, o 502/503/504 del túnel), el formulario se guarda en una **bandeja temporal en el teléfono** (IndexedDB; respaldo `localStorage`) con su `uuid`, el `initData` de la apertura y `sin_senal_desde`. Base IndexedDB **propia por formulario** (`preop-offline`, `ast-offline`, `prueba-ruta-offline`, `combustible-offline`). | `bandeja`, `vaciarBandeja`, `modoSinSenal`, `vencer` en `app/static/ast.html` |
 | Mini App | **Reenvío automático:** mientras siga abierta reintenta cada 15 s y al evento `online`; si se cerró, al volver a abrirla con señal envía primero lo guardado. | `reintentarSiPendiente`, `init()` |
 | Servidor | El cuerpo acepta `diferido: {init_data_original, sin_senal_desde}` (`EnvioDiferidoIn`). Ventana de **1 h desde la pérdida de señal**, anclada a la hora de apertura firmada por Telegram (`app/preop/diferido.py`). | `tiempos_diferido` y `firma_previa_diferida` (`app/preop/router.py`) |
-| Servidor | Dentro de la ventana: flujo normal + fila `aceptado` de trazabilidad. Fuera: **410**, fila `vencido` con el formulario completo, sin Odoo ni avisos. Tabla de auditoría propia por formulario (`preop_envios_diferidos`, `ast_envios_diferidos`). | `submit_diferido` en `app/ast_trabajo/service.py` |
+| Servidor | Dentro de la ventana: flujo normal + fila `aceptado` de trazabilidad. Fuera: **410**, fila `vencido` con el formulario completo, sin Odoo ni avisos. Tabla de auditoría propia por formulario (`preop_envios_diferidos`, `ast_envios_diferidos`, `prueba_ruta_envios_diferidos`, `combustible_envios_diferidos`). Los adjuntos (fotos, PDF) viajan en la bandeja y un vencido los conserva. | `submit_diferido` en `app/ast_trabajo/service.py` |
 | Idempotencia | El reenvío lleva el mismo `uuid`: si el primer intento sí llegó, responde como duplicado. | |
 
 Pruebas mínimas por formulario: dentro de la ventana, vencido (410 y solo auditoría), primer intento que sí

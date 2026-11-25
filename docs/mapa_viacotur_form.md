@@ -387,3 +387,24 @@ Responde la pregunta abierta 5 (§ 6): los pasos 3–4 son el cuestionario de 6 
      INTEGRALES S.A.S. ("Integral"), en la variable `PRUEBA_RUTA_ACUERDOS` para sumar contratos sin código.
   2. El vehículo es el reservado por el preoperacional de la jornada.
   3. Las dos fotos del odómetro son obligatorias.
+
+---
+
+## 12. Combustible: decisiones e implementación (2026-11-25)
+
+Cuarto formulario de @OperativosViacoturBot, debajo de 🗺️ Prueba de Ruta. Detalle técnico en
+[`docs/COMBUSTIBLE.md`](COMBUSTIBLE.md). Responde la parte de Combustible de la pregunta abierta 2 (§ 6): el
+vehículo ya no se "consulta" (con fallos intermitentes), sale de la reserva del preoperacional de la jornada.
+
+- **Modelo de Odoo:** `fuel` ("Tabla para almacenar el combustible"): `employee_id` (Comprador), `vehicle_id`,
+  `agreement_id`, `date`, `is_fuel_expenses`, `proveedor` (res.partner) / `supplier` (texto), `gallon`,
+  `price_gallon`, `amount`, `fuel_type` (obligatorio), `km_tanking`, `ref_invoice` y `image_bill`.
+- **Decisiones del usuario:**
+  1. El vehículo es el reservado por el preoperacional de la jornada y el contrato el de ese preoperacional.
+  2. Proveedores: base de datos de proveedores de combustible aprobados; si el proveedor no está en la lista, se
+     permite texto libre y va al campo `supplier` de Odoo.
+  3. Factura: solo PDF, obligatoria únicamente en la pestaña "Combustible para gastos".
+  4. Kilometraje mayor o igual al último registrado (el bot de referencia decía "mayor a").
+- **Mejoras sobre la referencia (§ 5):** bloqueo con instrucciones claras en lugar de "Reintentar", total
+  calculado en pantalla, resumen antes de enviar y confirmación en el chat.
+

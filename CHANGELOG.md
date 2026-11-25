@@ -5,6 +5,9 @@ Versionado: [SemVer](https://semver.org/lang/es/) (`MAJOR.MINOR.PATCH`).
 
 ## [Sin publicar]
 
+### Agregado
+- **⛽ Combustible (2026-11-25):** nueva Mini App en el panel 📋 Formularios, debajo de 🗺️ Prueba de Ruta, y comando `/combustible`. Registra cada tanqueo del vehículo reservado por el preoperacional de la jornada (el contrato es el de ese preoperacional) en el modelo `fuel` de Odoo. Pestañas Combustible / Combustible para gastos (`is_fuel_expenses`); proveedor de la nueva lista de **proveedores aprobados** (`proveedores_combustible`, carga por CSV con `python -m app.combustible.proveedores`) o escrito a mano (va en `supplier`); galones y precio con total en vivo; tipo de combustible (selection de Odoo, Diesel por defecto); kilometraje **mayor o igual** al último registrado; factura **solo PDF**, obligatoria en "para gastos". Envío sin señal como los demás formularios. Tablas nuevas `combustible`, `combustible_facturas`, `combustible_envios_diferidos` y `proveedores_combustible`; `OdooWriter.create_combustible` y `buscar_contacto`. Documentación `docs/COMBUSTIBLE.md`. Versión de la API 1.5.0.
+
 ### Cambiado
 - **Prueba de Ruta: restricción por extracto (2026-11-25):** el acceso ya no se valida con el contrato de la ficha del empleado (`id_contract` / contrato temporal), sino con el **contrato del extracto aprobado y vigente** del conductor (mismo criterio del preoperacional). Con el vehículo ya reservado cuenta solo el extracto de esa reserva. El contexto de la Mini App agrega `extracto` y `contratos_extracto`, y el mensaje "Contrato No Autorizado" muestra el contrato del extracto (o avisa que no hay extracto aprobado).
 

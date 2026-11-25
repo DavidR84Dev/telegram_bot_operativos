@@ -1,9 +1,10 @@
-"""Conector XML-RPC de ESCRITURA a Odoo para los formularios (preoperacional y AST).
+"""Conector XML-RPC de ESCRITURA a Odoo para los formularios del bot.
 
 Se mantiene separado de ``app.odoo_client.OdooClient`` (solo lectura, usado por
 el validador de QR) para que el permiso de escritura quede acotado a métodos de
-creación: ``create_preoperacional``, ``create_ast`` y ``create_prueba_ruta``. Todos
-siguen el mismo flujo; solo cambian el modelo y la llave natural (``_Destino``).
+creación: ``create_preoperacional``, ``create_ast``, ``create_prueba_ruta`` y
+``create_combustible``. Todos siguen el mismo flujo; solo cambian el modelo y la
+llave natural (``_Destino``).
 
 Flujo de creación:
 
@@ -66,6 +67,7 @@ PREOPERACIONAL = _Destino("preoperacional", "preop", ("employee_id", "vehicle_id
 # 2 min de un envío incierto es, en la práctica, el mismo formulario reenviado.
 AST = _Destino("ast", "ast", ("employee_id",))
 PRUEBA_RUTA = _Destino("prueba.ruta", "prueba_ruta", ("user_id", "vehicle_id"))
+COMBUSTIBLE = _Destino("fuel", "combustible", ("employee_id", "vehicle_id", "km_tanking"))
 ODOO_MODEL = PREOPERACIONAL.model
 
 # Fallos de Odoo que dependen del momento (concurrencia), no de los datos.
@@ -257,6 +259,26 @@ class OdooWriter:
                            previous_attempt_uncertain: bool) -> tuple[int, str | None, bool]:
         """Crea la Prueba de Ruta (modelo ``prueba.ruta``). Devuelve (odoo_id, name, ya_existía)."""
         return self._create(PRUEBA_RUTA, external_ref, vals, submitted_at, previous_attempt_uncertain)
+
+    def create_combustible(self, external_ref: str, vals: dict[str, Any], submitted_at: datetime,
+                           previous_attempt_uncertain: bool) -> tuple[int, str | None, bool]:
+        """Crea el tanqueo (modelo ``fuel``). Devuelve (odoo_id, name, ya_existía)."""
+        return self._create(COMBUSTIBLE, external_ref, vals, submitted_at, previous_attempt_uncertain)
+
+    def buscar_contacto(self, nit: str | None, nombre: str) -> int | None:
+        """Id del contacto (``res.partner``) por NIT o, si no, por nombre exacto; None si no es único.
+
+        Solo lectura; lo usa la carga de proveedores de combustible.
+        """
+        dominios: list[list[Any]] = []
+        if nit:
+            dominios.append([("vat", "ilike", nit)])
+        dominios.append([("name", "=ilike", nombre)])
+        for dominio in dominios:
+            ids = self._execute("res.partner", "search", [dominio], {"limit": 2})
+            if len(ids) == 1:
+                return int(ids[0])
+        return None
 
     def _create(self, destino: _Destino, external_ref: str, vals: dict[str, Any], submitted_at: datetime,
                 previous_attempt_uncertain: bool) -> tuple[int, str | None, bool]:

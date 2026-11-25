@@ -1,10 +1,10 @@
-# Telegram Bot Operativos — Validador de QR de abordaje, Preoperacional, AST y Prueba de Ruta
+# Telegram Bot Operativos — Validador de QR de abordaje, Preoperacional, AST, Prueba de Ruta y Combustible
 
 Servicio independiente (FastAPI + `python-telegram-bot`) detrás de **@OperativosViacoturBot**, el punto de entrada de las funcionalidades operativas. Su diseño sigue al bot de referencia `@viacoturform_bot` ([docs/mapa_viacotur_form.md](docs/mapa_viacotur_form.md)). Menú principal: como el bot de referencia, un teclado de respuesta **plegable** (Telegram lo abre y cierra con su botón de teclado ⌨️, `toggle-reply-markup`) con dos opciones:
 
 | Botón | Comando | Qué hace |
 |---|---|---|
-| 📋 Formularios | `/formularios` | Panel inline, en orden: los formularios de `FORMULARIOS` (hoy **✅ Preoperacional**, `/preoperacional`, **⚠️ AST**, `/ast`, y **🗺️ Prueba de Ruta**, `/prueba_ruta`), **📷 Escanear QR** (`/escanear`, Mini App del escáner) y **🔴 Finalizar** (`/finalizar`, fin de jornada) |
+| 📋 Formularios | `/formularios` | Panel inline, en orden: los formularios de `FORMULARIOS` (hoy **✅ Preoperacional**, `/preoperacional`, **⚠️ AST**, `/ast`, **🗺️ Prueba de Ruta**, `/prueba_ruta`, y **⛽ Combustible**, `/combustible`), **📷 Escanear QR** (`/escanear`, Mini App del escáner) y **🔴 Finalizar** (`/finalizar`, fin de jornada) |
 | 📍 Enviar ubicación | — | Comparte la ubicación (`request_location`); se guarda en la BD del bot y se asocia al preoperacional de los últimos 10 min |
 
 `/start` (y `/ayuda`) muestra la bienvenida y el teclado. Para agregar un formulario, ver CONTRIBUTING.md → *Agregar una opción al menú del bot*.
@@ -15,8 +15,9 @@ Funcionalidades actuales:
 2. **Preoperacional vehicular** (`/preoperacional`): el conductor diligencia la inspección; se guarda en PostgreSQL y un worker la crea en Odoo por XML-RPC. Documentación completa: **[docs/PREOPERACIONAL.md](docs/PREOPERACIONAL.md)**.
 3. **AST, Análisis Seguro de Trabajo** (`/ast`): el conductor responde las 10 preguntas de seguridad antes de la operación; misma cola y conector hacia el modelo `ast` de Odoo, con aviso al jefe si hay alertas. Documentación: **[docs/AST.md](docs/AST.md)**.
 4. **Prueba de Ruta** (`/prueba_ruta`): prueba del vehículo reservado por el preoperacional, con fotos del odómetro inicial y final y 6 preguntas; solo para conductores con un extracto aprobado y vigente de uno de los acuerdos de `PRUEBA_RUTA_ACUERDOS` (los demás ven "Contrato No Autorizado"). Documentación: **[docs/PRUEBA_RUTA.md](docs/PRUEBA_RUTA.md)**.
+5. **Combustible** (`/combustible`): registro de cada tanqueo del vehículo reservado por el preoperacional (pestañas Combustible / Combustible para gastos, proveedor de la lista de aprobados o escrito a mano, galones, precio, kilometraje mayor o igual al último y factura en PDF, obligatoria en gastos) hacia el modelo `fuel` de Odoo. Documentación: **[docs/COMBUSTIBLE.md](docs/COMBUSTIBLE.md)**.
 
-- **Escritura en Odoo**: el validador de QR **no** escribe (XML-RPC `search_read`; la confirmación la hace la página web de Odoo de `programacion_operativos`). Las únicas escrituras del servicio son `create` de los modelos `preoperacional`, `ast` y `prueba.ruta`, aisladas en `app/preop/odoo_writer.py` y siempre a través de una cola local.
+- **Escritura en Odoo**: el validador de QR **no** escribe (XML-RPC `search_read`; la confirmación la hace la página web de Odoo de `programacion_operativos`). Las únicas escrituras del servicio son `create` de los modelos `preoperacional`, `ast`, `prueba.ruta` y `fuel`, aisladas en `app/preop/odoo_writer.py` y siempre a través de una cola local.
 - **Quién lo usa**: personal autorizado (validadores) cuyo Telegram ID está en el campo `pin` de su `hr.employee` en Odoo, con `active = True`.
 - **Stack**: FastAPI, `python-telegram-bot` 22.x, SQLAlchemy (SQLite en desarrollo/pruebas, PostgreSQL en Docker/producción), XML-RPC hacia Odoo.
 - **Puerto**: `127.0.0.1:8011` (sin exponer directamente; en producción va detrás de nginx/TLS).
@@ -90,14 +91,17 @@ app/
   static/preoperacional.html  Mini App del preoperacional
   static/ast.html    Mini App del AST
   static/prueba_ruta.html  Mini App de la Prueba de Ruta
+  static/combustible.html  Mini App de Combustible
   preop/             Preoperacional: ORM, ETL de maestros (API REST), cola y conector XML-RPC (ver docs/PREOPERACIONAL.md)
   ast_trabajo/       AST: catálogo de preguntas, API, cola y worker hacia el modelo `ast` (ver docs/AST.md)
   prueba_ruta/       Prueba de Ruta: catálogo, acuerdos autorizados, API, cola y worker hacia `prueba.ruta` (ver docs/PRUEBA_RUTA.md)
+  combustible/       Combustible: catálogo, proveedores aprobados (CSV), API, cola y worker hacia `fuel` (ver docs/COMBUSTIBLE.md)
 scripts/introspect_endpoint.py  Genera modelos SQLAlchemy/Pydantic a partir de un endpoint de la API
 docs/PREOPERACIONAL.md          Arquitectura, BD, ETL, seguridad, despliegue y BotFather del preoperacional
 docs/AST.md                     Decisiones, modelo de Odoo, Mini App, rutas y operación del AST
 docs/PRUEBA_RUTA.md             Decisiones, restricción por acuerdo, modelo de Odoo, Mini App y operación de la Prueba de Ruta
-tests/               263 pruebas (pytest), ver CONTRIBUTING.md
+docs/COMBUSTIBLE.md             Decisiones, modelo `fuel` de Odoo, proveedores aprobados, Mini App y operación de Combustible
+tests/               309 pruebas (pytest), ver CONTRIBUTING.md
 Dockerfile           Imagen de la app (también usada para correr los tests en CI/local)
 docker-compose.yml   Servicios "app" (este bot) y "db" (PostgreSQL) para desarrollo/producción
 pyproject.toml       Configuración de ruff, mypy, pytest y cobertura (gate de calidad)
@@ -269,6 +273,8 @@ WantedBy=multi-user.target
 | Reencolar preoperacionales fallidos | `docker compose exec app python -m app.preop.worker --requeue-all` |
 | Reencolar AST fallidos | `docker compose exec app python -m app.ast_trabajo.worker --requeue-all` |
 | Reencolar pruebas de ruta fallidas | `docker compose exec app python -m app.prueba_ruta.worker --requeue-all` |
+| Reencolar registros de combustible fallidos | `docker compose exec app python -m app.combustible.worker --requeue-all` |
+| Cargar proveedores de combustible aprobados | `docker compose exec app python -m app.combustible.proveedores cargar ARCHIVO.csv --resolver-odoo` |
 
 Antes de reiniciar el contenedor `app` en caliente: revisar que no haya vigilancias importantes en curso (`docker compose exec db psql -U watcher -d watches -c "SELECT COUNT(*) FROM watches"`). Al estar en PostgreSQL (volumen `pgdata`), las vigilancias sobreviven al reinicio; el sondeo simplemente se reanuda al arrancar `lifespan` (`watcher.ensure_running()`).
 

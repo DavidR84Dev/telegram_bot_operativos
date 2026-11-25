@@ -76,6 +76,7 @@ BTN_UBICACION = "📍 Enviar ubicación"
 BTN_PREOP = "✅ Preoperacional"
 BTN_AST = "⚠️ AST"
 BTN_PRUEBA_RUTA = "🗺️ Prueba de Ruta"
+BTN_COMBUSTIBLE = "⛽ Combustible"
 BTN_FINALIZAR = "🔴 Finalizar"
 CB_FINALIZAR_SI = "finalizar:si"
 CB_FINALIZAR_NO = "finalizar:no"
@@ -154,6 +155,7 @@ BOT_COMMANDS = [
     BotCommand("preoperacional", "Diligenciar la inspección preoperacional"),
     BotCommand("ast", "Diligenciar el Análisis Seguro de Trabajo (AST)"),
     BotCommand("prueba_ruta", "Diligenciar la Prueba de Ruta del vehículo"),
+    BotCommand("combustible", "Registrar un tanqueo de combustible"),
     BotCommand("escanear", "Abrir el escáner de QR"),
     BotCommand("finalizar", "Finalizar la jornada y liberar el vehículo reservado"),
     BotCommand("ayuda", "Qué hace cada opción del menú"),
@@ -178,6 +180,11 @@ def ast_url(settings: Settings) -> str:
 def prueba_ruta_url(settings: Settings) -> str:
     base = settings.preop_base_url or settings.scanner_base_url
     return f"{base.rstrip('/')}/prueba-ruta"
+
+
+def combustible_url(settings: Settings) -> str:
+    base = settings.preop_base_url or settings.scanner_base_url
+    return f"{base.rstrip('/')}/combustible"
 
 
 def scanner_inline(base: str) -> InlineKeyboardMarkup:
@@ -209,6 +216,14 @@ FORMULARIOS: tuple[MenuOption, ...] = (
         help=("prueba de ruta del vehículo reservado con tu preoperacional (fotos del odómetro inicial y final). "
               "Solo para contratos autorizados."),
         url=prueba_ruta_url,
+    ),
+    MenuOption(
+        label=BTN_COMBUSTIBLE,
+        open_text=BTN_COMBUSTIBLE,
+        prompt="Toca para registrar el combustible:",
+        help=("registro de tanqueo del vehículo reservado con tu preoperacional (galones, precio, proveedor, "
+              "kilometraje y factura en PDF)."),
+        url=combustible_url,
     ),
 )
 _FORM_BY_LABEL = {option.label: option for option in FORMULARIOS}
@@ -329,6 +344,7 @@ def build_application(settings: Settings, odoo: OdooClient, store: WatchStore) -
     application.add_handler(CommandHandler("preoperacional", cmd_preop))
     application.add_handler(CommandHandler("ast", cmd_ast))
     application.add_handler(CommandHandler("prueba_ruta", cmd_prueba_ruta))
+    application.add_handler(CommandHandler("combustible", cmd_combustible))
     application.add_handler(CommandHandler("escanear", cmd_escanear))
     application.add_handler(CommandHandler("finalizar", cmd_finalizar))
     application.add_handler(CallbackQueryHandler(on_finalizar_confirm, pattern=r"^finalizar:(si|no|pedir)$"))
@@ -502,6 +518,10 @@ async def cmd_ast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def cmd_prueba_ruta(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await _open_option(update, context, _FORM_BY_LABEL[BTN_PRUEBA_RUTA])
+
+
+async def cmd_combustible(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _open_option(update, context, _FORM_BY_LABEL[BTN_COMBUSTIBLE])
 
 
 async def cmd_escanear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

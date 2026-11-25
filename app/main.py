@@ -1,4 +1,4 @@
-"""Entrypoint FastAPI: validador de QR (solo lectura en Odoo), preoperacional, AST y Prueba de Ruta."""
+"""Entrypoint FastAPI: validador de QR (solo lectura en Odoo), preoperacional, AST, Prueba de Ruta y Combustible."""
 from __future__ import annotations
 
 import logging
@@ -12,6 +12,10 @@ from .ast_trabajo.router import AstServices
 from .ast_trabajo.router import router as ast_router
 from .ast_trabajo.service import AstOutcome
 from .ast_trabajo.worker import AstSender
+from .combustible.router import CombustibleServices
+from .combustible.router import router as combustible_router
+from .combustible.service import CombustibleOutcome
+from .combustible.worker import CombustibleSender
 from .config import get_settings
 from .odoo_client import OdooClient
 from .preop.db import Database
@@ -73,6 +77,7 @@ def _start_preop(app: FastAPI, application) -> list:
     tasks: list = [sender]
     tasks.append(_start_ast(app, application, db, writer))
     tasks.append(_start_prueba_ruta(app, application, db, writer))
+    tasks.append(_start_combustible(app, application, db, writer))
     # El handler de 📍 Enviar ubicación guarda en esta misma BD.
     application.bot_data[PREOP_DB_KEY] = db
     app.state.preop = PreopServices(
@@ -164,6 +169,27 @@ def _start_prueba_ruta(app: FastAPI, application, db: Database, writer) -> Prueb
     return sender
 
 
+def _start_combustible(app: FastAPI, application, db: Database, writer) -> CombustibleSender:
+    """Arranca el registro de combustible: misma BD y usuario de escritura; cola propia hacia ``fuel``."""
+
+    async def notify(outcome: CombustibleOutcome) -> None:
+        await application.bot.send_message(
+            chat_id=outcome.telegram_user_id, text=formatting.combustible_result(outcome), parse_mode="HTML"
+        )
+
+    sender = CombustibleSender(
+        db, writer, settings.preop_worker_interval_seconds, settings.preop_max_attempts,
+        settings.preop_sending_lease_seconds, notify=notify,
+    )
+    sender.start()
+    app.state.combustible = CombustibleServices(
+        db=db, bot_token=settings.telegram_bot_token.get_secret_value(),
+        max_age_seconds=settings.preop_auth_max_age_seconds, wake_worker=sender.wake,
+        odometro=writer.ultimo_odometro,
+    )
+    return sender
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     application = None
@@ -208,11 +234,12 @@ async def lifespan(app: FastAPI):
         await application.shutdown()
 
 
-app = FastAPI(title="Telegram Bot Operativos", version="1.4.0", lifespan=lifespan)
+app = FastAPI(title="Telegram Bot Operativos", version="1.5.0", lifespan=lifespan)
 app.include_router(web_router)
 app.include_router(preop_router)
 app.include_router(ast_router)
 app.include_router(prueba_ruta_router)
+app.include_router(combustible_router)
 
 
 @app.get("/health")

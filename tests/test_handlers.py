@@ -91,14 +91,23 @@ def test_formularios_lists_preoperacional_first():
     call = upd.message.reply_text.await_args
     assert call.args[0] == "📂 Formularios disponibles:"
     rows = call.kwargs["reply_markup"].inline_keyboard
-    # Preoperacional -> AST -> Prueba de Ruta -> Escanear QR -> Finalizar (orden del bot de referencia).
+    # Preoperacional -> AST -> Prueba de Ruta -> Combustible -> Escanear QR -> Finalizar.
     assert [row[0].text for row in rows] == [tga.BTN_PREOP, tga.BTN_AST, tga.BTN_PRUEBA_RUTA,
-                                             tga.BTN_ESCANEAR, tga.BTN_FINALIZAR]
+                                             tga.BTN_COMBUSTIBLE, tga.BTN_ESCANEAR, tga.BTN_FINALIZAR]
     assert rows[0][0].web_app.url == "https://scan.example.com/preoperacional"
     assert rows[1][0].web_app.url == "https://scan.example.com/ast"
     assert rows[2][0].web_app.url == "https://scan.example.com/prueba-ruta"
-    assert rows[3][0].web_app.url == "https://scan.example.com/scanner"
-    assert rows[4][0].web_app is None and rows[4][0].callback_data == tga.CB_FINALIZAR_PEDIR
+    assert rows[3][0].web_app.url == "https://scan.example.com/combustible"
+    assert rows[4][0].web_app.url == "https://scan.example.com/scanner"
+    assert rows[5][0].web_app is None and rows[5][0].callback_data == tga.CB_FINALIZAR_PEDIR
+
+
+def test_combustible_command_opens_mini_app():
+    upd = _update(text="/combustible")
+    asyncio.run(tga.cmd_combustible(upd, _ctx(_services())))
+    button = upd.message.reply_text.await_args.kwargs["reply_markup"].inline_keyboard[0][0]
+    assert button.text == tga.BTN_COMBUSTIBLE and button.web_app.url == "https://scan.example.com/combustible"
+    assert "combustible" in [c.command for c in tga.BOT_COMMANDS]
 
 
 def test_prueba_ruta_command_opens_mini_app():

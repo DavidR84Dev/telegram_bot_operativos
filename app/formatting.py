@@ -8,6 +8,7 @@ from . import ticket_state
 
 if TYPE_CHECKING:
     from .ast_trabajo.service import AstOutcome, AvisoJefeAst
+    from .combustible.service import CombustibleOutcome
     from .preop.reservas import Liberacion
     from .prueba_ruta.service import AvisoJefePrueba, PruebaRutaOutcome
     from .preop.service import AvisoJefe, SendOutcome, UbicacionRegistrada
@@ -141,6 +142,29 @@ def prueba_ruta_aviso_jefe(aviso: AvisoJefePrueba, odoo_name: str | None) -> str
     lines += ["", f"<b>Novedades ({len(aviso.novedades)}):</b>"]
     lines += [f"• {escape(label)}" for label in aviso.novedades]
     return "\n".join(lines)
+
+
+def _pesos(valor: float) -> str:
+    """126200.5 -> '$ 126 200.50' (punto decimal y miles con espacio, como la Mini App)."""
+    entero, _, dec = f"{valor:,.2f}".partition(".")
+    texto = entero.replace(",", " ")
+    return f"$ {texto}" if dec == "00" else f"$ {texto}.{dec}"
+
+
+def combustible_result(outcome: CombustibleOutcome) -> str:
+    """Aviso al conductor cuando su registro de combustible llega a Odoo (o falla definitivamente)."""
+    if outcome.status.value == "enviado":
+        return (
+            "⛽ <b>Combustible registrado en Odoo</b>\n\n"
+            f"🚌 Vehículo: {escape(outcome.placa or '—')}\n"
+            f"🛢️ {outcome.galones:g} galones · Total {_pesos(outcome.total)}\n"
+            f"📄 Registro #{outcome.odoo_id}"
+        )
+    return (
+        "❌ <b>Tu registro de combustible no pudo guardarse en Odoo</b>\n\n"
+        f"Referencia local: #{outcome.combustible_id}. El área de sistemas ya tiene el detalle; "
+        "no es necesario diligenciarlo de nuevo."
+    )
 
 
 def _lista_placas(placas: tuple[str, ...]) -> str:
