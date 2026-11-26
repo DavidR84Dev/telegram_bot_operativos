@@ -24,13 +24,21 @@ from app.preop.models import AnalisisSeguro, Extracto, SyncStatus, utc_now
 from app.preop.odoo_writer import OdooPermanentError, OdooTransientError
 from app.preop.service import SubmissionError, TelegramIdentity
 
+from . import test_combustible as _comb
 from . import test_preop as _preop
-from .helpers import BOT_TOKEN, make_init_data
+from .helpers import BOT_TOKEN, antedatar_reservas, make_init_data
 from .test_preop import FakeObjects, FakeRest, TG_USER, _empleado, _extracto, _flota, _writer
 
 # Mismas fixtures del preoperacional: BD en memoria con empleado, jefe, vehículo y extracto aprobado.
 db = _preop.db
-seeded = _preop.seeded
+sin_reserva = _preop.seeded  # BD sembrada, sin preoperacional: el conductor NO tiene reserva vigente
+
+
+@pytest.fixture
+def seeded(sin_reserva):
+    """Como el preoperacional, más la reserva vigente (preoperacional ya hecho): requisito del AST desde 2026-11-26."""
+    _comb._reservar(sin_reserva)
+    return sin_reserva
 
 UUID = "1a2b3c4d-3c1d-4f7a-9a2b-1c2d3e4f5a6b"
 IDENTITY = TelegramIdentity(TG_USER, "ana", "Ana C")
@@ -105,12 +113,12 @@ def test_contexto_lista_contratos_de_extractos_aprobados(seeded):
     from app.preop.service import employee_for_telegram
 
     empleado = employee_for_telegram(seeded, TG_USER)
-    ctx = service.form_context(seeded, empleado)
+    ctx = service.form_context(seeded, empleado, TG_USER)
     assert ctx["validado"] is True and ctx["empleado"]["responsable"] == "Jefe Uno"
     assert ctx["contratos"] == [{"id_contrato": 55, "nombre": "Contrato Minera"}]
     with seeded.session() as s:
         s.scalar(select(Extracto)).estado = "pending"
-    assert service.form_context(seeded, empleado) == {**ctx, "validado": False, "contratos": []}
+    assert service.form_context(seeded, empleado, TG_USER) == {**ctx, "validado": False, "contratos": []}
 
 
 def test_contratos_de_varios_extractos_sin_repetir(seeded):
@@ -125,7 +133,7 @@ def test_contratos_de_varios_extractos_sin_repetir(seeded):
     }), [1])
     from app.preop.service import employee_for_telegram
 
-    ctx = service.form_context(seeded, employee_for_telegram(seeded, TG_USER))
+    ctx = service.form_context(seeded, employee_for_telegram(seeded, TG_USER), TG_USER)
     assert sorted(c["id_contrato"] for c in ctx["contratos"]) == [55, 77]
     with pytest.raises(SubmissionError, match="Selecciona el contrato"):
         service.submit(seeded, IDENTITY, _payload())
@@ -249,6 +257,7 @@ def test_error_permanente_falla_de_inmediato(seeded):
 def test_colas_de_preoperacional_y_ast_son_independientes(seeded):
     from app.preop import service as preop_service
 
+    assert len(preop_service.claim_batch(seeded, 10, 300)) == 1  # el preoperacional que reservó el vehículo
     _queue(seeded)
     assert preop_service.claim_batch(seeded, 10, 300) == []
 
@@ -326,6 +335,18 @@ def test_api_contexto_y_formulario(api):
     assert len(client.get("/api/ast/form", headers=_headers()).json()["preguntas"]) == 10
 
 
+def test_api_sin_reserva_vigente_responde_409_con_codigo(sin_reserva):
+    app = FastAPI()
+    app.include_router(ast_router)
+    app.state.ast = AstServices(sin_reserva, BOT_TOKEN, 3600, wake_worker=lambda: None)
+    client = TestClient(app)
+    body = _payload().model_dump(mode="json")
+    for r in (client.get("/api/ast/context", headers=_headers()),
+              client.post("/api/ast", json=body, headers=_headers())):
+        assert r.status_code == 409 and r.headers["x-error-code"] == "sin_reserva_vigente"
+        assert r.json()["detail"].startswith("Para usar este formulario primero debes registrar el ✅ Preoperacional")
+
+
 def test_api_envio_despierta_worker_y_es_idempotente(api):
     client, woke = api
     body = _payload().model_dump()
@@ -374,6 +395,7 @@ def _diferido_body(*, abierto_hace: timedelta, sin_senal_hace: timedelta, user_i
 
 def test_api_diferido_en_ventana_sigue_flujo_normal_y_deja_trazabilidad(api, seeded):
     client, woke = api
+    antedatar_reservas(seeded)  # la reserva ya existía al abrir el formulario
     body = _diferido_body(abierto_hace=timedelta(minutes=80), sin_senal_hace=timedelta(minutes=40))
     # La cabecera es el initData original (la Mini App siguió abierta): pasó de 1 h, pero se acepta.
     headers = {"X-Telegram-Init-Data": body["diferido"]["init_data_original"]}

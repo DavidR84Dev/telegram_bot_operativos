@@ -66,6 +66,24 @@ class Settings(BaseSettings):
     odoo_api_timeout_seconds: int = 60
     master_sync_interval_seconds: int = 900
 
+    # GPS de la flota (cotejo de la ubicación de «Combustible para gastos»). URL vacía = desactivado
+    # (los gastos van con «GPS no disponible»). La clave va en la cabecera x-api-key.
+    gps_flota_url: str = ""
+    gps_flota_api_key: SecretStr | None = None
+    gps_flota_timeout_seconds: float = 10
+
+    # product_id (product.product) del gasto de combustible en hr.expense; cambia por ambiente
+    # (producción 9629, qa2 77 «[I011] COMBUSTIBLE»).
+    combustible_gastos_product_id: int = 9629
+
+    # Tipos de la Mini App 💰 Gastos Operativos: «Nombre:product_id» separados por «;». El product_id es el de
+    # product.product en hr.expense y cambia por ambiente (qa2: Meals=1, Travel & Accommodation=2, Others=6).
+    # Se valida al arrancar (app/gastos_operativos/catalogo.py).
+    gastos_operativos_tipos: str = "Alimentación:1;Hospedaje:2;Peajes:6;Parqueadero:6;Lavado:6;Otros:6"
+    # Máximo por gasto y por tipo, en COP: «Nombre:valor» separados por «;» (p. ej. Alimentación:50000;Hospedaje:150000).
+    # Vacío = sin topes; un tipo ausente no tiene tope. Se valida al arrancar y BLOQUEA el envío si se supera.
+    gastos_operativos_topes: str = ""
+
     # Escritura XML-RPC del preoperacional. Vacíos = mismas credenciales de ODOO_USERNAME/ODOO_PASSWORD.
     odoo_write_username: str = ""
     odoo_write_password: SecretStr | None = None
@@ -83,6 +101,24 @@ class Settings(BaseSettings):
     # Se comparan normalizados (sin mayúsculas, tildes, puntuación ni prefijo "[código]").
     # Agregar un contrato = sumarlo aquí y reiniciar.
     prueba_ruta_acuerdos: str = "MINERA DE COBRE QUEBRADONA;SERVICIOS HIDROGEOLÓGICOS INTEGRALES S.A.S."
+
+    # ── Panel Admin (bot aparte, ``python -m app.admin``; ver docs/PANEL_ADMIN.md) ──────
+    # Todo opcional: sin ADMIN_BOT_TOKEN el panel no arranca, pero Operativos funciona igual.
+    admin_bot_token: SecretStr | None = None
+    # Lista blanca de ids de Telegram (separados por coma). Vacía = nadie entra.
+    admin_telegram_ids: str = ""
+    # HTTPS público del panel (túnel en local; dominio en producción).
+    admin_webapp_base_url: str = ""
+    admin_listen_host: str = "127.0.0.1"
+    admin_listen_port: int = 8012
+    # .env que edita la pestaña Parámetros (en el contenedor del panel está montado en /srv/.env).
+    admin_env_file: str = "/srv/.env"
+    # Antigüedad máxima de initData del panel (se deja abierto un rato): 4 h.
+    admin_auth_max_age_seconds: int = 14400
+
+    @property
+    def admin_ids(self) -> frozenset[int]:
+        return frozenset(int(p) for p in self.admin_telegram_ids.replace(";", ",").split(",") if p.strip().isdigit())
 
     @property
     def api_company_ids(self) -> list[int]:

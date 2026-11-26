@@ -1,14 +1,18 @@
-"""Restricción de acceso de la Prueba de Ruta por acuerdo (``agreement``) del conductor.
+"""Restricción de acceso de la Prueba de Ruta por acuerdo (``agreement``) del **extracto**.
 
-Regla del usuario (2026-11-25): solo pueden hacer la Prueba de Ruta los conductores cuyo
-**contrato del empleado** (``id_contract`` o el contrato temporal, ambos ``agreement`` en
-Odoo) es uno de los acuerdos de ``PRUEBA_RUTA_ACUERDOS``. Los demás ven "Contrato No
-Autorizado". Los nombres se comparan normalizados: sin mayúsculas, tildes, puntuación ni
-el prefijo ``[código]`` con que la API de acuerdos antepone el código (``[New] MINERA ...``).
+Regla del usuario (2026-11-25, revisada el mismo día): solo pueden hacer la Prueba de Ruta los
+conductores con un **extracto de contrato aprobado y vigente** (``car.extractos`` en estado
+"Aprobado", el mismo criterio del preoperacional: ``preop.service.extractos_del_conductor``)
+cuyo ``contratos_list`` incluye uno de los acuerdos de ``PRUEBA_RUTA_ACUERDOS``. Si el
+conductor ya tiene el vehículo reservado por su preoperacional, cuenta **solo el extracto de
+esa reserva** (el del vehículo que va a probar). El contrato de la ficha del empleado
+(``id_contract`` / contrato temporal) ya **no** autoriza. Los demás ven "Contrato No Autorizado".
 
-Se acepta el contrato si coincide su **nombre** normalizado o si su **id** es el de un
-acuerdo sincronizado (tabla ``acuerdos``) cuyo nombre normalizado está en la lista; así no
-depende de cómo escriba el nombre cada endpoint.
+Los nombres se comparan normalizados: sin mayúsculas, tildes, puntuación ni el prefijo
+``[código]`` con que la API de acuerdos antepone el código (``[New] MINERA ...``). Se acepta el
+contrato si coincide su **nombre** normalizado o si su **id** es el de un acuerdo sincronizado
+(tabla ``acuerdos``) cuyo nombre normalizado está en la lista; así no depende de cómo escriba
+el nombre cada endpoint.
 """
 from __future__ import annotations
 
@@ -21,6 +25,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..preop.models import Acuerdo, Empleado
+from ..preop.service import extractos_del_conductor
 
 CONTRATO_NO_AUTORIZADO = "Contrato No Autorizado"
 
@@ -45,22 +50,38 @@ def normalizar_lista(nombres: Iterable[str]) -> frozenset[str]:
 class ContratoAutorizado:
     odoo_id: int | None
     nombre: str
+    extracto_id: int | None = None      # id local del extracto aprobado que autorizó
+    extracto_codigo: str | None = None
 
 
-def contrato_autorizado(session: Session, empleado: Empleado, autorizados: frozenset[str]) -> ContratoAutorizado | None:
-    """Primer contrato del empleado (fijo o temporal) que es un acuerdo autorizado; None si ninguno."""
+def contratos_extractos(session: Session, empleado: Empleado, extracto_id: int | None = None) -> list[str]:
+    """Nombres de los contratos de sus extractos aprobados y vigentes (para el mensaje de bloqueo)."""
+    extractos = [e for e in extractos_del_conductor(session, empleado)
+                 if extracto_id is None or e.id == extracto_id]
+    nombres = [str(c.get("nombre") or "").strip() for e in extractos for c in e.contratos_list]
+    return list(dict.fromkeys(n for n in nombres if n))
+
+
+def contrato_autorizado(session: Session, empleado: Empleado, autorizados: frozenset[str],
+                        extracto_id: int | None = None) -> ContratoAutorizado | None:
+    """Primer contrato autorizado de un extracto **aprobado y vigente** del conductor; None si ninguno.
+
+    ``extracto_id`` (el de la reserva del vehículo) limita la búsqueda a ese extracto.
+    """
     if not autorizados:
         return None
-    candidatos = [(cid, nombre) for cid, nombre in ((empleado.id_contract, empleado.contrato),
-                                                    (empleado.contrato_temporal_id, empleado.contrato_temporal))
-                  if cid or nombre]
-    ids = [cid for cid, _ in candidatos if cid]
+    extractos = [e for e in extractos_del_conductor(session, empleado)
+                 if extracto_id is None or e.id == extracto_id]
+    candidatos = [(e, c.get("id_contrato"), str(c.get("nombre") or ""))
+                  for e in extractos for c in e.contratos_list if c.get("id_contrato") or c.get("nombre")]
+    ids = [cid for _, cid, _ in candidatos if cid]
     nombres_por_id = {a.odoo_id: a.nombre for a in session.scalars(
         select(Acuerdo).where(Acuerdo.odoo_id.in_(ids)))} if ids else {}
-    for cid, nombre in candidatos:
+    for extracto, cid, nombre in candidatos:
         acuerdo = nombres_por_id.get(cid) if cid else None
         if normalizar_acuerdo(nombre) in autorizados or normalizar_acuerdo(acuerdo) in autorizados:
-            return ContratoAutorizado(cid, nombre or _PREFIJO_CODIGO.sub("", acuerdo or ""))
+            return ContratoAutorizado(cid, nombre or _PREFIJO_CODIGO.sub("", acuerdo or ""),
+                                      extracto.id, extracto.codigo)
     return None
 
 

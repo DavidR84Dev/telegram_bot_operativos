@@ -5,7 +5,7 @@ referencia (@viacoturform_bot), el teclado de respuesta es plegable: Telegram lo
 muestra detrás de su botón de teclado (``toggle-reply-markup``) y solo tiene:
 
     📋 Formularios      -> panel inline, en este orden:
-                             • formularios de ``FORMULARIOS`` (✅ Preoperacional, ⚠️ AST, 🗺️ Prueba de Ruta)
+                             • formularios de ``FORMULARIOS`` (✅ Preoperacional, ⚠️ AST, 🗺️ Prueba de Ruta, ⛽ Combustible, 💰 Gastos Operativos, 🧾 Pos-Operacional)
                              • 📷 Escanear QR (Mini App del escáner)
                              • 🔴 Finalizar   (fin de jornada: libera el vehículo reservado)
     📍 Enviar ubicación -> comparte la ubicación (se guarda en la BD del bot)
@@ -59,6 +59,7 @@ from .odoo_queries import find_employee_by_pin, find_internal_token, find_ticket
 from .passenger_notifier import PassengerNotifier
 from .preop import registro as preop_registro
 from .preop import reservas as preop_reservas
+from .gastos_operativos import service as gastos_service
 from .preop import service as preop_service
 from .preop.rest_client import OdooRestClient
 from .scan_service import STATUS_MESSAGES, scan_qr
@@ -70,12 +71,17 @@ logger = logging.getLogger(__name__)
 SERVICES_KEY = "services"
 # BD del preoperacional (la cuelga main._start_preop); la usa el handler de ubicación.
 PREOP_DB_KEY = "preop_db"
+COMBUSTIBLE_WAKE_KEY = "combustible_wake"  # callable: despierta la cola de combustible
+GASTOS_WAKE_KEY = "gastos_operativos_wake"  # callable: despierta la cola de gastos operativos
 BTN_FORMULARIOS = "📋 Formularios"
 BTN_ESCANEAR = "📷 Escanear QR Tickets"
 BTN_UBICACION = "📍 Enviar ubicación"
 BTN_PREOP = "✅ Preoperacional"
 BTN_AST = "⚠️ AST"
 BTN_PRUEBA_RUTA = "🗺️ Prueba de Ruta"
+BTN_COMBUSTIBLE = "⛽ Combustible"
+BTN_GASTOS = "💰 Gastos Operativos"
+BTN_POS_OPERACIONAL = "🧾 Pos-Operacional"
 BTN_FINALIZAR = "🔴 Finalizar"
 CB_FINALIZAR_SI = "finalizar:si"
 CB_FINALIZAR_NO = "finalizar:no"
@@ -154,6 +160,9 @@ BOT_COMMANDS = [
     BotCommand("preoperacional", "Diligenciar la inspección preoperacional"),
     BotCommand("ast", "Diligenciar el Análisis Seguro de Trabajo (AST)"),
     BotCommand("prueba_ruta", "Diligenciar la Prueba de Ruta del vehículo"),
+    BotCommand("combustible", "Registrar un tanqueo de combustible"),
+    BotCommand("gastos", "Registrar gastos operativos"),
+    BotCommand("pos_operacional", "Registrar el pos-operacional de la jornada"),
     BotCommand("escanear", "Abrir el escáner de QR"),
     BotCommand("finalizar", "Finalizar la jornada y liberar el vehículo reservado"),
     BotCommand("ayuda", "Qué hace cada opción del menú"),
@@ -178,6 +187,21 @@ def ast_url(settings: Settings) -> str:
 def prueba_ruta_url(settings: Settings) -> str:
     base = settings.preop_base_url or settings.scanner_base_url
     return f"{base.rstrip('/')}/prueba-ruta"
+
+
+def combustible_url(settings: Settings) -> str:
+    base = settings.preop_base_url or settings.scanner_base_url
+    return f"{base.rstrip('/')}/combustible"
+
+
+def gastos_operativos_url(settings: Settings) -> str:
+    base = settings.preop_base_url or settings.scanner_base_url
+    return f"{base.rstrip('/')}/gastos-operativos"
+
+
+def pos_operacional_url(settings: Settings) -> str:
+    base = settings.preop_base_url or settings.scanner_base_url
+    return f"{base.rstrip('/')}/pos-operacional"
 
 
 def scanner_inline(base: str) -> InlineKeyboardMarkup:
@@ -209,6 +233,36 @@ FORMULARIOS: tuple[MenuOption, ...] = (
         help=("prueba de ruta del vehículo reservado con tu preoperacional (fotos del odómetro inicial y final). "
               "Solo para contratos autorizados."),
         url=prueba_ruta_url,
+    ),
+    MenuOption(
+        label=BTN_COMBUSTIBLE,
+        open_text=BTN_COMBUSTIBLE,
+        prompt="Toca para registrar el combustible:",
+        help=("registro de tanqueo del vehículo reservado con tu preoperacional (galones, precio, proveedor, "
+              "kilometraje y factura en PDF)."),
+        url=combustible_url,
+    ),
+    MenuOption(
+        label=BTN_GASTOS,
+        open_text=BTN_GASTOS,
+        prompt=("Toca para registrar tus gastos operativos:\n\n"
+                "📋 Instrucciones para Gastos Operativos:\n"
+                f"1️⃣ Selecciona {BTN_GASTOS} abajo\n"
+                "2️⃣ Llena y envía el formulario\n"
+                f"3️⃣ Regresa aquí y toca {BTN_UBICACION}\n"
+                "⏱️ Tienes 10 minutos para enviar la ubicación"),
+        help=("gastos de la jornada (alimentación, hospedaje, peajes…) con su valor y su soporte en PDF o foto; "
+              "al enviarlos compartes tu ubicación en el chat."),
+        url=gastos_operativos_url,
+    ),
+    MenuOption(
+        label=BTN_POS_OPERACIONAL,
+        open_text=BTN_POS_OPERACIONAL,
+        prompt=("Toca para registrar tu pos-operacional:\n\n"
+                "Recuerda que enviarlo no libera tu vehículo: al terminar tu jornada toca 🔴 Finalizar."),
+        help=("cierre de la jornada: kilometraje inicial y final, entrada, salida y la planilla de servicios "
+              "(PDF o foto). No libera el vehículo: para eso usa 🔴 Finalizar."),
+        url=pos_operacional_url,
     ),
 )
 _FORM_BY_LABEL = {option.label: option for option in FORMULARIOS}
@@ -248,6 +302,15 @@ def main_keyboard() -> ReplyKeyboardMarkup:
         resize_keyboard=True,
         is_persistent=False,
         input_field_placeholder="Elige una opción del menú",
+    )
+
+
+def ubicacion_keyboard() -> ReplyKeyboardMarkup:
+    """Teclado con un solo botón 📍 que comparte la ubicación (tanqueo pendiente de ubicación)."""
+    return ReplyKeyboardMarkup(
+        [[KeyboardButton(BTN_UBICACION, request_location=True)]],
+        resize_keyboard=True, one_time_keyboard=True, is_persistent=False,
+        input_field_placeholder="Toca 📍 Enviar ubicación",
     )
 
 
@@ -329,6 +392,9 @@ def build_application(settings: Settings, odoo: OdooClient, store: WatchStore) -
     application.add_handler(CommandHandler("preoperacional", cmd_preop))
     application.add_handler(CommandHandler("ast", cmd_ast))
     application.add_handler(CommandHandler("prueba_ruta", cmd_prueba_ruta))
+    application.add_handler(CommandHandler("combustible", cmd_combustible))
+    application.add_handler(CommandHandler("gastos", cmd_gastos))
+    application.add_handler(CommandHandler("pos_operacional", cmd_pos_operacional))
     application.add_handler(CommandHandler("escanear", cmd_escanear))
     application.add_handler(CommandHandler("finalizar", cmd_finalizar))
     application.add_handler(CallbackQueryHandler(on_finalizar_confirm, pattern=r"^finalizar:(si|no|pedir)$"))
@@ -504,6 +570,18 @@ async def cmd_prueba_ruta(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await _open_option(update, context, _FORM_BY_LABEL[BTN_PRUEBA_RUTA])
 
 
+async def cmd_combustible(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _open_option(update, context, _FORM_BY_LABEL[BTN_COMBUSTIBLE])
+
+
+async def cmd_gastos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _open_option(update, context, _FORM_BY_LABEL[BTN_GASTOS])
+
+
+async def cmd_pos_operacional(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _open_option(update, context, _FORM_BY_LABEL[BTN_POS_OPERACIONAL])
+
+
 async def cmd_escanear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await _open_option(update, context, ESCANER)
 
@@ -523,8 +601,31 @@ async def on_location(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         preop_service.registrar_ubicacion, db, update.effective_user.id,
         loc.latitude, loc.longitude, loc.horizontal_accuracy,
     )
-    await update.message.reply_text(formatting.ubicacion_registrada(registro), parse_mode="HTML",
-                                    reply_markup=main_keyboard())
+    # Tanqueo o envío de gastos pendiente de ubicación: el mensaje reenviado o anterior al registro no cuenta.
+    # Regla de convivencia: la ubicación va al pendiente MÁS ANTIGUO entre Combustible y Gastos Operativos
+    # (con empate, Combustible); el siguiente se pide de nuevo.
+    asignada = None
+    msg = update.message
+    if getattr(msg, "forward_origin", None) is None and getattr(msg, "date", None) is not None:
+        try:
+            asignada = await asyncio.to_thread(
+                gastos_service.asignar_ubicacion_mas_antigua, db, update.effective_user.id,
+                loc.latitude, loc.longitude, msg.date)
+        except Exception:
+            logger.exception("No se pudo asignar la ubicación al registro pendiente")
+    if asignada is not None:
+        wake = context.application.bot_data.get(
+            GASTOS_WAKE_KEY if asignada.origen == "gastos" else COMBUSTIBLE_WAKE_KEY)
+        if wake is not None:
+            wake()
+    if asignada is None:
+        await msg.reply_text(formatting.ubicacion_registrada(registro), parse_mode="HTML",
+                             reply_markup=main_keyboard())
+        return
+    texto = (formatting.gastos_ubicacion_registrada if asignada.origen == "gastos"
+             else formatting.combustible_ubicacion_registrada)(asignada.placa, asignada.pendientes)
+    await msg.reply_text(texto, parse_mode="HTML",
+                         reply_markup=ubicacion_keyboard() if asignada.pendientes else main_keyboard())
 
 
 async def cmd_finalizar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

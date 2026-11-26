@@ -1,0 +1,674 @@
+"""Lógica del registro de combustible: contexto, recepción (incluido el envío sin señal) y envío a Odoo.
+
+Reglas de acceso (igual en el contexto de la Mini App y al recibir):
+
+1. El id de Telegram es el PIN de un empleado activo (si no, 403).
+2. Tiene una reserva vigente (``reservas.reserva_vigente``: su preoperacional de la jornada, sin liberar ni vencer);
+   si no, ``SinReservaVigenteError`` (409; en el envío diferido basta con que estuviera vigente al abrir). El contrato (``agreement_id``) es el de
+   ese preoperacional, que salió de su extracto aprobado.
+3. El kilometraje del tanqueo es **mayor o igual** al último registrado (Odoo, la flota
+   sincronizada y el odómetro del preoperacional de la jornada).
+
+Todo es síncrono (SQLAlchemy + XML-RPC); el código async lo llama con ``asyncio.to_thread``.
+"""
+from __future__ import annotations
+
+import base64
+import hashlib
+import logging
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from typing import Any, Callable
+
+from sqlalchemy import and_, func, or_, select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
+
+from ..preop import reservas
+from ..preop import service as preop_service
+from ..preop.db import Database
+from ..preop.diferido import motivo_vencido
+from ..preop.models import (
+    Acuerdo,
+    Combustible,
+    CombustibleEnvioDiferido,
+    CombustibleFactura,
+    Empleado,
+    EstadoDiferido,
+    Extracto,
+    Preoperacional,
+    ProveedorCombustible,
+    ReservaVehiculo,
+    SyncStatus,
+    utc_now,
+)
+from ..preop.odoo_writer import OdooPermanentError, OdooTransientError, OdooWriteError, OdooWriter
+from ..preop.rest_client import OdooApiError, OdooRestClient, is_retryable_error
+from ..preop.service import (
+    EnvioVencidoError,
+    OdometroReader,
+    SubmissionError,
+    TelegramIdentity,
+    TiemposDiferido,
+    payload_sha256,
+    ultimo_odometro,
+)
+from ..prueba_ruta.acuerdos import _PREFIJO_CODIGO
+from .catalogo import RECORDATORIOS_UBICACION_MIN, NOMBRE_GASTO, PRODUCTO_GASTOS_ODOO_ID, TIPOS_BY_KEY, form_definition
+from . import gps as gps_flota
+from .proveedores import listar_activos
+from .schemas import CombustibleIn, decode_pdf
+
+logger = logging.getLogger(__name__)
+
+def _contrato(session: Session, reserva: ReservaVehiculo) -> tuple[int | None, str | None]:
+    """Contrato (agreement) del preoperacional que reservó el vehículo: (id de Odoo, nombre)."""
+    preop = session.get(Preoperacional, reserva.preop_id) if reserva.preop_id else None
+    cid = preop.contrato_odoo_id if preop else None
+    if not cid:
+        return None, None
+    acuerdo = session.scalar(select(Acuerdo).where(Acuerdo.odoo_id == cid))
+    if acuerdo is not None:
+        return cid, _PREFIJO_CODIGO.sub("", acuerdo.nombre)
+    extracto = session.get(Extracto, reserva.extracto_id) if reserva.extracto_id else None
+    nombre = next((c.get("nombre") for c in (extracto.contratos_list if extracto else [])
+                   if c.get("id_contrato") == cid), None)
+    return cid, nombre
+
+
+@dataclass(frozen=True)
+class LimiteKm:
+    """Último kilometraje conocido. ``estricto``: el nuevo debe ser MAYOR que ``valor`` (no igual)."""
+
+    valor: float
+    estricto: bool
+
+    def acepta(self, km: float) -> bool:
+        return km > self.valor if self.estricto else km >= self.valor
+
+    def a_dict(self) -> dict[str, Any]:
+        return {"valor": self.valor, "estricto": self.estricto}
+
+    def mensaje(self, km: float) -> str:
+        regla = "mayor que" if self.estricto else "mayor o igual al"
+        return (f"El kilometraje ({km:,.0f} km) debe ser {regla} último registrado ({self.valor:,.0f} km)"
+                .replace(",", "."))
+
+
+def _limite(base: list[float | None], estrictos: list[float | None]) -> LimiteKm | None:
+    """Combina las fuentes: ``base`` (odómetro y preoperacional: igual vale) y ``estrictos`` (tanqueos previos:
+    Odoo exige un km estrictamente mayor). Con empate manda la regla estricta."""
+    b = max((float(v) for v in base if v is not None), default=None)
+    s = max((float(v) for v in estrictos if v is not None), default=None)
+    if s is not None and (b is None or s >= b):
+        return LimiteKm(s, True)
+    return LimiteKm(b, False) if b is not None else None
+
+
+def _km_limites(session: Session, reserva: ReservaVehiculo, odometro: OdometroReader | None,
+                km_fuel: OdometroReader | None = None, km_gastos: OdometroReader | None = None,
+                empleado_odoo_id: int | None = None) -> tuple[LimiteKm | None, LimiteKm | None]:
+    """(límite para la pestaña Combustible, límite para "Combustible para gastos").
+
+    Fuentes: odómetro en vivo de Odoo / flota sincronizada y preoperacional de la jornada (el mismo km vale);
+    mayor ``kilometraje`` de los tanqueos locales del vehículo (ambas pestañas, sin los fallidos); mayor
+    ``km_tanking`` de ``fuel`` en Odoo para el vehículo; y, solo en gastos, el de los ``hr.expense`` de
+    combustible del empleado (``hr.expense`` no tiene vehículo). Las lecturas de Odoo son tolerantes a fallo.
+    """
+    base: list[float | None] = [ultimo_odometro(reserva.vehiculo, odometro)]
+    preop = session.get(Preoperacional, reserva.preop_id) if reserva.preop_id else None
+    if preop is not None:
+        base.append(preop.kilometraje)
+    local = session.scalar(select(func.max(Combustible.kilometraje)).where(
+        Combustible.vehiculo_id == reserva.vehiculo_id, Combustible.sync_status != SyncStatus.FALLIDO))
+    estrictos: list[float | None] = [local, km_fuel(reserva.vehiculo.odoo_id) if km_fuel else None]
+    gastos = estrictos + [km_gastos(empleado_odoo_id) if km_gastos and empleado_odoo_id else None]
+    return _limite(base, estrictos), _limite(base, gastos)
+
+
+# ───────────────────────────── consultas para la Mini App ─────────────────────────────
+
+def form_full(db: Database) -> dict[str, Any]:
+    """Catálogo del formulario más los proveedores aprobados activos."""
+    with db.session() as session:
+        proveedores = [{"id": p.id, "nombre": p.nombre, "latitud": p.latitud, "longitud": p.longitud,
+                        "ciudad": p.ciudad, "direccion": p.direccion} for p in listar_activos(session)]
+    return form_definition() | {"proveedores": proveedores}
+
+
+def form_context(db: Database, empleado: Empleado, telegram_user_id: int,
+                 odometro: OdometroReader | None = None, km_fuel: OdometroReader | None = None,
+                 km_gastos: OdometroReader | None = None) -> dict[str, Any]:
+    """Comprador, vehículo reservado por su preoperacional, contrato y último kilometraje (sin reserva: 409)."""
+    with db.session() as session:
+        reserva = preop_service.exigir_reserva(session, telegram_user_id)
+        v = reserva.vehiculo
+        vehiculo = {"id": v.id, "nombre": v.nombre, "matricula": v.matricula,
+                    "numero_interno": v.numero_interno, "placa": reservas.placa(v)}
+        contrato = _contrato(session, reserva)[1]
+        km = _km_limites(session, reserva, odometro, km_fuel, km_gastos, empleado.odoo_id)
+    return {
+        "empleado": {"nombre": empleado.nombre, "puesto_trabajo": empleado.puesto_trabajo,
+                     "responsable": empleado.responsable},
+        "contrato": contrato,
+        "vehiculo": vehiculo,
+        # Pestaña Combustible / pestaña gastos (esta suma los hr.expense del empleado). ``*_estricto``: el nuevo
+        # km debe ser mayor (no igual).
+        "ultimo_km": km[0].valor if km[0] else None,
+        "ultimo_km_estricto": bool(km[0] and km[0].estricto),
+        "ultimo_km_gastos": km[1].valor if km[1] else None,
+        "ultimo_km_gastos_estricto": bool(km[1] and km[1].estricto),
+        "hoy": reservas.fecha_jornada().isoformat(),
+    }
+
+
+# ───────────────────────────────────── recepción ──────────────────────────────────────
+
+def submit_diferido(db: Database, identity: TelegramIdentity, data: CombustibleIn, tiempos: TiemposDiferido,
+                    odometro: OdometroReader | None = None, km_fuel: OdometroReader | None = None,
+                    km_gastos: OdometroReader | None = None) -> tuple[Combustible, bool]:
+    """Recibe un tanqueo guardado en el teléfono por falta de señal (regla de ``app/preop/diferido.py``).
+
+    Dentro de la ventana sigue el flujo normal; fuera de ella queda solo como auditoría
+    (con el formulario y la factura) y lanza ``EnvioVencidoError``.
+    """
+    with db.session() as session:
+        existing = session.scalar(select(Combustible).where(Combustible.uuid == data.uuid))
+        if existing is not None:
+            if existing.telegram_user_id != identity.user_id:
+                raise SubmissionError("Identificador de formulario en uso", status_code=409)
+            return existing, True
+        previo = session.scalar(select(CombustibleEnvioDiferido).where(CombustibleEnvioDiferido.uuid == data.uuid))
+        if previo is not None:
+            if previo.telegram_user_id != identity.user_id:
+                raise SubmissionError("Identificador de formulario en uso", status_code=409)
+            raise EnvioVencidoError(previo.motivo or "Envío vencido")
+
+    motivo = motivo_vencido(tiempos.apertura, tiempos.sin_senal_desde, tiempos.recibido)
+    if motivo is None:
+        return submit(db, identity, data, odometro, diferido=tiempos, km_fuel=km_fuel, km_gastos=km_gastos)
+
+    with db.session() as session:
+        session.add(CombustibleEnvioDiferido(
+            uuid=data.uuid, telegram_user_id=identity.user_id, estado=EstadoDiferido.VENCIDO, motivo=motivo,
+            apertura_at=tiempos.apertura, sin_senal_desde=tiempos.sin_senal_desde, recibido_at=tiempos.recibido,
+            retraso_segundos=tiempos.retraso_segundos, payload_sha256=payload_sha256(data),
+            payload=data.model_dump(mode="json", exclude={"diferido", "factura"}),
+            factura=decode_pdf(data.factura) if data.factura else None,
+        ))
+        try:
+            session.flush()
+        except IntegrityError as exc:  # el mismo uuid llegó dos veces en paralelo
+            raise EnvioVencidoError(motivo) from exc
+    logger.warning("Combustible diferido VENCIDO uuid=%s usuario=%s: %s", data.uuid, identity.user_id, motivo)
+    raise EnvioVencidoError(motivo)
+
+
+def submit(db: Database, identity: TelegramIdentity, data: CombustibleIn, odometro: OdometroReader | None = None,
+           diferido: TiemposDiferido | None = None, km_fuel: OdometroReader | None = None,
+           km_gastos: OdometroReader | None = None) -> tuple[Combustible, bool]:
+    """Guarda el tanqueo como ``pendiente`` con su factura. Devuelve (registro, era_duplicado).
+
+    Idempotente por ``uuid``. ``diferido`` (ya validado dentro de la ventana) deja la
+    trazabilidad del envío sin señal.
+    """
+    with db.session() as session:
+        existing = session.scalar(select(Combustible).where(Combustible.uuid == data.uuid))
+        if existing is not None:
+            if existing.telegram_user_id != identity.user_id:
+                raise SubmissionError("Identificador de formulario en uso", status_code=409)
+            return existing, True
+
+        empleado = session.scalar(
+            select(Empleado).where(Empleado.codigo_pin == str(identity.user_id), Empleado.activo.is_(True))
+            .order_by(Empleado.updated_at.desc()).limit(1)
+        )
+        if empleado is None:
+            raise SubmissionError("Tu usuario de Telegram no está asociado a un empleado activo", 403)
+        reserva = preop_service.exigir_reserva(session, identity.user_id, diferido)
+        if data.vehiculo_id is not None and data.vehiculo_id != reserva.vehiculo_id:
+            raise SubmissionError("El vehículo no es el reservado por tu preoperacional", 409)
+
+        proveedor = None
+        if data.proveedor_id is not None:
+            proveedor = session.get(ProveedorCombustible, data.proveedor_id)
+            if proveedor is None or not proveedor.activo:
+                raise SubmissionError("El proveedor ya no está en la lista de aprobados; elígelo de nuevo o escríbelo")
+
+        # El duplicado por uuid ya salió arriba: un reenvío del mismo uuid no se compara con su propio km.
+        limite_fuel, limite_gastos = _km_limites(session, reserva, odometro, km_fuel, km_gastos, empleado.odoo_id)
+        limite = limite_gastos if data.para_gastos else limite_fuel
+        if limite is not None and not limite.acepta(data.kilometraje):
+            raise SubmissionError(limite.mensaje(data.kilometraje))
+
+        contrato_id, _ = _contrato(session, reserva)
+        registro = Combustible(
+            uuid=data.uuid,
+            telegram_user_id=identity.user_id,
+            telegram_username=identity.username,
+            firma_nombre=identity.full_name[:255] or empleado.nombre,
+            empleado_id=empleado.id,
+            vehiculo_id=reserva.vehiculo_id,
+            preop_id=reserva.preop_id,
+            contrato_odoo_id=contrato_id,
+            fecha=utc_now(),
+            fecha_transaccion=data.fecha_transaccion,
+            para_gastos=data.para_gastos,
+            proveedor_id=proveedor.id if proveedor else None,
+            proveedor_nombre=(proveedor.nombre if proveedor else data.proveedor_texto or "")[:255],
+            proveedor_odoo_id=proveedor.odoo_partner_id if proveedor else None,
+            galones=data.galones,
+            precio_galon=data.precio_galon,
+            total=data.total,
+            tipo_combustible=data.tipo_combustible,
+            kilometraje=data.kilometraje,
+            observaciones=data.observaciones if data.para_gastos else None,
+            ubicacion_requerida=True,  # sale a Odoo solo cuando el conductor comparte su ubicación
+            sync_status=SyncStatus.PENDIENTE,
+            next_attempt_at=utc_now(),
+        )
+        session.add(registro)
+        try:
+            session.flush()
+            if data.factura:
+                pdf = decode_pdf(data.factura)
+                session.add(CombustibleFactura(
+                    combustible_id=registro.id, nombre_archivo=(data.factura_nombre or "factura.pdf")[:255],
+                    contenido=pdf, tamano=len(pdf), sha256=hashlib.sha256(pdf).hexdigest()))
+            if diferido is not None:
+                session.add(CombustibleEnvioDiferido(
+                    uuid=registro.uuid, telegram_user_id=identity.user_id, estado=EstadoDiferido.ACEPTADO,
+                    combustible_id=registro.id, apertura_at=diferido.apertura,
+                    sin_senal_desde=diferido.sin_senal_desde, recibido_at=diferido.recibido,
+                    retraso_segundos=diferido.retraso_segundos, payload_sha256=payload_sha256(data),
+                ))
+            session.flush()
+        except IntegrityError as exc:  # el mismo uuid llegó dos veces en paralelo
+            raise SubmissionError("Formulario ya recibido", status_code=409) from exc
+        return registro, False
+
+
+# ──────────────────────────────────── envío a Odoo ────────────────────────────────────
+
+def build_odoo_values(registro: Combustible, factura: CombustibleFactura | None) -> dict[str, Any]:
+    """Traduce el registro local a ``vals`` del modelo ``fuel``.
+
+    Proveedor de la lista con contacto de Odoo -> ``proveedor`` (res.partner); escrito a mano o
+    sin contacto -> ``supplier`` (texto). ``amount`` = galones × precio por galón.
+    """
+    vals: dict[str, Any] = {
+        "employee_id": registro.empleado.odoo_id,
+        "vehicle_id": registro.vehiculo.odoo_id,
+        "company_id": registro.empleado.company_odoo_id,
+        "date": registro.fecha_transaccion.isoformat(),
+        "is_fuel_expenses": bool(registro.para_gastos),
+        "gallon": float(registro.galones),
+        "price_gallon": float(registro.precio_galon),
+        "amount": float(registro.total),
+        "fuel_type": registro.tipo_combustible if registro.tipo_combustible in TIPOS_BY_KEY else "diesel",
+        "km_tanking": float(registro.kilometraje),
+    }
+    if registro.latitud is not None and registro.longitud is not None:
+        vals["lat_origin"] = float(registro.latitud)
+        vals["long_origin"] = float(registro.longitud)
+    if registro.contrato_odoo_id:
+        vals["agreement_id"] = registro.contrato_odoo_id
+    if registro.proveedor_odoo_id:
+        vals["proveedor"] = registro.proveedor_odoo_id
+    else:
+        vals["supplier"] = registro.proveedor_nombre
+    if factura is not None:
+        vals["image_bill"] = base64.b64encode(factura.contenido).decode("ascii")  # Binary: base64 sin prefijo
+        vals["attachment_filename"] = factura.nombre_archivo
+        vals["fuel_attachment"] = True
+    return vals
+
+
+GASTOS_PATH = "/api/gastos/register"
+
+
+def _product_id_gastos() -> int:
+    """``COMBUSTIBLE_GASTOS_PRODUCT_ID`` (.env); 9629 (producción) si no se configura."""
+    from ..config import get_settings
+
+    try:
+        return int(get_settings().combustible_gastos_product_id)
+    except Exception:  # sin .env válido (p. ej. pruebas aisladas): el valor de producción
+        return PRODUCTO_GASTOS_ODOO_ID
+
+
+def build_gasto_payload(registro: Combustible, factura: CombustibleFactura,
+                        product_id: int | None = None) -> dict[str, Any]:
+    """Cuerpo JSON de ``POST /api/gastos/register`` (``hr.expense``) para "Combustible para gastos".
+
+    ``total_amount`` = galones × precio por galón. El proveedor, el precio por galón, el vehículo
+    y el contrato se guardan solo en la BD local: este endpoint no los recibe. ``description`` va
+    siempre (cadena vacía si el conductor no escribió observaciones).
+    """
+    payload: dict[str, Any] = {
+        "name": NOMBRE_GASTO,
+        "product_id": product_id if product_id is not None else _product_id_gastos(),
+        "total_amount": float(registro.total),
+        "employee_id": registro.empleado.odoo_id,
+        "description": registro.observaciones or "",
+        "date": registro.fecha_transaccion.isoformat(),
+        "is_fuel_expenses": True,
+        "gallon": float(registro.galones),
+        "fuel_type": registro.tipo_combustible if registro.tipo_combustible in TIPOS_BY_KEY else "diesel",
+        "km_tanking": float(registro.kilometraje),
+        "type_file": "pdf",
+        "attachment_filename": factura.nombre_archivo,
+        "attachment": base64.b64encode(factura.contenido).decode("ascii"),
+    }
+    if registro.latitud is not None and registro.longitud is not None:
+        # hr.expense no tiene lat_origin/long_origin: la ubicación viaja como texto (y el cotejo con el GPS).
+        payload["ubicacion_gps_telegram"] = gps_flota.texto_telegram(registro.latitud, registro.longitud)
+        payload["ubicacion_gps_vehiculo"] = registro.ubicacion_gps_vehiculo or gps_flota.NO_DISPONIBLE
+    return payload
+
+
+def extraer_id_gasto(respuesta: Any) -> int | None:
+    """Id del gasto creado, de forma tolerante (la respuesta del endpoint no está documentada)."""
+    if isinstance(respuesta, dict):
+        for clave in ("id", "expense_id", "gasto_id", "record_id"):
+            valor = respuesta.get(clave)
+            if isinstance(valor, int) and not isinstance(valor, bool) and valor > 0:
+                return valor
+        for clave in ("result", "data", "response"):
+            encontrado = extraer_id_gasto(respuesta.get(clave))
+            if encontrado is not None:
+                return encontrado
+    elif isinstance(respuesta, list) and respuesta:
+        return extraer_id_gasto(respuesta[0])
+    return None
+
+
+class RestNoConfigurado(Exception):
+    """Falta el cliente REST (``ODOO_API_LOGIN``/``ODOO_API_PASSWORD``): el gasto queda en cola."""
+
+
+def tomar_instantanea_gps(db: Database, combustible_id: int, gps: gps_flota.FlotaGpsClient | None,
+                          model: Any = Combustible) -> None:
+    """Consulta el GPS de la flota una sola vez por registro y guarda la instantánea (también el fallo).
+
+    Si ``ubicacion_gps_vehiculo`` ya tiene valor, no consulta de nuevo (reintentos del envío). Nunca lanza.
+    ``model`` es la tabla del registro (``Combustible`` o ``GastoOperativo``: mismas columnas de ubicación y GPS);
+    sin vehículo reservado (solo gastos operativos) no hay placa que consultar y queda ``GPS no disponible``.
+    """
+    with db.session() as session:
+        registro = session.get(model, combustible_id)
+        if registro is None or registro.ubicacion_gps_vehiculo is not None or registro.latitud is None \
+                or registro.longitud is None:
+            return
+        lat, lon = registro.latitud, registro.longitud
+        placa = reservas.placa(registro.vehiculo) if registro.vehiculo is not None else None
+    posicion = None
+    if gps is not None and placa:
+        try:
+            posicion = gps.consultar(placa)
+        except Exception:
+            logger.exception("%s %s: fallo inesperado consultando el GPS", model.__name__, combustible_id)
+    with db.session() as session:
+        registro = session.get(model, combustible_id)
+        assert registro is not None
+        registro.ubicacion_gps_vehiculo = gps_flota.texto_vehiculo(posicion, lat, lon)
+        if posicion is not None:
+            registro.gps_latitud, registro.gps_longitud = posicion.latitud, posicion.longitud
+            registro.gps_at = posicion.momento
+            registro.gps_distancia_m = gps_flota.distancia_m(posicion, lat, lon)
+    logger.info("%s %s: GPS de la flota -> %s", model.__name__, combustible_id,
+                "sin dato" if posicion is None else f"{registro.gps_distancia_m} m")
+
+
+def enviar_gasto(writer: OdooWriter, rest_client: OdooRestClient | None, payload: dict[str, Any],
+                 combustible_id: int, buscar: Callable[[dict[str, Any]], int | None] | None = None,
+                 etiqueta: str = "Combustible") -> int | None:
+    """Crea el ``hr.expense`` por REST sin duplicar. Devuelve su id (None si la API no lo informa).
+
+    Antes de cada POST busca por XML-RPC un gasto con la misma llave natural: el endpoint crea un
+    registro y el reintento (nuestro o de la cola) podría duplicarlo. El POST no se reintenta solo.
+    ``buscar`` reemplaza la búsqueda de combustible (los gastos operativos buscan con su propia llave);
+    ``etiqueta`` solo rotula el log.
+    Lanza ``OdooTransientError`` (red/5xx, reintentable) u ``OdooPermanentError`` (4xx, definitivo).
+    """
+    if rest_client is None:
+        raise RestNoConfigurado("ODOO_API_LOGIN/ODOO_API_PASSWORD sin configurar: no se pueden enviar gastos")
+    try:
+        existente = (buscar or writer.buscar_gasto_combustible)(payload)
+    except OdooTransientError:
+        raise  # sin saber si ya existe no se postea: reintento de la cola
+    except OdooWriteError as exc:
+        # Típico: el campo no existe en hr.expense. No se oculta; se continúa con el POST.
+        logger.warning("%s %s: no se pudo verificar duplicados en hr.expense (%s); se envía igual",
+                       etiqueta, combustible_id, exc)
+        existente = None
+    if existente is not None:
+        logger.info("%s %s ya existía como hr.expense id=%s: no se duplicó", etiqueta, combustible_id, existente)
+        return existente
+    try:
+        respuesta = rest_client.post_json_once(GASTOS_PATH, payload)
+    except OdooApiError as exc:
+        if is_retryable_error(exc):
+            raise OdooTransientError(str(exc)) from exc
+        raise OdooPermanentError(str(exc)) from exc
+    except Exception as exc:
+        if is_retryable_error(exc):  # httpx.TransportError: red o timeout
+            raise OdooTransientError(f"Sin respuesta de {GASTOS_PATH}: {type(exc).__name__}") from exc
+        raise
+    gasto_id = extraer_id_gasto(respuesta)
+    if gasto_id is None:
+        logger.warning("%s %s: %s no devolvió un id reconocible; respuesta=%.500s",
+                       etiqueta, combustible_id, GASTOS_PATH, respuesta)
+    return gasto_id
+
+
+@dataclass(frozen=True)
+class CombustibleOutcome:
+    combustible_id: int
+    telegram_user_id: int
+    status: SyncStatus
+    odoo_id: int | None = None
+    total: float = 0.0
+    galones: float = 0.0
+    placa: str | None = None
+    error: str | None = None
+
+
+def send_one(db: Database, writer: OdooWriter, combustible_id: int, max_attempts: int,
+             rest_client: OdooRestClient | None = None,
+             gps: gps_flota.FlotaGpsClient | None = None) -> CombustibleOutcome:
+    """Envía un tanqueo ya reclamado (``enviando``) y deja el estado final en la BD.
+
+    Pestaña Combustible -> ``fuel`` por XML-RPC; "para gastos" -> ``hr.expense`` por REST.
+    """
+    with db.session() as session:
+        registro = session.get(Combustible, combustible_id)
+        if registro is None or registro.sync_status != SyncStatus.ENVIANDO:
+            raise LookupError(f"combustible {combustible_id} no está en estado enviando")
+        necesita_gps = bool(registro.para_gastos)
+    if necesita_gps:  # antes de armar el payload; el GPS nunca retiene el gasto
+        tomar_instantanea_gps(db, combustible_id, gps)
+    with db.session() as session:
+        registro = session.get(Combustible, combustible_id)
+        assert registro is not None
+        factura = session.scalar(select(CombustibleFactura).where(CombustibleFactura.combustible_id == registro.id))
+        para_gastos = bool(registro.para_gastos)
+        vals = (build_gasto_payload(registro, factura) if para_gastos and factura is not None
+                else build_odoo_values(registro, factura))
+        ref, submitted_at, attempts = registro.uuid, registro.fecha, registro.attempts
+        user_id, total, galones = registro.telegram_user_id, registro.total, registro.galones
+        placa = reservas.placa(registro.vehiculo)
+
+    status: SyncStatus
+    error: str | None = None
+    odoo_id: int | None = None
+    odoo_name: str | None = None
+    sin_cliente = False
+    try:
+        if para_gastos:
+            if factura is None:
+                raise OdooPermanentError("El gasto no tiene factura PDF adjunta")
+            odoo_id = enviar_gasto(writer, rest_client, vals, combustible_id)
+        else:
+            odoo_id, odoo_name, reused = writer.create_combustible(ref, vals, submitted_at, attempts > 1)
+            if reused:
+                logger.info("Combustible %s ya existía en Odoo (id=%s): no se duplicó", combustible_id, odoo_id)
+        status = SyncStatus.ENVIADO
+    except RestNoConfigurado as exc:
+        # Es de configuración, no del registro: no consume intentos ni pasa a fallido.
+        status, error, sin_cliente = SyncStatus.ERROR, str(exc), True
+        logger.error("Combustible %s en espera: %s", combustible_id, exc)
+    except OdooPermanentError as exc:
+        status, error = SyncStatus.FALLIDO, f"Odoo rechazó el registro: {exc}"
+    except OdooTransientError as exc:
+        status = SyncStatus.FALLIDO if attempts >= max_attempts else SyncStatus.ERROR
+        error = f"Intento {attempts}/{max_attempts}: {exc}"
+
+    now = utc_now()
+    with db.session() as session:
+        registro = session.get(Combustible, combustible_id)
+        assert registro is not None
+        registro.sync_status = status
+        registro.error_log = error
+        if status == SyncStatus.ENVIADO:
+            if para_gastos:
+                registro.odoo_gasto_id = odoo_id
+            else:
+                registro.odoo_id, registro.odoo_name = odoo_id, odoo_name
+            registro.sent_at = now
+            registro.next_attempt_at = None
+        elif sin_cliente:
+            registro.attempts = max(registro.attempts - 1, 0)
+            registro.next_attempt_at = now + preop_service.backoff(1) * 10
+        elif status == SyncStatus.ERROR:
+            registro.next_attempt_at = now + preop_service.backoff(attempts)
+        else:
+            registro.next_attempt_at = None
+    log = logger.info if status == SyncStatus.ENVIADO else logger.warning
+    log("Combustible %s -> %s%s", combustible_id, status.value, f" ({error})" if error else f" odoo_id={odoo_id}")
+    return CombustibleOutcome(combustible_id, user_id, status, odoo_id, float(total), float(galones), placa, error)
+
+
+def claim_batch(db: Database, limit: int, lease_seconds: int, now: datetime | None = None) -> list[int]:
+    """Reclama los listos para enviar; los que esperan la ubicación del conductor quedan retenidos.
+
+    Filas viejas (``ubicacion_requerida`` NULL/falso) siguen saliendo como antes.
+    """
+    libre = or_(Combustible.ubicacion_requerida.is_not(True), Combustible.latitud.is_not(None))
+    return preop_service.claim_batch(db, limit, lease_seconds, now, model=Combustible, where=libre)
+
+
+# ───────────────────────────────── ubicación del tanqueo ─────────────────────────────────
+
+def _aware(value: datetime) -> datetime:
+    from datetime import UTC
+
+    return value if value.tzinfo else value.replace(tzinfo=UTC)
+
+
+def _esperando_ubicacion(model: Any = Combustible) -> Any:
+    return and_(model.ubicacion_requerida.is_(True), model.latitud.is_(None))
+
+
+@dataclass(frozen=True)
+class UbicacionAsignada:
+    combustible_id: int  # id del registro que recibió la ubicación (tanqueo o envío de gastos, según ``origen``)
+    placa: str | None
+    pendientes: int  # otros registros del usuario que aún esperan ubicación
+    origen: str = "combustible"  # "combustible" o "gastos"
+
+
+def _filas_esperando(session: Session, model: Any, telegram_user_id: int) -> list[Any]:
+    """Registros del usuario que esperan ubicación, del más antiguo al más nuevo."""
+    return list(session.scalars(
+        select(model).where(model.telegram_user_id == telegram_user_id, _esperando_ubicacion(model))
+        .order_by(model.fecha, model.id)))
+
+
+def fecha_candidata_ubicacion(db: Database, telegram_user_id: int, enviada_at: datetime,
+                              model: Any = Combustible) -> datetime | None:
+    """Fecha de recepción del registro más antiguo que esperaría esta ubicación (recibido antes de ella), o None.
+
+    Sirve para repartir la ubicación entre Combustible y Gastos Operativos: gana el pendiente más antiguo.
+    """
+    enviada = _aware(enviada_at)
+    with db.session() as session:
+        for fila in _filas_esperando(session, model, telegram_user_id):
+            if _aware(fila.fecha) <= enviada:
+                return _aware(fila.fecha)
+    return None
+
+
+def contar_ubicaciones_pendientes(db: Database, telegram_user_id: int, model: Any = Combustible) -> int:
+    with db.session() as session:
+        return int(session.scalar(select(func.count()).select_from(model).where(
+            model.telegram_user_id == telegram_user_id, _esperando_ubicacion(model))) or 0)
+
+
+def asignar_ubicacion(db: Database, telegram_user_id: int, latitud: float, longitud: float,
+                      enviada_at: datetime, now: datetime | None = None,
+                      model: Any = Combustible) -> UbicacionAsignada | None:
+    """Asigna la ubicación al registro MÁS ANTIGUO del usuario que la espera (y fue recibido antes de ella).
+
+    Devuelve None si no hay ninguno; una ubicación anterior al registro (``enviada_at`` < ``fecha``) no cuenta.
+    """
+    now = now or utc_now()
+    enviada = _aware(enviada_at)
+    with db.session() as session:
+        filas = _filas_esperando(session, model, telegram_user_id)
+        elegible = next((f for f in filas if _aware(f.fecha) <= enviada), None)
+        if elegible is None:
+            return None
+        elegible.latitud, elegible.longitud, elegible.ubicacion_at = latitud, longitud, now
+        placa = reservas.placa(elegible.vehiculo) if elegible.vehiculo is not None else None
+        logger.info("%s %s: ubicación recibida", model.__name__, elegible.id)
+        return UbicacionAsignada(elegible.id, placa, len(filas) - 1)
+
+
+def placa_de(db: Database, combustible_id: int, model: Any = Combustible) -> str | None:
+    """Placa del vehículo de un registro (en sesión propia: el del router ya está desligado)."""
+    with db.session() as session:
+        registro = session.get(model, combustible_id)
+        if registro is None or registro.vehiculo is None:
+            return None
+        return reservas.placa(registro.vehiculo)
+
+
+def hay_ubicacion_pendiente(db: Database, telegram_user_id: int, model: Any = Combustible) -> bool:
+    with db.session() as session:
+        return session.scalar(select(model.id).where(
+            model.telegram_user_id == telegram_user_id, _esperando_ubicacion(model)).limit(1)) is not None
+
+
+@dataclass(frozen=True)
+class RecordatorioUbicacion:
+    combustible_id: int  # id del registro (tanqueo o envío de gastos, según ``origen``)
+    telegram_user_id: int
+    numero: int  # 1 o 2
+    placa: str | None
+    origen: str = "combustible"  # "combustible" o "gastos"
+
+
+def recordatorios_pendientes(db: Database, now: datetime | None = None,
+                             model: Any = Combustible) -> list[RecordatorioUbicacion]:
+    """Registros sin ubicación a los que ya les toca recordatorio (10 y 30 min tras el envío; máximo 2).
+
+    Marca el recordatorio como enviado al devolverlo (como mucho una vez; un fallo de Telegram no lo repite).
+    """
+    now = now or utc_now()
+    maximo = len(RECORDATORIOS_UBICACION_MIN)
+    out: list[RecordatorioUbicacion] = []
+    with db.session() as session:
+        filas = session.scalars(select(model).where(
+            _esperando_ubicacion(model), model.recordatorios_ubicacion < maximo))
+        for fila in filas:
+            n = fila.recordatorios_ubicacion
+            if now - _aware(fila.fecha) >= timedelta(minutes=RECORDATORIOS_UBICACION_MIN[n]):
+                fila.recordatorios_ubicacion = n + 1
+                placa = reservas.placa(fila.vehiculo) if fila.vehiculo is not None else None
+                out.append(RecordatorioUbicacion(fila.id, fila.telegram_user_id, n + 1, placa))
+    return out
+
+
+def requeue_failed(db: Database, ids: list[int] | None = None) -> int:
+    return preop_service.requeue_failed(db, ids, model=Combustible)

@@ -1,9 +1,10 @@
-"""Conector XML-RPC de ESCRITURA a Odoo para los formularios (preoperacional y AST).
+"""Conector XML-RPC de ESCRITURA a Odoo para los formularios del bot.
 
 Se mantiene separado de ``app.odoo_client.OdooClient`` (solo lectura, usado por
 el validador de QR) para que el permiso de escritura quede acotado a métodos de
-creación: ``create_preoperacional``, ``create_ast`` y ``create_prueba_ruta``. Todos
-siguen el mismo flujo; solo cambian el modelo y la llave natural (``_Destino``).
+creación: ``create_preoperacional``, ``create_ast``, ``create_prueba_ruta`` y
+``create_combustible`` y ``create_pos_operacional``. Todos siguen el mismo flujo; solo cambian el modelo y la
+llave natural (``_Destino``).
 
 Flujo de creación:
 
@@ -32,7 +33,7 @@ import threading
 import xmlrpc.client
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Iterable
 from urllib.parse import urlparse
 
 from tenacity import (
@@ -66,6 +67,8 @@ PREOPERACIONAL = _Destino("preoperacional", "preop", ("employee_id", "vehicle_id
 # 2 min de un envío incierto es, en la práctica, el mismo formulario reenviado.
 AST = _Destino("ast", "ast", ("employee_id",))
 PRUEBA_RUTA = _Destino("prueba.ruta", "prueba_ruta", ("user_id", "vehicle_id"))
+COMBUSTIBLE = _Destino("fuel", "combustible", ("employee_id", "vehicle_id", "km_tanking"))
+POS_OPERACIONAL = _Destino("pos.operacional", "pos_operacional", ("employee_id", "check_in", "check_out"))
 ODOO_MODEL = PREOPERACIONAL.model
 
 # Fallos de Odoo que dependen del momento (concurrencia), no de los datos.
@@ -208,6 +211,27 @@ class OdooWriter:
             return None
         return valor if valor > 0 else None
 
+    def _max_km_tanking(self, model: str, dominio: list[Any], etiqueta: str) -> float | None:
+        try:
+            with self._lock:
+                rows = self._execute(model, "search_read", [dominio],
+                                     {"fields": ["km_tanking"], "order": "km_tanking desc", "limit": 1})
+        except OdooWriteError as exc:  # igual que el odómetro: no se bloquea al conductor por un fallo de Odoo
+            logger.warning("No se pudo leer el último km de %s en Odoo: %s", etiqueta, exc)
+            return None
+        valor = float(rows[0].get("km_tanking") or 0) if rows else 0.0
+        return valor if valor > 0 else None
+
+    def ultimo_km_fuel(self, vehicle_odoo_id: int) -> float | None:
+        """Mayor ``km_tanking`` del modelo ``fuel`` para el vehículo (solo lectura); None si no hay o falla."""
+        return self._max_km_tanking("fuel", [["vehicle_id", "=", vehicle_odoo_id]], f"fuel del vehículo {vehicle_odoo_id}")
+
+    def ultimo_km_gastos(self, employee_odoo_id: int) -> float | None:
+        """Mayor ``km_tanking`` de los ``hr.expense`` de combustible del empleado (solo lectura)."""
+        return self._max_km_tanking(
+            "hr.expense", [["employee_id", "=", employee_odoo_id], ["is_fuel_expenses", "=", True]],
+            f"gastos del empleado {employee_odoo_id}")
+
     # ── idempotencia ───────────────────────────────────────────────────────
     @staticmethod
     def xmlid_name(external_ref: str, prefix: str = PREOPERACIONAL.prefix) -> str:
@@ -257,6 +281,85 @@ class OdooWriter:
                            previous_attempt_uncertain: bool) -> tuple[int, str | None, bool]:
         """Crea la Prueba de Ruta (modelo ``prueba.ruta``). Devuelve (odoo_id, name, ya_existía)."""
         return self._create(PRUEBA_RUTA, external_ref, vals, submitted_at, previous_attempt_uncertain)
+
+    def create_combustible(self, external_ref: str, vals: dict[str, Any], submitted_at: datetime,
+                           previous_attempt_uncertain: bool) -> tuple[int, str | None, bool]:
+        """Crea el tanqueo (modelo ``fuel``). Devuelve (odoo_id, name, ya_existía)."""
+        return self._create(COMBUSTIBLE, external_ref, vals, submitted_at, previous_attempt_uncertain)
+
+    def create_pos_operacional(self, external_ref: str, vals: dict[str, Any], submitted_at: datetime,
+                               previous_attempt_uncertain: bool) -> tuple[int, str | None, bool]:
+        """Crea el Pos-Operacional (modelo ``pos.operacional``). Devuelve (odoo_id, name, ya_existía)."""
+        return self._create(POS_OPERACIONAL, external_ref, vals, submitted_at, previous_attempt_uncertain)
+
+    def buscar_pos_operacional(self, vals: dict[str, Any]) -> int | None:
+        """Id de un ``pos.operacional`` ya existente (solo lectura), o None.
+
+        Llave natural: ``employee_id`` + ``check_in`` + ``check_out`` (UTC naive ``YYYY-MM-DD HH:MM:SS``). Se consulta
+        antes de cada ``create`` para que un reintento tras un timeout no duplique el registro.
+        Lanza ``OdooWriteError`` si la búsqueda falla.
+        """
+        dominio = [(campo, "=", vals[campo]) for campo in POS_OPERACIONAL.llave_natural]
+        with self._lock:
+            ids = self._execute("pos.operacional", "search", [dominio], {"limit": 1, "order": "id desc"})
+        return int(ids[0]) if ids else None
+
+    def buscar_gasto_combustible(self, vals: dict[str, Any]) -> int | None:
+        """Id de un ``hr.expense`` de combustible ya existente (solo lectura), o None.
+
+        Llave natural: ``employee_id`` + ``is_fuel_expenses`` + ``km_tanking`` + ``date`` +
+        ``total_amount``. Lo usa el envío de "Combustible para gastos" antes de cada POST a
+        ``/api/gastos/register`` (que crea un registro nuevo) para no duplicar en reintentos.
+        Lanza ``OdooWriteError`` si la búsqueda falla (p. ej. el campo no existe en ``hr.expense``).
+        """
+        dominio = [
+            ("employee_id", "=", vals["employee_id"]),
+            ("is_fuel_expenses", "=", True),
+            ("km_tanking", "=", vals["km_tanking"]),
+            ("date", "=", vals["date"]),
+            ("total_amount", "=", vals["total_amount"]),
+        ]
+        with self._lock:
+            ids = self._execute("hr.expense", "search", [dominio], {"limit": 1, "order": "id desc"})
+        return int(ids[0]) if ids else None
+
+    def buscar_gasto_operativo(self, vals: dict[str, Any], excluir_ids: Iterable[int] = ()) -> int | None:
+        """Id de un ``hr.expense`` de gasto operativo ya existente (solo lectura), o None.
+
+        Llave natural: ``employee_id`` + ``date`` + ``total_amount`` + ``product_id`` + ``is_fuel_expenses`` falso.
+        Lo usa el envío de Gastos Operativos antes de cada POST a ``/api/gastos/register``. ``excluir_ids`` son
+        los gastos que otras líneas del mismo envío ya tienen asignados: dos tarjetas iguales (mismo tipo y valor)
+        son dos gastos distintos y no deben colapsar en uno.
+        Lanza ``OdooWriteError`` si la búsqueda falla.
+        """
+        dominio: list[Any] = [
+            ("employee_id", "=", vals["employee_id"]),
+            ("is_fuel_expenses", "=", False),
+            ("date", "=", vals["date"]),
+            ("total_amount", "=", vals["total_amount"]),
+            ("product_id", "=", vals["product_id"]),
+        ]
+        excluir = [int(i) for i in excluir_ids]
+        if excluir:
+            dominio.append(("id", "not in", excluir))
+        with self._lock:
+            ids = self._execute("hr.expense", "search", [dominio], {"limit": 1, "order": "id desc"})
+        return int(ids[0]) if ids else None
+
+    def buscar_contacto(self, nit: str | None, nombre: str) -> int | None:
+        """Id del contacto (``res.partner``) por NIT o, si no, por nombre exacto; None si no es único.
+
+        Solo lectura; lo usa la carga de proveedores de combustible.
+        """
+        dominios: list[list[Any]] = []
+        if nit:
+            dominios.append([("vat", "ilike", nit)])
+        dominios.append([("name", "=ilike", nombre)])
+        for dominio in dominios:
+            ids = self._execute("res.partner", "search", [dominio], {"limit": 2})
+            if len(ids) == 1:
+                return int(ids[0])
+        return None
 
     def _create(self, destino: _Destino, external_ref: str, vals: dict[str, Any], submitted_at: datetime,
                 previous_attempt_uncertain: bool) -> tuple[int, str | None, bool]:

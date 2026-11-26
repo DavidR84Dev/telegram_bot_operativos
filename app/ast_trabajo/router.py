@@ -26,7 +26,15 @@ from sqlalchemy import select
 from ..preop import service as preop_service
 from ..preop.db import Database
 from ..preop.models import AnalisisSeguro
-from ..preop.router import _LOGO_URL, _identity, _logo_version, firma_previa_diferida, tiempos_diferido
+from ..preop.router import (
+    _LOGO_URL,
+    _identity,
+    _logo_version,
+    contexto_http,
+    firma_previa_diferida,
+    http_error,
+    tiempos_diferido,
+)
 from . import service
 from .catalogo import form_definition
 from .schemas import AstIn, AstOut
@@ -91,7 +99,7 @@ async def ast_context(request: Request, identity: Identity) -> dict[str, Any]:
             status.HTTP_403_FORBIDDEN,
             f"Tu ID de Telegram ({identity.user_id}) no está registrado como PIN de un empleado activo",
         )
-    return await asyncio.to_thread(service.form_context, svc.db, empleado)
+    return await contexto_http(service.form_context, svc.db, empleado, identity.user_id)
 
 
 def _out(ast: AnalisisSeguro, duplicated: bool = False) -> AstOut:
@@ -124,7 +132,7 @@ async def ast_submit(
         # Sin aviso al conductor (misma decisión del preoperacional): la Mini App lo descarta en silencio.
         raise HTTPException(status.HTTP_410_GONE, "Envío vencido: superó 1 hora sin señal") from exc
     except preop_service.SubmissionError as exc:
-        raise HTTPException(exc.status_code, str(exc)) from exc
+        raise http_error(exc) from exc
     if not duplicated and svc.wake_worker is not None:
         svc.wake_worker()
     logger.info("AST recibido id=%s uuid=%s usuario=%s duplicado=%s alertas=%s diferido=%s",

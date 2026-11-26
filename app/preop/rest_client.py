@@ -45,6 +45,11 @@ def _is_retryable(exc: BaseException) -> bool:
     return isinstance(exc, (httpx.TransportError, _RetryableHttpError))
 
 
+def is_retryable_error(exc: BaseException) -> bool:
+    """True si el fallo es de red o 5xx/429 (un reintento puede resolverlo); False si es definitivo."""
+    return _is_retryable(exc)
+
+
 _retry = retry(
     retry=retry_if_exception(_is_retryable),
     stop=stop_after_attempt(5),
@@ -158,13 +163,21 @@ class OdooRestClient:
     @_retry
     def post_json(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
         """POST con cuerpo JSON. Solo para endpoints idempotentes (se reintenta ante 5xx/red)."""
+        return self.post_json_once(path, body)
+
+    def post_json_once(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
+        """POST sin reintento automático (endpoints que crean registros: reintenta quien llama).
+
+        Un 5xx/429 lanza ``_RetryableHttpError``, un error de red ``httpx.TransportError`` (ambos
+        reintentables, ver ``is_retryable_error``) y un 4xx ``OdooApiError`` (definitivo).
+        """
         token = self._valid_token()
         response = self._http.post(path, json=body, headers={"Authorization": f"Bearer {token}"})
         if response.status_code == 401:
             token = self._authenticate()
             response = self._http.post(path, json=body, headers={"Authorization": f"Bearer {token}"})
         if response.status_code >= 500 or response.status_code == 429:
-            raise _RetryableHttpError(f"{path} respondió {response.status_code}")
+            raise _RetryableHttpError(f"{path} respondió {response.status_code}: {response.text[:300]}")
         if response.status_code >= 400:
             raise OdooApiError(f"{path} respondió {response.status_code}: {response.text[:200]}")
         try:

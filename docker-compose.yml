@@ -18,6 +18,35 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # Panel Admin: bot aparte (token propio) con la Mini App de administración. Mismo build, BD y .env
+  # que "app", pero otro proceso/contenedor. Doc: docs/PANEL_ADMIN.md
+  admin:
+    build: .
+    command: ["python", "-m", "app.admin"]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg2://watcher:${POSTGRES_PASSWORD:-watcher}@db:5432/watches
+      # Dentro del contenedor debe escuchar en todas las interfaces para que Docker publique el puerto.
+      ADMIN_LISTEN_HOST: 0.0.0.0
+      ADMIN_ENV_FILE: /srv/.env
+    ports:
+      # Solo loopback del host: nginx / el túnel (fuera de este compose) hace el proxy HTTPS.
+      - "127.0.0.1:8012:8012"
+    volumes:
+      # Lectura y escritura: la pestaña Parámetros edita el .env (y deja respaldos en run/env-backups).
+      - ./.env:/srv/.env
+      - ./run:/srv/run
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8012/health', timeout=2)"]
+      interval: 30s
+      timeout: 3s
+      start_period: 10s
+      retries: 3
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
   db:
     image: postgres:16-alpine
     environment:

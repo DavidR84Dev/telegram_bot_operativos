@@ -1,6 +1,7 @@
-"""Entrypoint FastAPI: validador de QR (solo lectura en Odoo), preoperacional, AST y Prueba de Ruta."""
+"""Entrypoint FastAPI: validador de QR (solo lectura en Odoo), preoperacional, AST, Prueba de Ruta, Combustible, Gastos Operativos y Pos-Operacional."""
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -12,8 +13,24 @@ from .ast_trabajo.router import AstServices
 from .ast_trabajo.router import router as ast_router
 from .ast_trabajo.service import AstOutcome
 from .ast_trabajo.worker import AstSender
+from .combustible.router import CombustibleServices
+from .combustible.router import router as combustible_router
+from .combustible import service as combustible_service
+from .combustible.service import CombustibleOutcome, RecordatorioUbicacion
+from .combustible.gps import build_gps_client
+from .combustible.worker import CombustibleSender, build_rest_client
 from .config import get_settings
+from .gastos_operativos import service as gastos_service
+from .gastos_operativos.catalogo import TiposGastoError, TopesGastoError, parse_tipos, parse_topes
+from .gastos_operativos.router import GastosOperativosServices
+from .gastos_operativos.router import router as gastos_operativos_router
+from .gastos_operativos.service import GastosOutcome
+from .gastos_operativos.worker import GastosOperativosSender
 from .odoo_client import OdooClient
+from .pos_operacional.router import PosOperacionalServices
+from .pos_operacional.router import router as pos_operacional_router
+from .pos_operacional.service import PosOperacionalOutcome
+from .pos_operacional.worker import PosOperacionalSender
 from .preop.db import Database
 from .preop.etl import run_from_settings
 from .preop.rest_client import OdooRestClient
@@ -28,11 +45,14 @@ from .prueba_ruta.service import PruebaRutaOutcome
 from .prueba_ruta.worker import PruebaRutaSender
 from .telegram_app import (
     BOT_COMMANDS,
+    COMBUSTIBLE_WAKE_KEY,
+    GASTOS_WAKE_KEY,
     PREOP_DB_KEY,
     REGISTRO_KEY,
     SERVICES_KEY,
     RegistroServices,
     build_application,
+    ubicacion_keyboard,
 )
 from .watch_store import WatchStore
 from .web import router as web_router
@@ -73,6 +93,9 @@ def _start_preop(app: FastAPI, application) -> list:
     tasks: list = [sender]
     tasks.append(_start_ast(app, application, db, writer))
     tasks.append(_start_prueba_ruta(app, application, db, writer))
+    tasks.append(_start_combustible(app, application, db, writer))
+    tasks.append(_start_gastos_operativos(app, application, db, writer))
+    tasks.append(_start_pos_operacional(app, application, db, writer))
     # El handler de 📍 Enviar ubicación guarda en esta misma BD.
     application.bot_data[PREOP_DB_KEY] = db
     app.state.preop = PreopServices(
@@ -164,6 +187,130 @@ def _start_prueba_ruta(app: FastAPI, application, db: Database, writer) -> Prueb
     return sender
 
 
+def _start_combustible(app: FastAPI, application, db: Database, writer) -> CombustibleSender:
+    """Arranca el registro de combustible: misma BD y usuario de escritura; cola propia hacia ``fuel``."""
+
+    async def notify(outcome: CombustibleOutcome) -> None:
+        await application.bot.send_message(
+            chat_id=outcome.telegram_user_id, text=formatting.combustible_result(outcome), parse_mode="HTML"
+        )
+
+    async def remind(recordatorio: RecordatorioUbicacion) -> None:
+        await application.bot.send_message(
+            chat_id=recordatorio.telegram_user_id,
+            text=formatting.combustible_recordatorio_ubicacion(recordatorio.placa), parse_mode="HTML",
+            reply_markup=ubicacion_keyboard(),
+        )
+
+    async def on_accepted(registro) -> None:
+        """Registro aceptado (también el reenvío sin señal): se pide la ubicación en el chat."""
+        # El registro llega desligado de la sesión: la placa se lee en una sesión propia.
+        placa = await asyncio.to_thread(combustible_service.placa_de, db, registro.id)
+        await application.bot.send_message(
+            chat_id=registro.telegram_user_id,
+            text=formatting.combustible_pedir_ubicacion(placa), parse_mode="HTML",
+            reply_markup=ubicacion_keyboard(),
+        )
+
+    sender = CombustibleSender(
+        db, writer, settings.preop_worker_interval_seconds, settings.preop_max_attempts,
+        settings.preop_sending_lease_seconds, notify=notify, rest_client=build_rest_client(settings),
+        remind=remind, gps=build_gps_client(settings),
+    )
+    sender.start()
+    # on_location despierta la cola al llegar la ubicación (envío y consulta GPS segundos después).
+    application.bot_data[COMBUSTIBLE_WAKE_KEY] = sender.wake
+    app.state.combustible = CombustibleServices(
+        db=db, bot_token=settings.telegram_bot_token.get_secret_value(),
+        max_age_seconds=settings.preop_auth_max_age_seconds, wake_worker=sender.wake,
+        odometro=writer.ultimo_odometro, on_accepted=on_accepted,
+        # Sin km_gastos: en qa2 (2026-11-26) Odoo valida el km por vehículo (fuel), no por empleado; el
+        # máximo de hr.expense del empleado bloquearía al conductor que cambia de vehículo.
+        km_fuel=writer.ultimo_km_fuel,
+    )
+    return sender
+
+
+def _start_gastos_operativos(app: FastAPI, application, db: Database, writer) -> GastosOperativosSender:
+    """Arranca Gastos Operativos: misma BD; cola propia hacia ``hr.expense`` (``/api/gastos/register``)."""
+    try:
+        tipos = parse_tipos(settings.gastos_operativos_tipos)  # se valida al arrancar: un error impide iniciar
+    except TiposGastoError as exc:
+        raise RuntimeError(f"Configuración inválida: {exc}") from exc
+    try:
+        topes = parse_topes(settings.gastos_operativos_topes, tipos)  # idem: nombres que existan, enteros > 0
+    except TopesGastoError as exc:
+        raise RuntimeError(f"Configuración inválida: {exc}") from exc
+
+    async def notify(outcome: GastosOutcome) -> None:
+        await application.bot.send_message(
+            chat_id=outcome.telegram_user_id, text=formatting.gastos_result(outcome), parse_mode="HTML"
+        )
+
+    async def remind(recordatorio: RecordatorioUbicacion) -> None:
+        await application.bot.send_message(
+            chat_id=recordatorio.telegram_user_id,
+            text=formatting.gastos_recordatorio_ubicacion(recordatorio.placa), parse_mode="HTML",
+            reply_markup=ubicacion_keyboard(),
+        )
+
+    async def on_accepted(recibido) -> None:
+        """Envío aceptado (también el reenvío sin señal): se pide la ubicación en el chat."""
+        placa = await asyncio.to_thread(gastos_service.placa_de, db, recibido.id)
+        await application.bot.send_message(
+            chat_id=recibido.telegram_user_id,
+            text=formatting.gastos_pedir_ubicacion(placa, recibido.gastos), parse_mode="HTML",
+            reply_markup=ubicacion_keyboard(),
+        )
+
+    async def on_rejected(telegram_user_id: int, mensaje: str) -> None:
+        """Envío guardado sin señal que ya supera un tope vigente: el conductor debe diligenciarlo de nuevo."""
+        await application.bot.send_message(
+            chat_id=telegram_user_id, text=formatting.gastos_rechazado_por_tope(mensaje), parse_mode="HTML")
+
+    sender = GastosOperativosSender(
+        db, writer, settings.preop_worker_interval_seconds, settings.preop_max_attempts,
+        settings.preop_sending_lease_seconds, notify=notify, rest_client=build_rest_client(settings),
+        remind=remind, gps=build_gps_client(settings),
+    )
+    sender.start()
+    # on_location despierta la cola al llegar la ubicación (envío y consulta GPS segundos después).
+    application.bot_data[GASTOS_WAKE_KEY] = sender.wake
+    app.state.gastos_operativos = GastosOperativosServices(
+        db=db, bot_token=settings.telegram_bot_token.get_secret_value(),
+        max_age_seconds=settings.preop_auth_max_age_seconds, tipos=tipos,
+        wake_worker=sender.wake, on_accepted=on_accepted, topes=topes, on_rejected=on_rejected,
+    )
+    return sender
+
+
+def _start_pos_operacional(app: FastAPI, application, db: Database, writer) -> PosOperacionalSender:
+    """Arranca el Pos-Operacional: misma BD y usuario de escritura; cola propia hacia ``pos.operacional``."""
+
+    async def notify(outcome: PosOperacionalOutcome) -> None:
+        await application.bot.send_message(
+            chat_id=outcome.telegram_user_id, text=formatting.pos_operacional_result(outcome), parse_mode="HTML"
+        )
+
+    async def on_accepted(recibido) -> None:
+        """Envío aceptado (también el reenvío sin señal): se confirma la recepción en el chat."""
+        await application.bot.send_message(
+            chat_id=recibido.telegram_user_id, text=formatting.pos_operacional_recibido(recibido.placa),
+            parse_mode="HTML",
+        )
+
+    sender = PosOperacionalSender(
+        db, writer, settings.preop_worker_interval_seconds, settings.preop_max_attempts,
+        settings.preop_sending_lease_seconds, notify=notify,
+    )
+    sender.start()
+    app.state.pos_operacional = PosOperacionalServices(
+        db=db, bot_token=settings.telegram_bot_token.get_secret_value(),
+        max_age_seconds=settings.preop_auth_max_age_seconds, wake_worker=sender.wake, on_accepted=on_accepted,
+    )
+    return sender
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     application = None
@@ -208,11 +355,14 @@ async def lifespan(app: FastAPI):
         await application.shutdown()
 
 
-app = FastAPI(title="Telegram Bot Operativos", version="1.4.0", lifespan=lifespan)
+app = FastAPI(title="Telegram Bot Operativos", version="1.5.0", lifespan=lifespan)
 app.include_router(web_router)
 app.include_router(preop_router)
 app.include_router(ast_router)
 app.include_router(prueba_ruta_router)
+app.include_router(combustible_router)
+app.include_router(gastos_operativos_router)
+app.include_router(pos_operacional_router)
 
 
 @app.get("/health")

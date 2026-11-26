@@ -91,18 +91,34 @@ Implementación: `app/preop/registro.py` (servicio) y la conversación 📝 Regi
 
 Regla del usuario (2026-11-25): **todo formulario** de este proyecto, el actual y los que se agreguen,
 sigue la misma directriz del preoperacional cuando el conductor se queda sin señal. Implementado en el
-preoperacional y en el AST.
+preoperacional, el AST, la Prueba de Ruta y Combustible.
 
 | Capa | Regla | Implementación de referencia |
 |---|---|---|
-| Mini App | Si el envío falla por red (sin respuesta, o 502/503/504 del túnel), el formulario se guarda en una **bandeja temporal en el teléfono** (IndexedDB; respaldo `localStorage`) con su `uuid`, el `initData` de la apertura y `sin_senal_desde`. Base IndexedDB **propia por formulario** (`preop-offline`, `ast-offline`). | `bandeja`, `vaciarBandeja`, `modoSinSenal`, `vencer` en `app/static/ast.html` |
+| Mini App | Si el envío falla por red (sin respuesta, o 502/503/504 del túnel), el formulario se guarda en una **bandeja temporal en el teléfono** (IndexedDB; respaldo `localStorage`) con su `uuid`, el `initData` de la apertura y `sin_senal_desde`. Base IndexedDB **propia por formulario** (`preop-offline`, `ast-offline`, `prueba-ruta-offline`, `combustible-offline`). | `bandeja`, `vaciarBandeja`, `modoSinSenal`, `vencer` en `app/static/ast.html` |
 | Mini App | **Reenvío automático:** mientras siga abierta reintenta cada 15 s y al evento `online`; si se cerró, al volver a abrirla con señal envía primero lo guardado. | `reintentarSiPendiente`, `init()` |
 | Servidor | El cuerpo acepta `diferido: {init_data_original, sin_senal_desde}` (`EnvioDiferidoIn`). Ventana de **1 h desde la pérdida de señal**, anclada a la hora de apertura firmada por Telegram (`app/preop/diferido.py`). | `tiempos_diferido` y `firma_previa_diferida` (`app/preop/router.py`) |
-| Servidor | Dentro de la ventana: flujo normal + fila `aceptado` de trazabilidad. Fuera: **410**, fila `vencido` con el formulario completo, sin Odoo ni avisos. Tabla de auditoría propia por formulario (`preop_envios_diferidos`, `ast_envios_diferidos`). | `submit_diferido` en `app/ast_trabajo/service.py` |
+| Servidor | Dentro de la ventana: flujo normal + fila `aceptado` de trazabilidad. Fuera: **410**, fila `vencido` con el formulario completo, sin Odoo ni avisos. Tabla de auditoría propia por formulario (`preop_envios_diferidos`, `ast_envios_diferidos`, `prueba_ruta_envios_diferidos`, `combustible_envios_diferidos`). Los adjuntos (fotos, PDF) viajan en la bandeja y un vencido los conserva. | `submit_diferido` en `app/ast_trabajo/service.py` |
 | Idempotencia | El reenvío lleva el mismo `uuid`: si el primer intento sí llegó, responde como duplicado. | |
 
 Pruebas mínimas por formulario: dentro de la ventana, vencido (410 y solo auditoría), primer intento que sí
 llegó (duplicado) y firmas/usuario (`tests/test_ast.py` § envío sin señal).
+
+## 5b. Reserva vigente: requisito de todo formulario de jornada
+
+Regla del usuario (2026-11-26): **AST, Prueba de Ruta, Combustible, Gastos Operativos y Pos-Operacional** solo se usan con
+una **reserva vigente** de vehículo, es decir, un preoperacional registrado en la jornada. El Preoperacional no cambia.
+Todo formulario nuevo que dependa de la jornada del conductor debe cumplirla.
+
+| Capa | Regla | Implementación de referencia |
+|---|---|---|
+| Definición | Vigente = existe fila en `reservas_vehiculo` para su id de Telegram, no se liberó con 🔴 Finalizar y no venció (`reservas.RESERVA_HORAS`). **No** se exige que la fecha sea hoy (turno nocturno después de medianoche). | `reservas.reserva_vigente` |
+| Servidor | Contexto y recepción llaman `preop_service.exigir_reserva(session, user_id[, diferido])`, que lanza `SinReservaVigenteError`: **409**, cabecera `X-Error-Code: sin_reserva_vigente` y el mensaje común `reservas.MSG_SIN_RESERVA`. Los routers lo convierten con `http_error` / `contexto_http` (`app/preop/router.py`). No se duplica la consulta en cada servicio. | `form_context` y `submit` de `app/combustible/service.py` |
+| Envío sin señal | Aceptado si la reserva estaba vigente **al abrir** el formulario (`apertura`, firmada por Telegram) según `reservas_historial`, aunque ya esté liberada al llegar. Si al llegar hay una reserva **más nueva** que la apertura (finalizó y reservó otro vehículo), rige la jornada de la apertura, no la nueva. Si no se puede comprobar, o el formulario se abrió antes de cualquier reserva: 409. | `reservas.reserva_al_instante` |
+| Mini App | Si el contexto responde `X-Error-Code: sin_reserva_vigente` (`err.codigo`), intenta vaciar la bandeja y muestra la pantalla de bloqueo «Primero el Preoperacional» con el botón «Volver al chat» (`tg.close()`). | `sinReserva` en `app/static/combustible.html` |
+
+Pruebas mínimas: sin reserva (contexto y envío), reserva vencida (> 24 h), reserva de ayer aún vigente y diferido
+(`tests/test_reserva_requerida.py`: agrega tu formulario a `FORMS`).
 
 ## 6. Lista de verificación para un bot nuevo
 
@@ -113,4 +129,5 @@ llegó (duplicado) y firmas/usuario (`tests/test_ast.py` § envío sin señal).
 - [ ] Sin botones de "marcar todo conforme" en inspecciones.
 - [ ] Usuarios sin PIN reciben el flujo de registro, no un rechazo.
 - [ ] Envío sin señal: bandeja en el teléfono, reenvío automático y ventana de 1 h en el servidor (§ 5).
+- [ ] Si depende de la jornada: exige reserva vigente en contexto y envío, con el bloqueo común de la Mini App (§ 5b).
 - [ ] Pruebas de cada regla (servidor) y `node --check` del JavaScript de la Mini App.

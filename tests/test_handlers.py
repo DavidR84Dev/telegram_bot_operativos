@@ -91,14 +91,27 @@ def test_formularios_lists_preoperacional_first():
     call = upd.message.reply_text.await_args
     assert call.args[0] == "📂 Formularios disponibles:"
     rows = call.kwargs["reply_markup"].inline_keyboard
-    # Preoperacional -> AST -> Prueba de Ruta -> Escanear QR -> Finalizar (orden del bot de referencia).
+    # Preoperacional -> AST -> Prueba de Ruta -> Combustible -> Gastos Operativos -> Pos-Operacional -> Escanear QR -> Finalizar.
     assert [row[0].text for row in rows] == [tga.BTN_PREOP, tga.BTN_AST, tga.BTN_PRUEBA_RUTA,
-                                             tga.BTN_ESCANEAR, tga.BTN_FINALIZAR]
+                                             tga.BTN_COMBUSTIBLE, tga.BTN_GASTOS, tga.BTN_POS_OPERACIONAL,
+                                             tga.BTN_ESCANEAR,
+                                             tga.BTN_FINALIZAR]
     assert rows[0][0].web_app.url == "https://scan.example.com/preoperacional"
     assert rows[1][0].web_app.url == "https://scan.example.com/ast"
     assert rows[2][0].web_app.url == "https://scan.example.com/prueba-ruta"
-    assert rows[3][0].web_app.url == "https://scan.example.com/scanner"
-    assert rows[4][0].web_app is None and rows[4][0].callback_data == tga.CB_FINALIZAR_PEDIR
+    assert rows[3][0].web_app.url == "https://scan.example.com/combustible"
+    assert rows[4][0].web_app.url == "https://scan.example.com/gastos-operativos"
+    assert rows[5][0].web_app.url == "https://scan.example.com/pos-operacional"
+    assert rows[6][0].web_app.url == "https://scan.example.com/scanner"
+    assert rows[7][0].web_app is None and rows[7][0].callback_data == tga.CB_FINALIZAR_PEDIR
+
+
+def test_combustible_command_opens_mini_app():
+    upd = _update(text="/combustible")
+    asyncio.run(tga.cmd_combustible(upd, _ctx(_services())))
+    button = upd.message.reply_text.await_args.kwargs["reply_markup"].inline_keyboard[0][0]
+    assert button.text == tga.BTN_COMBUSTIBLE and button.web_app.url == "https://scan.example.com/combustible"
+    assert "combustible" in [c.command for c in tga.BOT_COMMANDS]
 
 
 def test_prueba_ruta_command_opens_mini_app():
@@ -145,6 +158,7 @@ def test_location_is_saved_in_bot_database(monkeypatch):
         return SimpleNamespace(id=1, preop_id=9, preop_nombre="PRE-0009")
 
     monkeypatch.setattr(tga.preop_service, "registrar_ubicacion", fake_registrar)
+    monkeypatch.setattr(tga.gastos_service, "asignar_ubicacion_mas_antigua", lambda *a, **k: None)
     upd = _update()
     upd.message.location = SimpleNamespace(latitude=6.25, longitude=-75.56, horizontal_accuracy=8.0)
     ctx = _ctx(_services())
@@ -234,3 +248,63 @@ def test_finalizar_from_forms_panel_requires_authorization():
     asyncio.run(tga.on_finalizar_confirm(upd, ctx))
     assert upd.callback_query.answer.await_args.kwargs["show_alert"] is True
     upd.callback_query.edit_message_text.assert_not_awaited()
+
+
+def _location_update(**extra):
+    from datetime import UTC, datetime
+
+    upd = _update()
+    upd.message.location = SimpleNamespace(latitude=6.25, longitude=-75.56, horizontal_accuracy=8.0)
+    upd.message.date = datetime.now(UTC)
+    for k, v in extra.items():
+        setattr(upd.message, k, v)
+    return upd
+
+
+def test_location_is_assigned_to_pending_fuel_and_asks_again_if_more(monkeypatch):
+    monkeypatch.setattr(tga.preop_service, "registrar_ubicacion",
+                        lambda *a, **k: SimpleNamespace(id=1, preop_id=None, preop_nombre=None))
+    calls = []
+
+    def fake_asignar(db, user_id, lat, lon, date):
+        calls.append((user_id, lat, lon))
+        return SimpleNamespace(combustible_id=3, placa="ABC123", pendientes=1, origen="combustible")
+
+    monkeypatch.setattr(tga.gastos_service, "asignar_ubicacion_mas_antigua", fake_asignar)
+    upd = _location_update()
+    ctx = _ctx(_services())
+    ctx.application.bot_data[tga.PREOP_DB_KEY] = "db"
+    asyncio.run(tga.on_location(upd, ctx))
+    assert calls == [(7913476225, 6.25, -75.56)]
+    text = upd.message.reply_text.await_args.args[0]
+    assert "ABC123" in text and "más sin ubicación" in text
+    assert upd.message.reply_text.await_args.kwargs["reply_markup"].keyboard[0][0].request_location is True
+
+
+def test_forwarded_location_is_not_assigned_to_fuel(monkeypatch):
+    monkeypatch.setattr(tga.preop_service, "registrar_ubicacion",
+                        lambda *a, **k: SimpleNamespace(id=1, preop_id=None, preop_nombre=None))
+
+    def boom(*a, **k):
+        raise AssertionError("no debe asignarse")
+
+    monkeypatch.setattr(tga.gastos_service, "asignar_ubicacion_mas_antigua", boom)
+    upd = _location_update(forward_origin=object())
+    ctx = _ctx(_services())
+    ctx.application.bot_data[tga.PREOP_DB_KEY] = "db"
+    asyncio.run(tga.on_location(upd, ctx))
+    assert "Ubicación recibida" in upd.message.reply_text.await_args.args[0]
+
+
+def test_location_wakes_fuel_worker(monkeypatch):
+    monkeypatch.setattr(tga.preop_service, "registrar_ubicacion",
+                        lambda *a, **k: SimpleNamespace(id=1, preop_id=None, preop_nombre=None))
+    monkeypatch.setattr(tga.gastos_service, "asignar_ubicacion_mas_antigua",
+                        lambda *a, **k: SimpleNamespace(combustible_id=3, placa="ABC123", pendientes=0, origen="combustible"))
+    despertado = []
+    upd = _location_update()
+    ctx = _ctx(_services())
+    ctx.application.bot_data[tga.PREOP_DB_KEY] = "db"
+    ctx.application.bot_data[tga.COMBUSTIBLE_WAKE_KEY] = lambda: despertado.append(1)
+    asyncio.run(tga.on_location(upd, ctx))
+    assert despertado == [1]

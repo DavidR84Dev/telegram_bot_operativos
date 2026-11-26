@@ -8,6 +8,9 @@ from . import ticket_state
 
 if TYPE_CHECKING:
     from .ast_trabajo.service import AstOutcome, AvisoJefeAst
+    from .combustible.service import CombustibleOutcome
+    from .gastos_operativos.service import GastosOutcome
+    from .pos_operacional.service import PosOperacionalOutcome
     from .preop.reservas import Liberacion
     from .prueba_ruta.service import AvisoJefePrueba, PruebaRutaOutcome
     from .preop.service import AvisoJefe, SendOutcome, UbicacionRegistrada
@@ -141,6 +144,129 @@ def prueba_ruta_aviso_jefe(aviso: AvisoJefePrueba, odoo_name: str | None) -> str
     lines += ["", f"<b>Novedades ({len(aviso.novedades)}):</b>"]
     lines += [f"• {escape(label)}" for label in aviso.novedades]
     return "\n".join(lines)
+
+
+def _pesos(valor: float) -> str:
+    """126200.5 -> '$ 126 200.50' (punto decimal y miles con espacio, como la Mini App)."""
+    entero, _, dec = f"{valor:,.2f}".partition(".")
+    texto = entero.replace(",", " ")
+    return f"$ {texto}" if dec == "00" else f"$ {texto}.{dec}"
+
+
+def combustible_result(outcome: CombustibleOutcome) -> str:
+    """Aviso al conductor cuando su registro de combustible llega a Odoo (o falla definitivamente)."""
+    if outcome.status.value == "enviado":
+        return (
+            "⛽ <b>Combustible registrado en Odoo</b>\n\n"
+            f"🚌 Vehículo: {escape(outcome.placa or '—')}\n"
+            f"🛢️ {outcome.galones:g} galones · Total {_pesos(outcome.total)}\n"
+            f"📄 Registro #{outcome.odoo_id}"
+        )
+    return (
+        "❌ <b>Tu registro de combustible no pudo guardarse en Odoo</b>\n\n"
+        f"Referencia local: #{outcome.combustible_id}. El área de sistemas ya tiene el detalle; "
+        "no es necesario diligenciarlo de nuevo."
+    )
+
+
+def combustible_pedir_ubicacion(placa: str | None) -> str:
+    return ("⛽ <b>Registro recibido</b>" + (f" ({escape(placa)})" if placa else "") + "\n\n"
+            "📍 Toca <b>Enviar ubicación</b> para completar el tanqueo: sin ella el registro no se envía a Odoo.")
+
+
+def combustible_recordatorio_ubicacion(placa: str | None) -> str:
+    return ("⏰ <b>Falta la ubicación de tu tanqueo</b>" + (f" ({escape(placa)})" if placa else "") + "\n\n"
+            "Toca <b>Enviar ubicación</b> para completarlo; mientras tanto no se envía a Odoo.")
+
+
+def combustible_ubicacion_registrada(placa: str | None, pendientes: int) -> str:
+    text = "📍 <b>Ubicación registrada para el tanqueo</b>" + (f" de {escape(placa)}" if placa else "") + "."
+    if pendientes:
+        text += f"\n\nTienes {pendientes} tanqueo(s) más sin ubicación: envíala de nuevo."
+    return text
+
+
+def _plural_gastos(n: int) -> str:
+    return f"{n} gasto" if n == 1 else f"{n} gastos"
+
+
+def gastos_result(outcome: GastosOutcome) -> str:
+    """Aviso al conductor con el resultado final de su envío de gastos operativos."""
+    if outcome.status.value == "enviado":
+        verbo = "registrado" if outcome.enviados == 1 else "registrados"
+        return (
+            f"💰 <b>{_plural_gastos(outcome.enviados)} {verbo} en Odoo</b>\n\n"
+            + (f"🚌 Vehículo: {escape(outcome.placa)}\n" if outcome.placa else "")
+            + f"Total {_pesos(outcome.total)}"
+        )
+    lineas = [f"• Gasto #{f.numero} ({escape(f.tipo)}, {_pesos(f.valor)})" for f in outcome.fallidos]
+    verbo = "registrado" if outcome.enviados == 1 else "registrados"
+    registrados = (f"✅ {outcome.enviados} de {outcome.total_gastos} gastos {verbo} en Odoo.\n\n"
+                   if outcome.enviados else "")
+    return (
+        "❌ <b>Algunos gastos no pudieron guardarse en Odoo</b>\n\n" + registrados
+        + "No se registraron:\n" + "\n".join(lineas) + "\n\n"
+        f"Referencia local: #{outcome.gasto_id}. El área de sistemas ya tiene el detalle; "
+        "no es necesario diligenciarlos de nuevo."
+    )
+
+
+def gastos_pedir_ubicacion(placa: str | None, gastos: int) -> str:
+    return (
+        f"💰 <b>{_plural_gastos(gastos)} recibido{'' if gastos == 1 else 's'}</b>"
+        + (f" ({escape(placa)})" if placa else "") + "\n\n"
+        "📋 <b>Instrucciones para Gastos Operativos:</b>\n"
+        "1️⃣ Ya llenaste y enviaste el formulario\n"
+        "2️⃣ Toca 📍 <b>Enviar ubicación</b> aquí en el chat\n"
+        "⏱️ Tienes <b>10 minutos</b> para enviarla; mientras no lo hagas, tus gastos no se registran en Odoo."
+    )
+
+
+def gastos_recordatorio_ubicacion(placa: str | None) -> str:
+    return ("⏰ <b>Falta la ubicación de tus gastos operativos</b>" + (f" ({escape(placa)})" if placa else "")
+            + "\n\nToca <b>Enviar ubicación</b> para completarlos; mientras tanto no se registran en Odoo.")
+
+
+def gastos_rechazado_por_tope(detalle: str) -> str:
+    return ("🚫 <b>Tus gastos guardados sin señal no fueron aceptados</b>\n\n" + escape(detalle)
+            + "\n\nEl máximo por gasto cambió mientras estabas sin señal. Abre 💰 Gastos Operativos y "
+              "diligéncialos de nuevo.")
+
+
+def gastos_ubicacion_registrada(placa: str | None, pendientes: int) -> str:
+    text = "📍 <b>Ubicación registrada para tus gastos operativos</b>" + (f" ({escape(placa)})" if placa else "") + "."
+    if pendientes:
+        text += f"\n\nTienes {pendientes} registro(s) más sin ubicación: envíala de nuevo."
+    return text
+
+
+POS_RECORDATORIO_FINALIZAR = "Cuando termines tu jornada toca 🔴 <b>Finalizar</b> para liberar el vehículo."
+
+
+def pos_operacional_recibido(placa: str | None) -> str:
+    """Confirmación al recibir el formulario (aún no está en Odoo)."""
+    return ("🧾 <b>Pos-operacional recibido</b>" + (f" ({escape(placa)})" if placa else "") + "\n\n"
+            "Se está registrando en Odoo; te avisaré el resultado.\n"
+            "Enviarlo <b>no libera</b> tu vehículo. " + POS_RECORDATORIO_FINALIZAR)
+
+
+def pos_operacional_result(outcome: PosOperacionalOutcome) -> str:
+    """Resultado final del pos-operacional: registrado en Odoo con su id, o fallido con el motivo."""
+    if outcome.status.value == "enviado":
+        return (
+            "🧾 <b>Pos-operacional registrado en Odoo</b>\n\n"
+            + (f"🚌 Vehículo: {escape(outcome.placa)}\n" if outcome.placa else "")
+            + f"📄 Registro #{outcome.odoo_id}"
+            + (f" ({escape(outcome.odoo_name)})" if outcome.odoo_name else "") + "\n\n"
+            + POS_RECORDATORIO_FINALIZAR
+        )
+    motivo = escape((outcome.error or "motivo no disponible")[:400])
+    return (
+        "❌ <b>Tu pos-operacional no pudo guardarse en Odoo</b>\n\n"
+        f"Motivo: {motivo}\n\n"
+        f"Referencia local: #{outcome.pos_id}. El área de sistemas ya tiene el detalle; "
+        "no es necesario diligenciarlo de nuevo."
+    )
 
 
 def _lista_placas(placas: tuple[str, ...]) -> str:
