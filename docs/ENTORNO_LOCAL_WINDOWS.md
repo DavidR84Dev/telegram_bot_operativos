@@ -167,6 +167,35 @@ cloudflared tunnel --url http://127.0.0.1:8011    # anota la URL: túnel de oper
 
 Las URL `*.trycloudflare.com` cambian cada vez que se abre el túnel.
 
+#### Panel Admin (puerto 8012)
+
+El bot **Panel Admin** (`docs/PANEL_ADMIN.md`) tiene su propio token y escucha en **8012**. Para abrir su Mini App
+desde Telegram necesita su propio túnel:
+
+```powershell
+cloudflared tunnel --url http://127.0.0.1:8012    # anota la URL: túnel del panel admin
+```
+
+En el `.env` de operativos agrega:
+
+```ini
+ADMIN_BOT_TOKEN=<token del bot admin de @BotFather>
+ADMIN_TELEGRAM_IDS=<tu id de Telegram>[,otro id]
+ADMIN_WEBAPP_BASE_URL=https://<túnel-8012>.trycloudflare.com
+ADMIN_ENV_FILE=C:\bots\telegram_bot_operativos\.env     # el .env que editará la pestaña Parámetros
+```
+
+y arranca el panel en otra ventana (no choca con operativos: usa otro token):
+
+```powershell
+cd C:\bots\telegram_bot_operativos; .\.venv\Scripts\Activate.ps1
+python -m app.admin
+```
+
+Al cambiar la URL del túnel, actualiza `ADMIN_WEBAPP_BASE_URL`, reinicia el panel y envía `/start` al bot admin
+para recibir el botón nuevo (el botón de menú se reconfigura solo al arrancar). Los respaldos del `.env` quedan en
+`run\env-backups\` junto al `.env`.
+
 ### 5.3 Encender los bots en Windows
 
 ```powershell

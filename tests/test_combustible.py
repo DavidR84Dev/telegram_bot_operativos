@@ -190,6 +190,63 @@ def test_form_incluye_proveedores_activos(seeded):
     assert [p["nombre"] for p in form["proveedores"]] == ["Terpel La 80"] and len(form["tipos"]) == 8
 
 
+def test_csv_con_ubicacion_y_coma_decimal():
+    filas = proveedores.leer_csv("nombre;nit;latitud;longitud;ciudad;direccion\n"
+                                 "EDS Uno;1;6,2442;-75,5812;Medellín;Cra 80 # 30-10\nEDS Dos;2;4.711;-74.0721;;\n"
+                                 "Sin ubicación;3;;;;\n")
+    assert filas[0] == proveedores.FilaProveedor("EDS Uno", "1", None, 6.2442, -75.5812, "Medellín", "Cra 80 # 30-10")
+    assert (filas[1].latitud, filas[1].longitud, filas[1].ciudad) == (4.711, -74.0721, None)
+    assert filas[2].latitud is None and filas[2].longitud is None
+
+
+def test_csv_ubicacion_invalida_da_error_por_fila():
+    validas, errores = proveedores.analizar_csv(
+        "nombre;latitud;longitud\nA;91;-75\nB;6;200\nC;abc;1\nD;6;\nE;6,1;-75,2\n")
+    assert [f.nombre for _, f in validas] == ["E"]
+    assert [e.linea for e in errores] == [2, 3, 4, 5]
+    assert "fuera de rango" in errores[0].mensaje and "juntas" in errores[3].mensaje
+    with pytest.raises(ValueError, match="Línea 2"):
+        proveedores.leer_csv("nombre;latitud;longitud\nA;91;-75\n")
+    # Coma decimal sin comillas en un CSV separado por comas: más columnas que encabezados.
+    _, errores = proveedores.analizar_csv("nombre,latitud,longitud\nA,6,2442,-75,5812\n")
+    assert errores and "más columnas" in errores[0].mensaje
+
+
+def test_cargar_guarda_y_actualiza_ubicacion(db):
+    Fila = proveedores.FilaProveedor
+    proveedores.cargar(db, [Fila("Terpel", "900", None, 6.2, -75.5, "Medellín", "Cra 1")])
+    proveedores.cargar(db, [Fila("Terpel", "900", None, None, None, None, "Cra 2")])  # sin ubicación: no la borra
+    with db.session() as s:
+        p = s.scalar(select(ProveedorCombustible))
+        assert (p.latitud, p.longitud, p.ciudad, p.direccion) == (6.2, -75.5, "Medellín", "Cra 2")
+    proveedores.cargar(db, [Fila("Terpel", "900", None, 7.0, -76.0)])
+    with db.session() as s:
+        assert s.scalar(select(ProveedorCombustible.latitud)) == 7.0
+
+
+def test_form_incluye_ubicacion_de_proveedores(seeded):
+    proveedores.cargar(seeded, [proveedores.FilaProveedor("Terpel La 80", "900", 77, 6.2, -75.5, "Medellín", "Cra 80")])
+    [p] = service.form_full(seeded)["proveedores"]
+    assert (p["latitud"], p["longitud"], p["ciudad"], p["direccion"]) == (6.2, -75.5, "Medellín", "Cra 80")
+
+
+def test_database_agrega_columnas_de_ubicacion_a_tabla_vieja(tmp_path):
+    from sqlalchemy import create_engine, inspect, text
+
+    url = f"sqlite:///{tmp_path / 'vieja.sqlite3'}"
+    engine = create_engine(url)
+    with engine.begin() as conn:
+        conn.execute(text("CREATE TABLE proveedores_combustible (id INTEGER PRIMARY KEY, nombre VARCHAR(255), "
+                          "clave VARCHAR(255), nit VARCHAR(32), odoo_partner_id INTEGER, activo BOOLEAN, "
+                          "created_at TIMESTAMP, updated_at TIMESTAMP)"))
+    engine.dispose()
+    from app.preop.db import Database
+
+    nueva = Database(url)
+    cols = {c["name"] for c in inspect(nueva.engine).get_columns("proveedores_combustible")}
+    assert {"latitud", "longitud", "ciudad", "direccion"} <= cols
+
+
 def test_submit_exige_el_preoperacional_de_la_jornada(seeded):
     with pytest.raises(SubmissionError, match="Preoperacional") as exc:
         service.submit(seeded, IDENTITY, _payload())
@@ -394,7 +451,10 @@ def test_api_envio_completo(api, seeded):
     body = _payload().model_dump(mode="json")
     assert client.post("/api/combustible", json=body, headers=_headers()).status_code == 409 and woke == []
     _reservar(seeded)
-    assert client.get("/api/combustible/form", headers=_headers()).json()["proveedores"][0]["nombre"] == "Terpel La 80"
+    proveedores.cargar(seeded, [proveedores.FilaProveedor("Terpel La 80", "900123456", 77, 6.2, -75.5, "Medellín", "Cra 80")])
+    [prov] = client.get("/api/combustible/form", headers=_headers()).json()["proveedores"]
+    assert prov["nombre"] == "Terpel La 80" and (prov["latitud"], prov["longitud"]) == (6.2, -75.5)
+    assert (prov["ciudad"], prov["direccion"]) == ("Medellín", "Cra 80")
     first = client.post("/api/combustible", json=body, headers=_headers())
     assert first.status_code == 202 and first.json()["sync_status"] == "pendiente" and first.json()["total"] == 150000
     assert woke == [1]

@@ -81,6 +81,8 @@
     background: var(--surface); color: var(--fg); font: inherit; font-size: 15px;
   }
   .sugerencias button.libre { border-style: dashed; color: var(--brand-2); }
+  .sugerencias button .dist { float: right; margin-left: 8px; font-size: 13px; font-weight: 600; color: var(--brand-2); white-space: nowrap; }
+  .sugerencias button .sub { display: block; font-size: 12px; color: var(--hint); overflow-wrap: anywhere; }
   .elegido { display: flex; align-items: center; gap: 8px; margin-top: 8px; padding: 10px 12px; border-radius: 10px;
              background: color-mix(in srgb, var(--ok) 12%, transparent); }
   .elegido .nombre { flex: 1; font-weight: 600; overflow-wrap: anywhere; }
@@ -170,6 +172,7 @@
         <label class="field" for="buscar">Proveedor <span class="req">*</span></label>
         <div id="buscador">
           <input id="buscar" type="text" autocomplete="off" maxlength="255" placeholder="Buscar o escribir proveedor…">
+          <div class="hint" id="geo-hint"></div>
           <div class="sugerencias" id="sugerencias"></div>
         </div>
         <div class="elegido" id="elegido" hidden>
@@ -278,7 +281,7 @@
   const MAX_SUGERENCIAS = 8;
   const state = {
     step: 1, form: null, ctx: null, modalidad: "combustible", proveedor: null, factura: null,
-    uuid: null, sending: false, finished: false, dirty: false,
+    ubicacion: null, uuid: null, sending: false, finished: false, dirty: false,
     initDataOriginal: "", pendiente: null, pendienteGuardado: false, reintento: null, avisoBandeja: "",
   };
 
@@ -519,12 +522,47 @@
   const norm = (t) => String(t || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toUpperCase()
     .replace(/[^0-9A-Z]+/g, " ").trim();
 
+  // Distancia en km entre dos puntos (haversine); null si la estación no tiene ubicación.
+  function distanciaKm(p) {
+    if (!state.ubicacion || !Number.isFinite(p.latitud) || !Number.isFinite(p.longitud)) return null;
+    const rad = (g) => (g * Math.PI) / 180;
+    const dLat = rad(p.latitud - state.ubicacion.lat);
+    const dLon = rad(p.longitud - state.ubicacion.lon);
+    const a = Math.sin(dLat / 2) ** 2
+      + Math.cos(rad(state.ubicacion.lat)) * Math.cos(rad(p.latitud)) * Math.sin(dLon / 2) ** 2;
+    return 6371 * 2 * Math.asin(Math.min(1, Math.sqrt(a)));
+  }
+
+  // La ubicación es opcional: sin permiso o sin señal la lista queda por nombre (orden del servidor).
+  function pedirUbicacion() {
+    if (!navigator.geolocation) return;
+    try {
+      navigator.geolocation.getCurrentPosition((pos) => {
+        state.ubicacion = { lat: pos.coords.latitude, lon: pos.coords.longitude };
+        renderSugerencias();
+      }, () => { /* sin permiso o sin señal: se ordena por nombre */ }, { enableHighAccuracy: false, timeout: 8000, maximumAge: 300000 });
+    } catch (_) { /* navegador sin geolocalización */ }
+  }
+
   function renderSugerencias() {
     const q = $("buscar").value.trim();
     const nq = norm(q);
-    const lista = state.form.proveedores.filter((p) => !nq || norm(p.nombre).includes(nq)).slice(0, MAX_SUGERENCIAS);
-    const nodos = lista.map((p) => {
-      const b = el("button", { type: "button", text: p.nombre });
+    let candidatos = state.form.proveedores
+      .filter((p) => !nq || norm(p.nombre).includes(nq))
+      .map((p) => ({ p, km: distanciaKm(p) }));
+    if (state.ubicacion) {
+      // Más cercana primero; las estaciones sin ubicación quedan al final (por nombre, orden del servidor).
+      candidatos = candidatos.map((c, i) => ({ ...c, i }))
+        .sort((a, b) => (a.km === null) - (b.km === null) || (a.km ?? 0) - (b.km ?? 0) || a.i - b.i);
+    }
+    const hayUbicadas = candidatos.some((c) => c.km !== null);
+    $("geo-hint").textContent = hayUbicadas ? "Ordenadas de la más cercana a la más lejana." : "";
+    const nodos = candidatos.slice(0, MAX_SUGERENCIAS).map(({ p, km }) => {
+      const b = el("button", { type: "button" });
+      if (km !== null) b.append(el("span", { class: "dist", text: `a ${fmtNum(km, 1)} km` }));
+      b.append(p.nombre);
+      const sub = [p.ciudad, p.direccion].filter(Boolean).join(" · ");
+      if (sub) b.append(el("span", { class: "sub", text: sub }));
       b.addEventListener("click", () => setProveedor({ id: p.id, nombre: p.nombre }));
       return b;
     });
@@ -852,6 +890,7 @@
     $("tipo").value = state.form.tipo_por_defecto;
     renderTabs();
     renderSugerencias();
+    pedirUbicacion();
     renderFactura();
 
     $("buscar").addEventListener("input", () => { markDirty(); renderSugerencias(); });

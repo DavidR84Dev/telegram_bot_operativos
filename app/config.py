@@ -94,6 +94,24 @@ class Settings(BaseSettings):
     # Agregar un contrato = sumarlo aquí y reiniciar.
     prueba_ruta_acuerdos: str = "MINERA DE COBRE QUEBRADONA;SERVICIOS HIDROGEOLÓGICOS INTEGRALES S.A.S."
 
+    # ── Panel Admin (bot aparte, ``python -m app.admin``; ver docs/PANEL_ADMIN.md) ──────
+    # Todo opcional: sin ADMIN_BOT_TOKEN el panel no arranca, pero Operativos funciona igual.
+    admin_bot_token: SecretStr | None = None
+    # Lista blanca de ids de Telegram (separados por coma). Vacía = nadie entra.
+    admin_telegram_ids: str = ""
+    # HTTPS público del panel (túnel en local; dominio en producción).
+    admin_webapp_base_url: str = ""
+    admin_listen_host: str = "127.0.0.1"
+    admin_listen_port: int = 8012
+    # .env que edita la pestaña Parámetros (en el contenedor del panel está montado en /srv/.env).
+    admin_env_file: str = "/srv/.env"
+    # Antigüedad máxima de initData del panel (se deja abierto un rato): 4 h.
+    admin_auth_max_age_seconds: int = 14400
+
+    @property
+    def admin_ids(self) -> frozenset[int]:
+        return frozenset(int(p) for p in self.admin_telegram_ids.replace(";", ",").split(",") if p.strip().isdigit())
+
     @property
     def api_company_ids(self) -> list[int]:
         return [int(part) for part in self.odoo_api_company_ids.split(",") if part.strip()]

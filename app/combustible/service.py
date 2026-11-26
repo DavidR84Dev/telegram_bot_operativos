@@ -141,7 +141,8 @@ def _km_limites(session: Session, reserva: ReservaVehiculo, odometro: OdometroRe
 def form_full(db: Database) -> dict[str, Any]:
     """Catálogo del formulario más los proveedores aprobados activos."""
     with db.session() as session:
-        proveedores = [{"id": p.id, "nombre": p.nombre} for p in listar_activos(session)]
+        proveedores = [{"id": p.id, "nombre": p.nombre, "latitud": p.latitud, "longitud": p.longitud,
+                        "ciudad": p.ciudad, "direccion": p.direccion} for p in listar_activos(session)]
     return form_definition() | {"proveedores": proveedores}
 
 

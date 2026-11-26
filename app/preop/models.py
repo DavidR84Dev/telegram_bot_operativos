@@ -502,6 +502,11 @@ class ProveedorCombustible(TimestampMixin, Base):
     nit: Mapped[str | None] = mapped_column(String(32), unique=True)
     odoo_partner_id: Mapped[int | None] = mapped_column(Integer)
     activo: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # Ubicación de la estación (CSV del panel admin); opcionales. La Mini App ordena por cercanía.
+    latitud: Mapped[float | None] = mapped_column(Float)
+    longitud: Mapped[float | None] = mapped_column(Float)
+    ciudad: Mapped[str | None] = mapped_column(String(120))
+    direccion: Mapped[str | None] = mapped_column(String(255))
 
 
 class Combustible(TimestampMixin, Base):
@@ -741,6 +746,20 @@ class RegistroConductor(TimestampMixin, Base):
         CheckConstraint("estado IN ('pendiente', 'registrado', 'no_encontrado', 'pin_ocupado', 'error')",
                         name="ck_registros_conductor_estado"),
     )
+
+
+class AdminAuditoria(Base):
+    """Bitácora del Panel Admin: quién hizo qué y cuándo. El detalle nunca lleva valores de secretos."""
+
+    __tablename__ = "admin_auditoria"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now, index=True)
+    telegram_user_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    nombre: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    accion: Mapped[str] = mapped_column(String(64), nullable=False)
+    objetivo: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    detalle: Mapped[str | None] = mapped_column(Text)
 
 
 class SyncRun(Base):

@@ -162,7 +162,7 @@ CombustibleSender ─┬─ pestaña Combustible ──▶ OdooWriter.create_com
 | Archivo | Contenido |
 |---|---|
 | `app/combustible/catalogo.py` | Fuente única: tipos de combustible (selection de Odoo), pestañas, rango de fecha. |
-| `app/combustible/proveedores.py` | Lista de proveedores aprobados: lectura del CSV, carga (UPSERT) y CLI. |
+| `app/combustible/proveedores.py` | Lista de proveedores/estaciones aprobadas: lectura del CSV (con ubicación, errores por fila), vista previa, carga (UPSERT) y CLI. La carga con vista previa también se hace desde el Panel Admin (`docs/PANEL_ADMIN.md`). |
 | `app/combustible/schemas.py` | `CombustibleIn`: decimales con coma → punto, proveedor (lista o texto, exactamente uno), factura PDF por firma real y obligatoria en gastos, fecha. |
 | `app/combustible/service.py` | Contexto, `submit` / `submit_diferido`, kilometraje mínimo, `build_odoo_values`, `build_gasto_payload`, `enviar_gasto`, `send_one`. |
 | `app/combustible/router.py` · `worker.py` | Rutas y cola (`CombustibleSender`, CLI). |
@@ -174,7 +174,8 @@ CombustibleSender ─┬─ pestaña Combustible ──▶ OdooWriter.create_com
 ### Tablas
 
 - **`proveedores_combustible`:** `nombre`, `clave` (nombre normalizado, única), `nit` (solo dígitos, único),
-  `odoo_partner_id` y `activo`.
+  `odoo_partner_id`, `activo` y, opcionales, `latitud`, `longitud`, `ciudad` y `direccion` (estación con
+  ubicación; las añade `Database._NEW_COLUMNS` a las bases existentes).
 - **`combustible`:** `uuid` (único), identidad de Telegram, `empleado_id`, `vehiculo_id`, `preop_id`,
   `contrato_odoo_id`, `fecha_transaccion`, `para_gastos`, proveedor (`proveedor_id`, `proveedor_nombre`,
   `proveedor_odoo_id`), `galones`, `precio_galon`, `total`, `tipo_combustible`, `kilometraje`, `ref_factura` (en
@@ -193,7 +194,10 @@ Dos pasos: **Registro → Resumen**.
    - *Información general:* comprador, contrato y vehículo reservado (solo lectura).
    - *Proveedor:* pestañas Combustible / Combustible para gastos; buscador "Buscar o escribir proveedor…" que
      filtra la lista de aprobados (sin tildes ni mayúsculas) y ofrece **"✎ Usar «…» (no está en la lista)"**;
-     fecha de la transacción.
+     fecha de la transacción. **Cercanía (2026-11-26):** si el teléfono da permiso, `navigator.geolocation` ordena
+     la lista de la más cercana a la más lejana y cada estación muestra «a X km» (haversine en el teléfono);
+     las estaciones sin ubicación quedan al final. La ubicación es **opcional y no bloquea**: sin permiso o sin
+     señal se ordena por nombre. Se sigue pudiendo escribir un proveedor a mano. No cambia el envío sin señal.
    - *Detalles:* galones y precio por galón (coma → punto al escribir), **total en vivo** y tipo de combustible
      (Diesel / ACPM por defecto).
    - *Referencias:* kilometraje (solo dígitos, con el último registrado como guía), **Observaciones** (solo en gastos) y
@@ -208,7 +212,7 @@ campo. Pantallas de bloqueo: **Primero el Preoperacional** y usuario no registra
 | Ruta | Respuesta |
 |---|---|
 | `GET /combustible` | HTML (sin caché; logo versionado) |
-| `GET /api/combustible/form` | tipos, pestañas, rango de fecha y **proveedores aprobados activos** |
+| `GET /api/combustible/form` | tipos, pestañas, rango de fecha y **proveedores aprobados activos** (`id`, `nombre`, `latitud`, `longitud`, `ciudad`, `direccion`; la ubicación puede ser `null`) |
 | `GET /api/combustible/context` | `empleado`, `contrato`, `vehiculo` reservado (o `null`), `ultimo_km` / `ultimo_km_gastos` (con `*_estricto`: debe ser mayor, no igual; la Mini App usa el de la pestaña activa) y `hoy`; 403 sin PIN |
 | `POST /api/combustible` | **202**; 401 firma, 403 sin empleado, 409 sin preoperacional / vehículo distinto / uuid ajeno, 422 validación o kilometraje menor, **410** reenvío sin señal vencido |
 | `GET /api/combustible/{uuid}` | estado de un envío propio |
@@ -229,8 +233,10 @@ campo. Pantallas de bloqueo: **Primero el Preoperacional** y usuario no registra
 | Procesar la cola | `docker compose exec app python -m app.combustible.worker --once` |
 | Reencolar fallidos | `docker compose exec app python -m app.combustible.worker --requeue-all` |
 
-El CSV lleva encabezado `nombre;nit;odoo_partner_id` (separado por `;` o `,`, UTF-8). Solo `nombre` es
-obligatorio. Se actualiza por NIT o, sin NIT, por nombre normalizado. `--resolver-odoo` busca en Odoo (solo lectura)
+El CSV lleva encabezado `nombre;nit;odoo_partner_id;latitud;longitud;ciudad;direccion` (separado por `;` o `,`,
+UTF-8). Solo `nombre` es obligatorio; `latitud` y `longitud` van juntas (grados decimales en rango; con `;` se
+acepta también la coma decimal). Un CSV sin ubicación no borra la ya guardada. **Estaciones con ubicación y carga
+con vista previa desde el Telegram de un administrador:** Panel Admin, pestaña ⛽ Estaciones (`docs/PANEL_ADMIN.md`). Se actualiza por NIT o, sin NIT, por nombre normalizado. `--resolver-odoo` busca en Odoo (solo lectura)
 el contacto de las filas sin `odoo_partner_id`, por NIT y luego por nombre exacto, y solo lo asigna si es único;
 al final lista los proveedores que quedaron sin contacto (irán como texto en `supplier`).
 
