@@ -71,6 +71,7 @@ logger = logging.getLogger(__name__)
 SERVICES_KEY = "services"
 # BD del preoperacional (la cuelga main._start_preop); la usa el handler de ubicación.
 PREOP_DB_KEY = "preop_db"
+COMBUSTIBLE_WAKE_KEY = "combustible_wake"  # callable: despierta la cola de combustible
 BTN_FORMULARIOS = "📋 Formularios"
 BTN_ESCANEAR = "📷 Escanear QR Tickets"
 BTN_UBICACION = "📍 Enviar ubicación"
@@ -563,6 +564,10 @@ async def on_location(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 loc.latitude, loc.longitude, msg.date)
         except Exception:
             logger.exception("No se pudo asignar la ubicación al combustible pendiente")
+    if asignada is not None:
+        wake = context.application.bot_data.get(COMBUSTIBLE_WAKE_KEY)
+        if wake is not None:
+            wake()
     if asignada is None:
         await msg.reply_text(formatting.ubicacion_registrada(registro), parse_mode="HTML",
                              reply_markup=main_keyboard())

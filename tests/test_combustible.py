@@ -16,7 +16,7 @@ from pydantic import ValidationError
 from sqlalchemy import func, select
 
 from app import formatting
-from app.combustible import proveedores, service
+from app.combustible import gps, proveedores, service
 from app.combustible.catalogo import PRODUCTO_GASTOS_ODOO_ID, TIPOS_COMBUSTIBLE, form_definition
 from app.combustible.router import CombustibleServices
 from app.combustible.router import router as combustible_router
@@ -506,8 +506,9 @@ def test_gasto_envia_el_json_exacto_a_gastos_register_y_no_toca_fuel(listo):
         "description": "Tanqueo en ruta", "date": _hoy().isoformat(), "is_fuel_expenses": True,
         "gallon": 12.5, "fuel_type": "diesel", "km_tanking": 1600.0, "type_file": "pdf",
         "attachment_filename": "factura.pdf", "attachment": base64.b64encode(PDF).decode(),
-        "lat_origin": LAT, "long_origin": LON,
+        "ubicacion_gps_telegram": "6.250000,-75.560000", "ubicacion_gps_vehiculo": "GPS no disponible",
     }
+    assert "lat_origin" not in body and "long_origin" not in body
     assert PRODUCTO_GASTOS_ODOO_ID == 9629
     assert isinstance(body["total_amount"], float) and isinstance(body["gallon"], float)
     assert writer.busquedas[0]["employee_id"] == 100
@@ -789,3 +790,165 @@ def test_migracion_agrega_columnas_de_ubicacion(tmp_path):
     eng.dispose()
     cols = {c["name"] for c in inspect(Database(url).engine).get_columns("combustible")}
     assert {"latitud", "longitud", "ubicacion_at", "ubicacion_requerida", "recordatorios_ubicacion"} <= cols
+
+
+# ───────────────────────── cotejo con el GPS de la flota ─────────────────────────
+
+ITEM = {"vehiculo_id": "27407752", "timestamp": "2026-11-26T09:26:44-05:00",
+        "coordenadas": {"lat": 6.68136055555, "long": -75.9113777778},
+        "matricula": "Agrale/Ma 8.7 Euro V/EQX557", "velocidad": 29.0}
+
+
+def test_placa_desde_matricula_y_normalizacion():
+    assert gps.placa_desde_matricula("Agrale/Ma 8.7 Euro V/EQX557") == "EQX557"
+    assert gps.placa_desde_matricula("eqx-557") == "EQX557"
+    assert gps.placa_desde_matricula(None) == "" and gps.normalizar_placa(" eq x-557 ") == "EQX557"
+
+
+def test_haversine_valor_conocido():
+    assert gps.haversine_m(0, 0, 1, 0) == pytest.approx(111195, abs=5)
+    assert gps.haversine_m(6.2, -75.5, 6.2, -75.5) == 0
+
+
+def test_formatos_de_texto():
+    assert gps.texto_telegram(6.167371, -75.641203) == "6.167371,-75.641203"
+    pos = gps.PosicionGps(6.1675, -75.641, datetime(2026, 11, 26, 14, 4, 30, tzinfo=UTC))
+    texto = gps.texto_vehiculo(pos, 6.167371, -75.641203)
+    assert texto.startswith("6.167500,-75.641000 · 2026-11-26 09:04 · ") and texto.endswith(" m")
+    assert re.fullmatch(r"6\.167500,-75\.641000 · 2026-11-26 09:04 · \d+ m", texto)
+    assert gps.distancia_m(pos, 6.1675, -75.641) == 0
+    assert gps.texto_vehiculo(None, 1, 2) == "GPS no disponible"
+
+
+@pytest.mark.parametrize("cuerpo", [
+    [ITEM], {"data": [ITEM]}, {"items": [ITEM]}, {"vehiculos": [ITEM]}, {"flota": [ITEM]},
+    {"data": {"items": [ITEM]}},
+])
+def test_envolturas_aceptadas(cuerpo):
+    pos = gps.buscar_posicion(cuerpo, "eqx 557")
+    assert pos is not None and pos.latitud == pytest.approx(6.68136055555)
+
+
+def test_varias_coincidencias_gana_la_mas_reciente_y_casos_raros():
+    viejo = ITEM | {"timestamp": "2026-11-25T09:26:44-05:00", "coordenadas": {"lat": 1.0, "long": 2.0}}
+    assert gps.buscar_posicion([viejo, ITEM], "EQX557").latitud == pytest.approx(6.68136055555)
+    assert gps.buscar_posicion([ITEM], "ZZZ000") is None
+    assert gps.buscar_posicion([ITEM], "") is None
+    for raro in ({"ok": 1}, "texto", [None, 3], [ITEM | {"coordenadas": None}], [ITEM | {"timestamp": "ayer"}],
+                 [ITEM | {"coordenadas": {"lat": "x", "long": 1}}], [ITEM | {"coordenadas": {"lat": 99, "long": 1}}]):
+        assert gps.buscar_posicion(raro, "EQX557") is None
+
+
+def _cliente(handler, **kw):
+    return gps.FlotaGpsClient("http://gps.test/api/v1/external/flota", "SECRETA", 5,
+                              transport=httpx.MockTransport(handler), **kw)
+
+
+def test_cliente_envia_x_api_key_y_no_filtra_la_clave_en_logs(caplog):
+    vistos = []
+
+    def handler(request):
+        vistos.append(request)
+        return httpx.Response(200, json=[ITEM])
+
+    with caplog.at_level("DEBUG"):
+        assert _cliente(handler).consultar("EQX557") is not None
+        assert _cliente(lambda r: httpx.Response(500)).consultar("EQX557") is None
+    assert vistos[0].headers["x-api-key"] == "SECRETA" and str(vistos[0].url).endswith("/external/flota")
+    assert "SECRETA" not in caplog.text
+
+
+@pytest.mark.parametrize("handler", [
+    lambda r: httpx.Response(401), lambda r: httpx.Response(200, text="no json"),
+    lambda r: httpx.Response(200, json={"x": 1}), lambda r: httpx.Response(200, json=[]),
+])
+def test_cliente_devuelve_none_ante_cualquier_fallo(handler):
+    assert _cliente(handler).consultar("EQX557") is None
+
+
+def test_cliente_red_caida():
+    def handler(request):
+        raise httpx.ConnectError("sin red")
+
+    assert _cliente(handler).consultar("EQX557") is None
+
+
+def test_build_gps_client_segun_configuracion(caplog):
+    from types import SimpleNamespace
+
+    from pydantic import SecretStr
+
+    base = {"gps_flota_url": "", "gps_flota_api_key": None, "gps_flota_timeout_seconds": 10}
+    with caplog.at_level("WARNING"):
+        assert gps.build_gps_client(SimpleNamespace(**base)) is None
+        assert gps.build_gps_client(SimpleNamespace(**base | {"gps_flota_url": "http://x"})) is None
+    assert "sin configurar" in caplog.text
+    ok = SimpleNamespace(**base | {"gps_flota_url": "http://x", "gps_flota_api_key": SecretStr("k")})
+    assert gps.build_gps_client(ok) is not None
+
+
+class FakeGps:
+    def __init__(self, resultado):
+        self.resultado, self.llamadas = resultado, []
+
+    def consultar(self, placa):
+        self.llamadas.append(placa)
+        if isinstance(self.resultado, Exception):
+            raise self.resultado
+        return self.resultado
+
+
+def test_gasto_lleva_cotejo_gps_y_se_consulta_una_sola_vez(listo):
+    registro_id = _gasto(listo)
+    pos = gps.PosicionGps(6.2501, -75.5601, datetime(2026, 11, 26, 14, 4, tzinfo=UTC))
+    fake = FakeGps(pos)
+    rest = FakeRest(_RetryableHttpError("respondió 503"))  # fallo reintentable: la cola reintenta
+    out = service.send_one(listo, FakeGastoWriter(), registro_id, 8, rest, fake)  # type: ignore[arg-type]
+    assert out.status == SyncStatus.ERROR and len(fake.llamadas) == 1
+    assert service.claim_batch(listo, 10, 300, now=utc_now() + timedelta(hours=2)) == [registro_id]
+    rest.respuesta = {"id": 1}
+    out = service.send_one(listo, FakeGastoWriter(), registro_id, 8, rest, fake)  # type: ignore[arg-type]
+    assert out.status == SyncStatus.ENVIADO and len(fake.llamadas) == 1  # no se vuelve a consultar
+    body = rest.posts[-1][1]
+    assert body["ubicacion_gps_telegram"] == "6.250000,-75.560000"
+    assert re.fullmatch(r"6\.250100,-75\.560100 · 2026-11-26 09:04 · \d+ m", body["ubicacion_gps_vehiculo"])
+    assert "lat_origin" not in body and "long_origin" not in body
+    with listo.session() as s:
+        row = s.get(Combustible, registro_id)
+        assert row.gps_distancia_m is not None and row.gps_at is not None and row.gps_latitud == 6.2501
+    assert len(fake.llamadas) == 1
+
+
+@pytest.mark.parametrize("gps_cliente", [None, FakeGps(None), FakeGps(RuntimeError("boom"))])
+def test_gps_no_disponible_no_retiene_el_gasto(listo, gps_cliente):
+    registro_id = _gasto(listo)
+    rest = FakeRest()
+    out = service.send_one(listo, FakeGastoWriter(), registro_id, 8, rest, gps_cliente)  # type: ignore[arg-type]
+    assert out.status == SyncStatus.ENVIADO
+    assert rest.posts[0][1]["ubicacion_gps_vehiculo"] == "GPS no disponible"
+    with listo.session() as s:
+        row = s.get(Combustible, registro_id)
+        assert row.ubicacion_gps_vehiculo == "GPS no disponible" and row.gps_distancia_m is None
+
+
+def test_fuel_sigue_con_lat_origin_y_no_consulta_gps(listo):
+    registro_id = _queue(listo)
+    writer, fake = FakeWriter([(1, None, False)]), FakeGps(None)
+    service.send_one(listo, writer, registro_id, 8, None, fake)  # type: ignore[arg-type]
+    vals = writer.calls[0][1]
+    assert vals["lat_origin"] == LAT and vals["long_origin"] == LON
+    assert "ubicacion_gps_telegram" not in vals and fake.llamadas == []
+
+
+def test_migracion_agrega_columnas_gps(tmp_path):
+    from sqlalchemy import create_engine, inspect, text
+
+    from app.preop.db import Database
+
+    url = f"sqlite:///{tmp_path / 'viejo3.db'}"
+    eng = create_engine(url)
+    with eng.begin() as conn:
+        conn.execute(text("CREATE TABLE combustible (id INTEGER PRIMARY KEY)"))
+    eng.dispose()
+    cols = {c["name"] for c in inspect(Database(url).engine).get_columns("combustible")}
+    assert {"gps_latitud", "gps_longitud", "gps_at", "gps_distancia_m", "ubicacion_gps_vehiculo"} <= cols

@@ -24,6 +24,8 @@ Referencia funcional: `docs/mapa_viacotur_form.md` § 3.5. Infraestructura compa
 | Total | `amount` (fuel) / `total_amount` (gastos) = galones × precio por galón (se muestra en vivo en la Mini App). |
 | Fecha | Por defecto hoy (hora de Colombia); no futura y como máximo 30 días atrás. |
 | Ubicación | **Obligatoria** en ambas pestañas, pedida **en el chat** (no en la Mini App) cuando el servidor acepta el registro (también un reenvío sin señal). El bot envía "Registro recibido… envía tu ubicación" con un teclado de un botón 📍 (`request_location`). El registro queda **retenido**: no sale a Odoo hasta tener ubicación. Recordatorios a los **10 y 30 min** del envío (máximo 2); después sigue retenido sin límite (visible en la BD y en el log). |
+| Ubicación en gastos | `hr.expense` **no tiene** `lat_origin`/`long_origin` (qa2: 400 "Invalid field 'lat_origin'"). En gastos la ubicación viaja como texto en dos campos char nuevos: `ubicacion_gps_telegram` (la compartida en Telegram) y `ubicacion_gps_vehiculo` (posición del GPS de la flota, fecha y distancia). La pestaña Combustible (`fuel`) no cambia: sigue con `lat_origin`/`long_origin`. |
+| Cotejo con el GPS | Solo **calcular y registrar** la distancia: no se rechaza ni se avisa a nadie. Si el GPS falla, el texto es `GPS no disponible` y el gasto sale igual (el GPS nunca retiene). Ver § 2.3. |
 | Sin señal | Regla de todos los formularios (`docs/GUIA_NUEVOS_BOTS.md` § 5), incluida la factura. |
 | Aviso | El bot confirma al conductor en el chat cuando el registro llega a Odoo. No hay aviso al jefe (el modelo no tiene plan de acción). |
 
@@ -73,7 +75,10 @@ base `ODOO_API_URL` (o `ODOO_URL`). Cuerpo exacto:
 | `employee_id` | id Odoo del empleado |
 | `description` | Observaciones (`""` si va vacía) |
 | `date`, `gallon`, `fuel_type`, `km_tanking` | Los mismos valores del formulario |
-| `lat_origin`, `long_origin` | Ubicación del tanqueo (floats); se omiten solo en filas viejas sin ubicación |
+| `ubicacion_gps_telegram` | Texto `"6.167371,-75.641203"` (lat,lon con 6 decimales, de la ubicación compartida en Telegram) |
+| `ubicacion_gps_vehiculo` | Texto `"6.167500,-75.641000 · 2026-11-26 09:04 · 18 m"` (posición GPS del vehículo, fecha/hora de esa posición en hora de Colombia y distancia en metros contra la de Telegram) o `"GPS no disponible"` |
+
+Las dos claves de ubicación se omiten solo en filas viejas sin ubicación. **No** se envían `lat_origin`/`long_origin` a este endpoint.
 | `attachment_filename`, `attachment` | La factura PDF (obligatoria) en base64 |
 
 No viajan proveedor, precio por galón, vehículo ni contrato (solo quedan en la BD local).
@@ -105,11 +110,38 @@ No viajan proveedor, precio por galón, vehículo ni contrato (solo quedan en la
    ignoradas. Confirma con la placa y, si quedan más pendientes, vuelve a pedir la ubicación.
 4. `CombustibleSender.run_once` envía los recordatorios (10 y 30 min; `RECORDATORIOS_UBICACION_MIN`) y marca cada uno
    antes de enviarlo (a lo sumo una vez; un fallo de Telegram se registra y no frena la cola).
-5. Con la ubicación, el registro se envía a `fuel` o a `hr.expense` con `lat_origin` / `long_origin`.
+5. Con la ubicación, el registro se envía: **Combustible** a `fuel` con `lat_origin` / `long_origin` (floats);
+   **gastos** a `hr.expense` con `ubicacion_gps_telegram` y `ubicacion_gps_vehiculo` (texto, § 2.3).
+6. `on_location` despierta la cola de combustible (`COMBUSTIBLE_WAKE_KEY` en `bot_data`, cableado en `app/main.py`):
+   el envío —y la consulta al GPS— ocurre segundos después, sin esperar al siguiente ciclo.
 
 Columnas nuevas en `combustible` (se añaden solas): `latitud`, `longitud`, `ubicacion_at`, `ubicacion_requerida`,
 `recordatorios_ubicacion`. Consulta de retenidos:
 `SELECT id, telegram_user_id, fecha, recordatorios_ubicacion FROM combustible WHERE ubicacion_requerida AND latitud IS NULL;`
+
+## 2.3 Cotejo con el GPS de la flota
+
+Módulo `app/combustible/gps.py` (cliente `httpx`, inyectable en `CombustibleSender`/`send_one`).
+
+| Tema | Detalle |
+|---|---|
+| Endpoint | `GET http://31.97.98.223:8081/api/v1/external/flota` (solo lectura) |
+| Autenticación | Cabecera `x-api-key`. La clave nunca se escribe en logs (en los fallos solo se registra el tipo de error) |
+| Variables `.env` | `GPS_FLOTA_URL` (vacío = GPS desactivado), `GPS_FLOTA_API_KEY` (secreta), `GPS_FLOTA_TIMEOUT_SECONDS` (10). Sin URL o sin clave: `WARNING` una vez al arrancar y todos los gastos van con `GPS no disponible` |
+| Respuesta | La envoltura no está confirmada: se acepta una lista en la raíz o dentro de un dict (`data`, `items`, `vehiculos`, `flota`, `result`, `results`). Elemento: `{"vehiculo_id", "timestamp": "2026-11-26T09:26:44-05:00", "coordenadas": {"lat", "long"}, "matricula": "Agrale/Ma 8.7 Euro V/EQX557", "velocidad"}` |
+| Identificación | Por **placa**: último segmento de `matricula` tras `/` (`EQX557`), comparado normalizado (mayúsculas, sin espacios ni guiones) con la placa del vehículo reservado del registro (`reservas.placa`). Varias coincidencias: la de timestamp más reciente |
+| Distancia | Haversine (radio 6 371 km) entre la ubicación de Telegram y la del GPS, redondeada a metros enteros |
+| Momento | Al enviar el gasto (`send_one`, antes de armar el payload), solo si el registro aún no tiene la instantánea. Se guarda la primera vez (incluido `GPS no disponible`) y **no se vuelve a consultar** en reintentos |
+| Fallos | Sin configurar, timeout/red, HTTP distinto de 200, JSON ilegible, vehículo ausente, coordenadas o fecha inválidas -> `GPS no disponible`; el gasto se envía igual |
+
+Columnas nuevas de `combustible` (se añaden solas con `Database._NEW_COLUMNS`):
+
+| Columna | Contenido |
+|---|---|
+| `gps_latitud`, `gps_longitud` | Posición del vehículo según el GPS (NULL si no hubo dato) |
+| `gps_at` | Fecha y hora de esa posición (UTC) |
+| `gps_distancia_m` | Distancia en metros a la ubicación de Telegram |
+| `ubicacion_gps_vehiculo` | Texto final enviado a Odoo; NULL = aún no consultada |
 
 ## 3. Arquitectura y archivos
 
@@ -129,6 +161,7 @@ CombustibleSender ─┬─ pestaña Combustible ──▶ OdooWriter.create_com
 | `app/combustible/service.py` | Contexto, `submit` / `submit_diferido`, kilometraje mínimo, `build_odoo_values`, `build_gasto_payload`, `enviar_gasto`, `send_one`. |
 | `app/combustible/router.py` · `worker.py` | Rutas y cola (`CombustibleSender`, CLI). |
 | `app/preop/models.py` | Tablas `proveedores_combustible`, `combustible`, `combustible_facturas`, `combustible_envios_diferidos`. |
+| `app/combustible/gps.py` | Cliente del GPS de la flota, parseo tolerante, haversine y formatos de texto. |
 | `app/preop/rest_client.py` | `post_json_once`: POST sin reintento automático (gastos). |
 | `app/preop/odoo_writer.py` | `buscar_gasto_combustible` (solo lectura), `create_combustible` (external id `combustible_<uuid>`; llave natural `employee_id` + `vehicle_id` + `km_tanking` en los últimos 2 min) y `buscar_contacto` (solo lectura, para la carga de proveedores). |
 
@@ -182,6 +215,9 @@ campo. Pantallas de bloqueo: **Primero el Preoperacional** y usuario no registra
 | Reemplazar la lista completa | Igual, con `--reemplazar` (desactiva los que no vengan en el archivo) |
 | Ver la lista | `docker compose exec app python -m app.combustible.proveedores listar` |
 | Quitar un proveedor | `docker compose exec app python -m app.combustible.proveedores desactivar ID` |
+| Cotejo GPS | `SELECT id, ubicacion_gps_vehiculo, gps_distancia_m, gps_at FROM combustible WHERE para_gastos ORDER BY id DESC LIMIT 20;` (`GPS no disponible` = ver el `WARNING` del log) |
+| Retenidos sin ubicación | `SELECT id, telegram_user_id, fecha, recordatorios_ubicacion FROM combustible WHERE ubicacion_requerida AND latitud IS NULL;` |
+| Reenviar uno fallido | `docker compose exec app python -m app.combustible.worker --requeue ID` y luego `--once` |
 | Cola | `SELECT sync_status, count(*) FROM combustible GROUP BY 1;` |
 | Envíos sin señal | `SELECT estado, uuid, sin_senal_desde, recibido_at, motivo FROM combustible_envios_diferidos ORDER BY recibido_at DESC;` |
 | Procesar la cola | `docker compose exec app python -m app.combustible.worker --once` |
@@ -198,4 +234,7 @@ al final lista los proveedores que quedaron sin contacto (irán como texto en `s
 - [ ] Confirmar el formato de la respuesta de `/api/gastos/register` (hoy el id se extrae de forma tolerante) y hacer la prueba real en qa2 (crea un `hr.expense`); verificar también si `hr.expense` tiene `km_tanking` para la búsqueda anti-duplicados.
 - [ ] Prueba de punta a punta en qa2 y desde un móvil (crea un registro real en `fuel`).
 - [ ] Confirmar si el kilometraje del tanqueo debe actualizar el odómetro del vehículo en Odoo (hoy no se escribe en `fleet.vehicle.odometer`).
-- [ ] Verificar en qa2 el tipo real de `lat_origin` / `long_origin` en `fuel` (hoy se envían como float) y si `hr.expense` los acepta en `/api/gastos/register`.
+- [ ] Verificar en qa2 el tipo real de `lat_origin` / `long_origin` en `fuel` (hoy se envían como float).
+- [ ] Confirmar la envoltura real de la respuesta del GPS de flota y fijar `GPS_FLOTA_URL`/`GPS_FLOTA_API_KEY` en el `.env` de qa2.
+- [ ] Reenviar el registro de prueba id 2 (falló con 400 por `lat_origin`): `python -m app.combustible.worker --requeue 2` y luego `--once`.
+- [ ] Confirmar que `hr.expense` ya tiene `ubicacion_gps_telegram` y `ubicacion_gps_vehiculo`.

@@ -55,6 +55,7 @@ from ..preop.service import (
 )
 from ..prueba_ruta.acuerdos import _PREFIJO_CODIGO
 from .catalogo import RECORDATORIOS_UBICACION_MIN, NOMBRE_GASTO, PRODUCTO_GASTOS_ODOO_ID, TIPOS_BY_KEY, form_definition
+from . import gps as gps_flota
 from .proveedores import listar_activos
 from .schemas import CombustibleIn, decode_pdf
 
@@ -314,8 +315,9 @@ def build_gasto_payload(registro: Combustible, factura: CombustibleFactura) -> d
         "attachment": base64.b64encode(factura.contenido).decode("ascii"),
     }
     if registro.latitud is not None and registro.longitud is not None:
-        payload["lat_origin"] = float(registro.latitud)
-        payload["long_origin"] = float(registro.longitud)
+        # hr.expense no tiene lat_origin/long_origin: la ubicación viaja como texto (y el cotejo con el GPS).
+        payload["ubicacion_gps_telegram"] = gps_flota.texto_telegram(registro.latitud, registro.longitud)
+        payload["ubicacion_gps_vehiculo"] = registro.ubicacion_gps_vehiculo or gps_flota.NO_DISPONIBLE
     return payload
 
 
@@ -337,6 +339,35 @@ def extraer_id_gasto(respuesta: Any) -> int | None:
 
 class RestNoConfigurado(Exception):
     """Falta el cliente REST (``ODOO_API_LOGIN``/``ODOO_API_PASSWORD``): el gasto queda en cola."""
+
+
+def tomar_instantanea_gps(db: Database, combustible_id: int, gps: gps_flota.FlotaGpsClient | None) -> None:
+    """Consulta el GPS de la flota una sola vez por registro y guarda la instantánea (también el fallo).
+
+    Si ``ubicacion_gps_vehiculo`` ya tiene valor, no consulta de nuevo (reintentos del envío). Nunca lanza.
+    """
+    with db.session() as session:
+        registro = session.get(Combustible, combustible_id)
+        if registro is None or registro.ubicacion_gps_vehiculo is not None or registro.latitud is None \
+                or registro.longitud is None:
+            return
+        lat, lon, placa = registro.latitud, registro.longitud, reservas.placa(registro.vehiculo)
+    posicion = None
+    if gps is not None:
+        try:
+            posicion = gps.consultar(placa)
+        except Exception:
+            logger.exception("Combustible %s: fallo inesperado consultando el GPS", combustible_id)
+    with db.session() as session:
+        registro = session.get(Combustible, combustible_id)
+        assert registro is not None
+        registro.ubicacion_gps_vehiculo = gps_flota.texto_vehiculo(posicion, lat, lon)
+        if posicion is not None:
+            registro.gps_latitud, registro.gps_longitud = posicion.latitud, posicion.longitud
+            registro.gps_at = posicion.momento
+            registro.gps_distancia_m = gps_flota.distancia_m(posicion, lat, lon)
+    logger.info("Combustible %s: GPS de la flota -> %s", combustible_id,
+                "sin dato" if posicion is None else f"{registro.gps_distancia_m} m")
 
 
 def enviar_gasto(writer: OdooWriter, rest_client: OdooRestClient | None, payload: dict[str, Any],
@@ -391,7 +422,8 @@ class CombustibleOutcome:
 
 
 def send_one(db: Database, writer: OdooWriter, combustible_id: int, max_attempts: int,
-             rest_client: OdooRestClient | None = None) -> CombustibleOutcome:
+             rest_client: OdooRestClient | None = None,
+             gps: gps_flota.FlotaGpsClient | None = None) -> CombustibleOutcome:
     """Envía un tanqueo ya reclamado (``enviando``) y deja el estado final en la BD.
 
     Pestaña Combustible -> ``fuel`` por XML-RPC; "para gastos" -> ``hr.expense`` por REST.
@@ -400,6 +432,12 @@ def send_one(db: Database, writer: OdooWriter, combustible_id: int, max_attempts
         registro = session.get(Combustible, combustible_id)
         if registro is None or registro.sync_status != SyncStatus.ENVIANDO:
             raise LookupError(f"combustible {combustible_id} no está en estado enviando")
+        necesita_gps = bool(registro.para_gastos)
+    if necesita_gps:  # antes de armar el payload; el GPS nunca retiene el gasto
+        tomar_instantanea_gps(db, combustible_id, gps)
+    with db.session() as session:
+        registro = session.get(Combustible, combustible_id)
+        assert registro is not None
         factura = session.scalar(select(CombustibleFactura).where(CombustibleFactura.combustible_id == registro.id))
         para_gastos = bool(registro.para_gastos)
         vals = (build_gasto_payload(registro, factura) if para_gastos and factura is not None

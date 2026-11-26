@@ -66,6 +66,12 @@ class Settings(BaseSettings):
     odoo_api_timeout_seconds: int = 60
     master_sync_interval_seconds: int = 900
 
+    # GPS de la flota (cotejo de la ubicación de «Combustible para gastos»). URL vacía = desactivado
+    # (los gastos van con «GPS no disponible»). La clave va en la cabecera x-api-key.
+    gps_flota_url: str = ""
+    gps_flota_api_key: SecretStr | None = None
+    gps_flota_timeout_seconds: float = 10
+
     # Escritura XML-RPC del preoperacional. Vacíos = mismas credenciales de ODOO_USERNAME/ODOO_PASSWORD.
     odoo_write_username: str = ""
     odoo_write_password: SecretStr | None = None

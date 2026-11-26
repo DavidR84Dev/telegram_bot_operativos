@@ -546,6 +546,13 @@ class Combustible(TimestampMixin, Base):
     longitud: Mapped[float | None] = mapped_column(Float)
     ubicacion_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     ubicacion_requerida: Mapped[bool | None] = mapped_column(Boolean)
+    # Instantánea del GPS de la flota (solo gastos), tomada una vez al enviar. ``ubicacion_gps_vehiculo`` es el
+    # texto final enviado a Odoo (incluido "GPS no disponible"); NULL = aún no consultada.
+    gps_latitud: Mapped[float | None] = mapped_column(Float)
+    gps_longitud: Mapped[float | None] = mapped_column(Float)
+    gps_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    gps_distancia_m: Mapped[int | None] = mapped_column(Integer)
+    ubicacion_gps_vehiculo: Mapped[str | None] = mapped_column(String(255))
     recordatorios_ubicacion: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
 
     sync_status: Mapped[SyncStatus] = mapped_column(

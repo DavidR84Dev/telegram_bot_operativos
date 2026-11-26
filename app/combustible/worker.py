@@ -19,6 +19,7 @@ from ..preop.db import Database
 from ..preop.models import SyncStatus
 from ..preop.odoo_writer import OdooWriter
 from ..preop.rest_client import OdooRestClient
+from .gps import FlotaGpsClient, build_gps_client
 from ..preop.worker import _PeriodicTask, build_writer
 from .service import (
     CombustibleOutcome,
@@ -47,7 +48,8 @@ def build_rest_client(settings) -> OdooRestClient | None:
 class CombustibleSender(_PeriodicTask):
     def __init__(self, db: Database, writer: OdooWriter, interval_seconds: float, max_attempts: int,
                  lease_seconds: int, notify: CombustibleNotifier | None = None, batch_size: int = 10,
-                 rest_client: OdooRestClient | None = None, remind: UbicacionReminder | None = None) -> None:
+                 rest_client: OdooRestClient | None = None, remind: UbicacionReminder | None = None,
+                 gps: FlotaGpsClient | None = None) -> None:
         super().__init__("combustible-sender", interval_seconds)
         self._db = db
         self._writer = writer
@@ -56,6 +58,7 @@ class CombustibleSender(_PeriodicTask):
         self._lease = lease_seconds
         self._notify = notify
         self._remind = remind
+        self._gps = gps  # cotejo de la ubicación de los gastos
         self._batch = batch_size
 
     async def _recordar(self) -> None:
@@ -82,7 +85,7 @@ class CombustibleSender(_PeriodicTask):
                 return outcomes
             for registro_id in ids:
                 outcome = await asyncio.to_thread(send_one, self._db, self._writer, registro_id, self._max_attempts,
-                                             self._rest)
+                                                  self._rest, self._gps)
                 outcomes.append(outcome)
                 if self._notify and outcome.status in (SyncStatus.ENVIADO, SyncStatus.FALLIDO):
                     try:
@@ -113,7 +116,7 @@ def main() -> None:  # pragma: no cover - CLI de operación
     try:
         sender = CombustibleSender(db, build_writer(settings), settings.preop_worker_interval_seconds,
                                    settings.preop_max_attempts, settings.preop_sending_lease_seconds,
-                                   rest_client=rest)
+                                   rest_client=rest, gps=build_gps_client(settings))
         for outcome in asyncio.run(sender.run_once()):
             print(outcome)
     finally:

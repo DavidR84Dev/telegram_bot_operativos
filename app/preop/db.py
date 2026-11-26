@@ -36,6 +36,11 @@ class Database:
         ("combustible", "ubicacion_at", "TIMESTAMP WITH TIME ZONE"),
         ("combustible", "ubicacion_requerida", "BOOLEAN"),
         ("combustible", "recordatorios_ubicacion", "INTEGER NOT NULL DEFAULT 0"),
+        ("combustible", "gps_latitud", "FLOAT"),
+        ("combustible", "gps_longitud", "FLOAT"),
+        ("combustible", "gps_at", "TIMESTAMP WITH TIME ZONE"),
+        ("combustible", "gps_distancia_m", "INTEGER"),
+        ("combustible", "ubicacion_gps_vehiculo", "VARCHAR(255)"),
     )
 
     def _add_missing_columns(self) -> None:

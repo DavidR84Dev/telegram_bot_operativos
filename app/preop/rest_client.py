@@ -177,7 +177,7 @@ class OdooRestClient:
             token = self._authenticate()
             response = self._http.post(path, json=body, headers={"Authorization": f"Bearer {token}"})
         if response.status_code >= 500 or response.status_code == 429:
-            raise _RetryableHttpError(f"{path} respondió {response.status_code}")
+            raise _RetryableHttpError(f"{path} respondió {response.status_code}: {response.text[:300]}")
         if response.status_code >= 400:
             raise OdooApiError(f"{path} respondió {response.status_code}: {response.text[:200]}")
         try:

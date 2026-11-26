@@ -116,6 +116,7 @@ BOARDING_BOT_INTERNAL_URL=http://127.0.0.1:8010
 LISTEN_HOST=127.0.0.1
 LISTEN_PORT=8011
 # Mismos valores que qa2: ODOO_USERNAME/PASSWORD, ODOO_API_LOGIN/PASSWORD, TELEGRAM_BOT_TOKEN
+# Opcional (cotejo GPS de Combustible para gastos): GPS_FLOTA_URL, GPS_FLOTA_API_KEY, GPS_FLOTA_TIMEOUT_SECONDS
 ```
 
 La base local (SQLite) arranca vacía: al iniciar, el bot sincroniza empleados, flota,

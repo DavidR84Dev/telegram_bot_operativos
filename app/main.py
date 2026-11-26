@@ -17,6 +17,7 @@ from .combustible.router import CombustibleServices
 from .combustible.router import router as combustible_router
 from .combustible import service as combustible_service
 from .combustible.service import CombustibleOutcome, RecordatorioUbicacion
+from .combustible.gps import build_gps_client
 from .combustible.worker import CombustibleSender, build_rest_client
 from .config import get_settings
 from .odoo_client import OdooClient
@@ -34,6 +35,7 @@ from .prueba_ruta.service import PruebaRutaOutcome
 from .prueba_ruta.worker import PruebaRutaSender
 from .telegram_app import (
     BOT_COMMANDS,
+    COMBUSTIBLE_WAKE_KEY,
     PREOP_DB_KEY,
     REGISTRO_KEY,
     SERVICES_KEY,
@@ -200,9 +202,11 @@ def _start_combustible(app: FastAPI, application, db: Database, writer) -> Combu
     sender = CombustibleSender(
         db, writer, settings.preop_worker_interval_seconds, settings.preop_max_attempts,
         settings.preop_sending_lease_seconds, notify=notify, rest_client=build_rest_client(settings),
-        remind=remind,
+        remind=remind, gps=build_gps_client(settings),
     )
     sender.start()
+    # on_location despierta la cola al llegar la ubicación (envío y consulta GPS segundos después).
+    application.bot_data[COMBUSTIBLE_WAKE_KEY] = sender.wake
     app.state.combustible = CombustibleServices(
         db=db, bot_token=settings.telegram_bot_token.get_secret_value(),
         max_age_seconds=settings.preop_auth_max_age_seconds, wake_worker=sender.wake,

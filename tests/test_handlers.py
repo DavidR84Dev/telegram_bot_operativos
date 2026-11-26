@@ -290,3 +290,17 @@ def test_forwarded_location_is_not_assigned_to_fuel(monkeypatch):
     ctx.application.bot_data[tga.PREOP_DB_KEY] = "db"
     asyncio.run(tga.on_location(upd, ctx))
     assert "Ubicación recibida" in upd.message.reply_text.await_args.args[0]
+
+
+def test_location_wakes_fuel_worker(monkeypatch):
+    monkeypatch.setattr(tga.preop_service, "registrar_ubicacion",
+                        lambda *a, **k: SimpleNamespace(id=1, preop_id=None, preop_nombre=None))
+    monkeypatch.setattr(tga.combustible_service, "asignar_ubicacion",
+                        lambda *a, **k: SimpleNamespace(combustible_id=3, placa="ABC123", pendientes=0))
+    despertado = []
+    upd = _location_update()
+    ctx = _ctx(_services())
+    ctx.application.bot_data[tga.PREOP_DB_KEY] = "db"
+    ctx.application.bot_data[tga.COMBUSTIBLE_WAKE_KEY] = lambda: despertado.append(1)
+    asyncio.run(tga.on_location(upd, ctx))
+    assert despertado == [1]
