@@ -27,6 +27,14 @@ MODALIDADES: tuple[dict[str, Any], ...] = (
     {"key": "gastos", "label": "Combustible para gastos", "para_gastos": True},
 )
 
+# "Combustible para gastos" va a ``hr.expense`` (POST /api/gastos/register), no al modelo ``fuel``.
+PRODUCTO_GASTOS_ODOO_ID = 9629  # product_id fijo del gasto de combustible
+NOMBRE_GASTO = "COMBUSTIBLE"
+OBSERVACIONES_MAX = 500
+
+# Recordatorios de la ubicación pendiente: minutos desde el envío (máximo uno por cada valor).
+RECORDATORIOS_UBICACION_MIN = (10, 30)
+
 # Fecha de la transacción: no futura y como máximo estos días atrás (hora de Colombia).
 DIAS_ATRAS_MAX = 30
 

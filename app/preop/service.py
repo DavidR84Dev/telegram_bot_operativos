@@ -391,7 +391,7 @@ def backoff(attempts: int) -> timedelta:
 
 
 def claim_batch(db: Database, limit: int, lease_seconds: int, now: datetime | None = None,
-                model: Any = Preoperacional) -> list[int]:
+                model: Any = Preoperacional, where: Any = None) -> list[int]:
     """Toma registros listos para enviar y los marca ``enviando`` (lease).
 
     ``model`` es la tabla de la cola (``Preoperacional`` o ``AnalisisSeguro``): ambas tienen
@@ -405,6 +405,8 @@ def claim_batch(db: Database, limit: int, lease_seconds: int, now: datetime | No
         and_(model.sync_status == SyncStatus.ERROR, model.next_attempt_at <= now),
         and_(model.sync_status == SyncStatus.ENVIANDO, model.last_attempt_at < stale),
     )
+    if where is not None:  # filtro extra del módulo (p. ej. combustible retenido hasta tener ubicación)
+        ready = and_(ready, where)
     with db.session() as session:
         ids = list(session.scalars(
             select(model.id).where(ready).order_by(model.created_at).limit(limit)

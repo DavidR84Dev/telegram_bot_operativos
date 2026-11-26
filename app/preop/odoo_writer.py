@@ -265,6 +265,25 @@ class OdooWriter:
         """Crea el tanqueo (modelo ``fuel``). Devuelve (odoo_id, name, ya_existía)."""
         return self._create(COMBUSTIBLE, external_ref, vals, submitted_at, previous_attempt_uncertain)
 
+    def buscar_gasto_combustible(self, vals: dict[str, Any]) -> int | None:
+        """Id de un ``hr.expense`` de combustible ya existente (solo lectura), o None.
+
+        Llave natural: ``employee_id`` + ``is_fuel_expenses`` + ``km_tanking`` + ``date`` +
+        ``total_amount``. Lo usa el envío de "Combustible para gastos" antes de cada POST a
+        ``/api/gastos/register`` (que crea un registro nuevo) para no duplicar en reintentos.
+        Lanza ``OdooWriteError`` si la búsqueda falla (p. ej. el campo no existe en ``hr.expense``).
+        """
+        dominio = [
+            ("employee_id", "=", vals["employee_id"]),
+            ("is_fuel_expenses", "=", True),
+            ("km_tanking", "=", vals["km_tanking"]),
+            ("date", "=", vals["date"]),
+            ("total_amount", "=", vals["total_amount"]),
+        ]
+        with self._lock:
+            ids = self._execute("hr.expense", "search", [dominio], {"limit": 1, "order": "id desc"})
+        return int(ids[0]) if ids else None
+
     def buscar_contacto(self, nit: str | None, nombre: str) -> int | None:
         """Id del contacto (``res.partner``) por NIT o, si no, por nombre exacto; None si no es único.
 

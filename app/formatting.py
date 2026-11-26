@@ -167,6 +167,23 @@ def combustible_result(outcome: CombustibleOutcome) -> str:
     )
 
 
+def combustible_pedir_ubicacion(placa: str | None) -> str:
+    return ("⛽ <b>Registro recibido</b>" + (f" ({escape(placa)})" if placa else "") + "\n\n"
+            "📍 Toca <b>Enviar ubicación</b> para completar el tanqueo: sin ella el registro no se envía a Odoo.")
+
+
+def combustible_recordatorio_ubicacion(placa: str | None) -> str:
+    return ("⏰ <b>Falta la ubicación de tu tanqueo</b>" + (f" ({escape(placa)})" if placa else "") + "\n\n"
+            "Toca <b>Enviar ubicación</b> para completarlo; mientras tanto no se envía a Odoo.")
+
+
+def combustible_ubicacion_registrada(placa: str | None, pendientes: int) -> str:
+    text = "📍 <b>Ubicación registrada para el tanqueo</b>" + (f" de {escape(placa)}" if placa else "") + "."
+    if pendientes:
+        text += f"\n\nTienes {pendientes} tanqueo(s) más sin ubicación: envíala de nuevo."
+    return text
+
+
 def _lista_placas(placas: tuple[str, ...]) -> str:
     return ", ".join(f"<b>{escape(p)}</b>" for p in placas)
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import re
+import httpx
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
@@ -16,7 +17,7 @@ from sqlalchemy import func, select
 
 from app import formatting
 from app.combustible import proveedores, service
-from app.combustible.catalogo import TIPOS_COMBUSTIBLE, form_definition
+from app.combustible.catalogo import PRODUCTO_GASTOS_ODOO_ID, TIPOS_COMBUSTIBLE, form_definition
 from app.combustible.router import CombustibleServices
 from app.combustible.router import router as combustible_router
 from app.combustible.schemas import CombustibleIn
@@ -33,6 +34,7 @@ from app.preop.models import (
     utc_now,
 )
 from app.preop.odoo_writer import OdooPermanentError, OdooTransientError
+from app.preop.rest_client import OdooApiError, OdooRestClient, _RetryableHttpError
 from app.preop.service import SubmissionError, TelegramIdentity
 
 from . import test_preop as _preop
@@ -260,14 +262,24 @@ class FakeWriter:
         return result
 
 
+LAT, LON = 6.25, -75.56
+
+
+def _con_ubicacion(db, registro_id: int) -> None:
+    with db.session() as s:
+        row = s.get(Combustible, registro_id)
+        row.latitud, row.longitud, row.ubicacion_at = LAT, LON, utc_now()
+
+
 def _queue(db, **over) -> int:
     registro, _ = service.submit(db, IDENTITY, _payload(**over))
+    _con_ubicacion(db, registro.id)  # sin ubicación el registro queda retenido
     assert service.claim_batch(db, 10, 300) == [registro.id]
     return registro.id
 
 
 def test_envio_con_proveedor_escrito_a_mano_va_en_supplier(listo):
-    registro_id = _queue(listo, ref_factura="FE-123")
+    registro_id = _queue(listo, ref_factura="FE-123")  # un cliente viejo aún puede mandarla
     writer = FakeWriter([(501, "BUS 01/ABC123", False)])
     outcome = service.send_one(listo, writer, registro_id, 8)
     assert outcome.status == SyncStatus.ENVIADO
@@ -277,8 +289,9 @@ def test_envio_con_proveedor_escrito_a_mano_va_en_supplier(listo):
         "employee_id": 100, "vehicle_id": 10, "company_id": 1, "date": _hoy().isoformat(),
         "is_fuel_expenses": False, "gallon": 12.5, "price_gallon": 12000.0, "amount": 150000.0,
         "fuel_type": "diesel", "km_tanking": 1600.0, "agreement_id": 55, "supplier": "Estación La 80",
-        "ref_invoice": "FE-123",
+        "lat_origin": LAT, "long_origin": LON,
     }
+    assert "ref_invoice" not in vals
     text = formatting.combustible_result(outcome)
     assert "ABC123" in text and "$ 150 000" in text and "#501" in text
     with listo.session() as s:
@@ -288,11 +301,11 @@ def test_envio_con_proveedor_escrito_a_mano_va_en_supplier(listo):
 
 def test_envio_con_proveedor_de_la_lista_y_factura(listo):
     pid = _proveedor(listo)
-    registro_id = _queue(listo, proveedor_texto=None, proveedor_id=pid, para_gastos=True, factura=PDF_B64)
+    registro_id = _queue(listo, proveedor_texto=None, proveedor_id=pid, factura=PDF_B64)
     writer = FakeWriter([(502, None, False)])
     service.send_one(listo, writer, registro_id, 8)
     vals = writer.calls[0][1]
-    assert vals["proveedor"] == 77 and "supplier" not in vals and vals["is_fuel_expenses"] is True
+    assert vals["proveedor"] == 77 and "supplier" not in vals and vals["is_fuel_expenses"] is False
     assert base64.b64decode(vals["image_bill"]) == PDF and vals["fuel_attachment"] is True
     assert vals["attachment_filename"] == "factura.pdf"
 
@@ -322,7 +335,7 @@ def test_colas_independientes(listo):
 
 
 def test_sender_notifica(listo):
-    service.submit(listo, IDENTITY, _payload())
+    _con_ubicacion(listo, service.submit(listo, IDENTITY, _payload())[0].id)
     notified = []
 
     async def notify(outcome):
@@ -447,3 +460,330 @@ def test_api_diferido_vencido_solo_auditoria_con_factura(api, seeded):
         traza = s.scalar(select(CombustibleEnvioDiferido))
         assert traza.estado == EstadoDiferido.VENCIDO and traza.factura == PDF
         assert "factura" not in traza.payload and traza.payload["proveedor_texto"] == "Estación La 80"
+
+
+# ───────────────────── «Combustible para gastos» -> hr.expense por REST ─────────────────────
+
+class FakeGastoWriter(FakeWriter):
+    def __init__(self, existente: Any = None) -> None:
+        super().__init__([])
+        self.existente = existente
+        self.busquedas: list[dict] = []
+
+    def buscar_gasto_combustible(self, vals):
+        self.busquedas.append(vals)
+        if isinstance(self.existente, Exception):
+            raise self.existente
+        return self.existente
+
+
+class FakeRest:
+    def __init__(self, respuesta: Any = None) -> None:
+        self.respuesta = {"id": 8001} if respuesta is None else respuesta
+        self.posts: list[tuple[str, dict]] = []
+
+    def post_json_once(self, path, body):
+        self.posts.append((path, body))
+        if isinstance(self.respuesta, Exception):
+            raise self.respuesta
+        return self.respuesta
+
+
+def _gasto(db, **over) -> int:
+    return _queue(db, para_gastos=True, factura=PDF_B64, observaciones="Tanqueo en ruta", **over)
+
+
+def test_gasto_envia_el_json_exacto_a_gastos_register_y_no_toca_fuel(listo):
+    registro_id = _gasto(listo, ref_factura="FE-9")
+    writer, rest = FakeGastoWriter(), FakeRest({"id": 8001})
+    outcome = service.send_one(listo, writer, registro_id, 8, rest)  # type: ignore[arg-type]
+    assert outcome.status == SyncStatus.ENVIADO and outcome.odoo_id == 8001
+    assert writer.calls == []  # nunca create_combustible
+    [(path, body)] = rest.posts
+    assert path == "/api/gastos/register"
+    assert body == {
+        "name": "COMBUSTIBLE", "product_id": 9629, "total_amount": 150000.0, "employee_id": 100,
+        "description": "Tanqueo en ruta", "date": _hoy().isoformat(), "is_fuel_expenses": True,
+        "gallon": 12.5, "fuel_type": "diesel", "km_tanking": 1600.0, "type_file": "pdf",
+        "attachment_filename": "factura.pdf", "attachment": base64.b64encode(PDF).decode(),
+        "lat_origin": LAT, "long_origin": LON,
+    }
+    assert PRODUCTO_GASTOS_ODOO_ID == 9629
+    assert isinstance(body["total_amount"], float) and isinstance(body["gallon"], float)
+    assert writer.busquedas[0]["employee_id"] == 100
+    with listo.session() as s:
+        row = s.get(Combustible, registro_id)
+        assert (row.sync_status, row.odoo_gasto_id, row.odoo_id) == (SyncStatus.ENVIADO, 8001, None)
+        assert row.observaciones == "Tanqueo en ruta" and row.proveedor_nombre == "Estación La 80"
+
+
+def test_gasto_sin_observaciones_envia_description_vacia(listo):
+    registro_id = _queue(listo, para_gastos=True, factura=PDF_B64)
+    rest = FakeRest()
+    service.send_one(listo, FakeGastoWriter(), registro_id, 8, rest)  # type: ignore[arg-type]
+    assert rest.posts[0][1]["description"] == ""
+
+
+def test_observaciones_solo_en_gastos_y_normal_sin_ref_invoice(listo):
+    assert _payload(observaciones="algo").observaciones is None
+    assert _payload(para_gastos=True, factura=PDF_B64, observaciones="algo").observaciones == "algo"
+    with pytest.raises(ValidationError):
+        _payload(para_gastos=True, factura=PDF_B64, observaciones="x" * 501)
+    registro_id = _queue(listo, observaciones="algo")
+    writer = FakeWriter([(1, None, False)])
+    service.send_one(listo, writer, registro_id, 8, FakeRest())  # type: ignore[arg-type]
+    assert "ref_invoice" not in writer.calls[0][1] and "description" not in writer.calls[0][1]
+
+
+def test_gasto_existente_no_se_vuelve_a_postear(listo):
+    registro_id = _gasto(listo)
+    rest = FakeRest()
+    outcome = service.send_one(listo, FakeGastoWriter(existente=777), registro_id, 8, rest)  # type: ignore[arg-type]
+    assert outcome.status == SyncStatus.ENVIADO and outcome.odoo_id == 777 and rest.posts == []
+
+
+def test_busqueda_fallida_se_registra_y_se_continua(listo, caplog):
+    registro_id = _gasto(listo)
+    rest = FakeRest()
+    writer = FakeGastoWriter(existente=OdooPermanentError("ValueError: Invalid field km_tanking"))
+    with caplog.at_level("WARNING"):
+        outcome = service.send_one(listo, writer, registro_id, 8, rest)  # type: ignore[arg-type]
+    assert outcome.status == SyncStatus.ENVIADO and len(rest.posts) == 1
+    assert "no se pudo verificar duplicados" in caplog.text
+
+
+def test_busqueda_transitoria_no_postea_y_reintenta(listo):
+    registro_id = _gasto(listo)
+    rest = FakeRest()
+    outcome = service.send_one(listo, FakeGastoWriter(existente=OdooTransientError("sin red")),
+                               registro_id, 8, rest)  # type: ignore[arg-type]
+    assert outcome.status == SyncStatus.ERROR and rest.posts == []
+
+
+def test_gasto_4xx_es_definitivo_y_5xx_o_red_reintentable(listo):
+    registro_id = _gasto(listo)
+    out = service.send_one(listo, FakeGastoWriter(), registro_id, 8,
+                           FakeRest(OdooApiError("/api/gastos/register respondió 422: x")))  # type: ignore[arg-type]
+    assert out.status == SyncStatus.FALLIDO and "rechazó" in (out.error or "")
+    assert service.requeue_failed(listo) == 1
+    assert service.claim_batch(listo, 10, 300) == [registro_id]
+    out = service.send_one(listo, FakeGastoWriter(), registro_id, 8,
+                           FakeRest(_RetryableHttpError("respondió 503")))  # type: ignore[arg-type]
+    assert out.status == SyncStatus.ERROR
+    assert service.claim_batch(listo, 10, 300, now=utc_now() + timedelta(hours=2)) == [registro_id]
+    out = service.send_one(listo, FakeGastoWriter(), registro_id, 8,
+                           FakeRest(httpx.ConnectError("sin red")))  # type: ignore[arg-type]
+    assert out.status == SyncStatus.ERROR
+
+
+def test_gasto_sin_cliente_rest_queda_en_espera_sin_consumir_intentos(listo, caplog):
+    registro_id = _gasto(listo)
+    with caplog.at_level("ERROR"):
+        out = service.send_one(listo, FakeGastoWriter(), registro_id, 1, None)
+    assert out.status == SyncStatus.ERROR and "ODOO_API_LOGIN" in (out.error or "")
+    assert "ODOO_API_LOGIN" in caplog.text
+    with listo.session() as s:
+        row = s.get(Combustible, registro_id)
+        assert row.attempts == 0 and row.next_attempt_at is not None and row.sync_status == SyncStatus.ERROR
+
+
+def test_gasto_sin_id_en_la_respuesta_se_marca_enviado(listo, caplog):
+    registro_id = _gasto(listo)
+    with caplog.at_level("WARNING"):
+        out = service.send_one(listo, FakeGastoWriter(), registro_id, 8, FakeRest({"ok": True}))  # type: ignore[arg-type]
+    assert out.status == SyncStatus.ENVIADO and out.odoo_id is None and "id reconocible" in caplog.text
+
+
+def test_extraer_id_gasto_tolerante():
+    f = service.extraer_id_gasto
+    assert f({"id": 5}) == 5 and f({"expense_id": 6}) == 6 and f({"result": {"id": 7}}) == 7
+    assert f({"data": {"id": 8}}) == 8 and f({"response": [{"id": 9}]}) == 9
+    assert f({"id": True}) is None and f({"message": "ok"}) is None and f({"id": "x"}) is None
+
+
+def test_sender_despacha_por_pestana(listo):
+    _con_ubicacion(listo, service.submit(listo, IDENTITY, _payload(uuid="1" * 8 + UUID[8:]))[0].id)
+    _con_ubicacion(listo, service.submit(listo, IDENTITY, _payload(para_gastos=True, factura=PDF_B64))[0].id)
+    writer, rest = FakeWriter([(1, None, False)]), FakeRest()
+    sender = CombustibleSender(listo, writer, 10, 8, 300, rest_client=rest)  # type: ignore[arg-type]
+    writer.buscar_gasto_combustible = lambda vals: None  # type: ignore[attr-defined]
+    outcomes = asyncio.run(sender.run_once())
+    assert [o.status for o in outcomes] == [SyncStatus.ENVIADO] * 2
+    assert len(writer.calls) == 1 and writer.calls[0][1]["is_fuel_expenses"] is False
+    assert len(rest.posts) == 1
+
+
+def test_writer_busca_gasto_por_llave_natural():
+    objects = FakeObjects(natural_hit=321)
+    calls = []
+    original = objects.execute_kw
+
+    def spy(db, uid, pw, model, method, args, kwargs):
+        calls.append((model, method, args))
+        return original(db, uid, pw, model, method, args, kwargs)
+
+    objects.execute_kw = spy  # type: ignore[method-assign]
+    vals = {"employee_id": 1, "km_tanking": 1600.0, "date": "2026-11-03", "total_amount": 126200.0}
+    assert _writer(objects).buscar_gasto_combustible(vals) == 321
+    [(model, method, (dominio,))] = calls
+    assert (model, method) == ("hr.expense", "search")
+    assert dominio == [("employee_id", "=", 1), ("is_fuel_expenses", "=", True), ("km_tanking", "=", 1600.0),
+                       ("date", "=", "2026-11-03"), ("total_amount", "=", 126200.0)]
+
+
+def test_rest_post_json_once_no_reintenta_y_post_json_si():
+    hits = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/authenticate":
+            return httpx.Response(200, json={"token": "a.b.c"})
+        hits["n"] += 1
+        return httpx.Response(503) if hits["n"] < 3 else httpx.Response(200, json={"id": 1})
+
+    client = OdooRestClient("http://odoo.test", "u", "p", transport=httpx.MockTransport(handler))
+    with pytest.raises(_RetryableHttpError):
+        client.post_json_once("/api/gastos/register", {})
+    assert hits["n"] == 1
+
+
+def test_columnas_nuevas_se_agregan_a_una_bd_existente(tmp_path):
+    from sqlalchemy import create_engine, inspect, text
+
+    from app.preop.db import Database
+
+    url = f"sqlite:///{tmp_path / 'viejo.db'}"
+    eng = create_engine(url)
+    with eng.begin() as conn:
+        conn.execute(text("CREATE TABLE combustible (id INTEGER PRIMARY KEY)"))
+    eng.dispose()
+    database = Database(url)
+    columnas = {c["name"] for c in inspect(database.engine).get_columns("combustible")}
+    assert {"observaciones", "odoo_gasto_id"} <= columnas
+
+
+# ───────────────────────── ubicación obligatoria del tanqueo ─────────────────────────
+
+def _recibir(db, uuid_: str = UUID, **over) -> int:
+    return service.submit(db, IDENTITY, _payload(uuid=uuid_, **over))[0].id
+
+
+def _ahora_mas(**kw):
+    return utc_now() + timedelta(**kw)
+
+
+def test_sin_ubicacion_queda_retenido_y_con_ubicacion_se_libera(listo):
+    rid = _recibir(listo)
+    assert service.claim_batch(listo, 10, 300) == []
+    assert service.hay_ubicacion_pendiente(listo, TG_USER)
+    res = service.asignar_ubicacion(listo, TG_USER, LAT, LON, _ahora_mas(seconds=5))
+    assert res is not None and res.combustible_id == rid and res.pendientes == 0 and res.placa
+    assert service.claim_batch(listo, 10, 300) == [rid]
+    assert not service.hay_ubicacion_pendiente(listo, TG_USER)
+    with listo.session() as s:
+        assert s.get(Combustible, rid).ubicacion_at is not None
+
+
+def test_ubicacion_va_al_mas_antiguo_y_avisa_de_los_pendientes(listo):
+    primero = _recibir(listo)
+    segundo = _recibir(listo, "2" * 8 + UUID[8:], kilometraje=1700)
+    res = service.asignar_ubicacion(listo, TG_USER, LAT, LON, _ahora_mas(seconds=5))
+    assert res.combustible_id == primero and res.pendientes == 1
+    assert service.claim_batch(listo, 10, 300) == [primero]
+    res = service.asignar_ubicacion(listo, TG_USER, 1.0, 2.0, _ahora_mas(seconds=6))
+    assert res.combustible_id == segundo and res.pendientes == 0
+
+
+def test_ubicacion_anterior_al_registro_se_ignora(listo):
+    rid = _recibir(listo)
+    assert service.asignar_ubicacion(listo, TG_USER, LAT, LON, _ahora_mas(minutes=-5)) is None
+    assert service.asignar_ubicacion(listo, 999, LAT, LON, _ahora_mas(seconds=5)) is None
+    assert service.claim_batch(listo, 10, 300) == []
+    with listo.session() as s:
+        assert s.get(Combustible, rid).latitud is None
+
+
+def test_filas_viejas_sin_ubicacion_requerida_siguen_saliendo(listo):
+    rid = _recibir(listo)
+    with listo.session() as s:
+        s.get(Combustible, rid).ubicacion_requerida = None
+    assert service.claim_batch(listo, 10, 300) == [rid]
+    with listo.session() as s:
+        vals = service.build_odoo_values(s.get(Combustible, rid), None)
+    assert "lat_origin" not in vals and "long_origin" not in vals
+
+
+def test_gasto_sin_ubicacion_no_lleva_lat_long(listo):
+    rid = _recibir(listo, para_gastos=True, factura=PDF_B64)
+    with listo.session() as s:
+        fac = s.scalar(select(CombustibleFactura).where(CombustibleFactura.combustible_id == rid))
+        assert "lat_origin" not in service.build_gasto_payload(s.get(Combustible, rid), fac)
+
+
+def test_recordatorios_a_los_10_y_30_minutos_sin_repetir(listo):
+    rid = _recibir(listo)
+
+    def numeros(**kw):
+        return [r.numero for r in service.recordatorios_pendientes(listo, _ahora_mas(**kw))]
+
+    assert numeros(minutes=9) == []
+    assert numeros(minutes=11) == [1]
+    assert numeros(minutes=12) == []
+    assert numeros(minutes=29) == []
+    assert numeros(minutes=31) == [2]
+    assert numeros(minutes=500) == []
+    with listo.session() as s:
+        assert s.get(Combustible, rid).recordatorios_ubicacion == 2
+
+
+def test_recordatorio_no_se_envia_si_ya_hay_ubicacion(listo):
+    _con_ubicacion(listo, _recibir(listo))
+    assert service.recordatorios_pendientes(listo, _ahora_mas(minutes=40)) == []
+
+
+def test_sender_envia_recordatorios_y_tolera_fallos_de_telegram(listo):
+    rid = _recibir(listo)
+    sent = []
+
+    async def remind(r):
+        sent.append(r.numero)
+        raise RuntimeError("telegram caído")
+
+    sender = CombustibleSender(listo, FakeWriter([]), 10, 8, 300, remind=remind)  # type: ignore[arg-type]
+    with listo.session() as s:
+        s.get(Combustible, rid).fecha = utc_now() - timedelta(minutes=11)
+    assert asyncio.run(sender.run_once()) == [] and sent == [1]
+    assert asyncio.run(sender.run_once()) == [] and sent == [1]
+
+
+def test_api_pide_la_ubicacion_al_aceptar_un_registro_nuevo(seeded):
+    app = FastAPI()
+    app.include_router(combustible_router)
+    pedidos = []
+
+    async def on_accepted(registro):
+        pedidos.append(registro.id)
+
+    app.state.combustible = CombustibleServices(seeded, BOT_TOKEN, 3600, on_accepted=on_accepted)
+    client = TestClient(app)
+    _reservar(seeded)
+    body = _payload().model_dump(mode="json")
+    first = client.post("/api/combustible", json=body, headers=_headers())
+    assert first.status_code == 202 and pedidos == [first.json()["id"]]
+    assert client.post("/api/combustible", json=body, headers=_headers()).json()["duplicado"] is True
+    assert len(pedidos) == 1  # el duplicado no vuelve a pedirla
+    assert first.json()["sync_status"] == "pendiente"
+    assert service.claim_batch(seeded, 10, 300) == []
+
+
+def test_migracion_agrega_columnas_de_ubicacion(tmp_path):
+    from sqlalchemy import create_engine, inspect, text
+
+    from app.preop.db import Database
+
+    url = f"sqlite:///{tmp_path / 'viejo2.db'}"
+    eng = create_engine(url)
+    with eng.begin() as conn:
+        conn.execute(text("CREATE TABLE combustible (id INTEGER PRIMARY KEY)"))
+    eng.dispose()
+    cols = {c["name"] for c in inspect(Database(url).engine).get_columns("combustible")}
+    assert {"latitud", "longitud", "ubicacion_at", "ubicacion_requerida", "recordatorios_ubicacion"} <= cols

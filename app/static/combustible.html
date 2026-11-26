@@ -52,12 +52,13 @@
   .hint { color: var(--hint); font-size: 13px; }
   label.field { display: block; margin: 12px 0 4px; font-weight: 600; font-size: 14px; }
   .req { color: var(--bad); }
-  input[type=text], input[type=date], select {
+  input[type=text], input[type=date], select, textarea {
     width: 100%; min-height: var(--tap); padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line);
     background: var(--surface); color: var(--fg); font: inherit; font-size: 16px;
   }
+  textarea { resize: vertical; min-height: 84px; }
   input[readonly] { background: color-mix(in srgb, var(--hint) 10%, var(--surface)); color: var(--fg); opacity: 1; }
-  .missing input, .missing select, input.missing { border-color: var(--bad); }
+  .missing input, .missing select, .missing textarea, input.missing { border-color: var(--bad); }
   .field-wrap { scroll-margin-top: 16px; }
   .field-wrap.flash { animation: flash 1.6s ease-out; border-radius: 10px; }
   @keyframes flash { 0%, 40% { background: color-mix(in srgb, var(--warn) 22%, transparent); } 100% { background: transparent; } }
@@ -208,8 +209,10 @@
         <input id="km" type="text" inputmode="numeric" autocomplete="off">
         <div class="hint" id="km-hint"></div>
       </div>
-      <label class="field" for="ref">Referencia de la factura</label>
-      <input id="ref" type="text" maxlength="128" autocomplete="off" placeholder="Opcional">
+      <div class="field-wrap" id="w-obs" hidden>
+        <label class="field" for="obs">Observaciones</label>
+        <textarea id="obs" maxlength="500" rows="3" placeholder="Opcional"></textarea>
+      </div>
       <div class="field-wrap" id="w-factura">
         <label class="field">Factura (PDF) <span class="req" id="factura-req">*</span></label>
         <div class="hint" id="factura-hint"></div>
@@ -498,6 +501,7 @@
     $("tab-hint").textContent = oblig
       ? "Pagado por el conductor: la factura en PDF es obligatoria."
       : "Compra con el proveedor de la empresa: la factura es opcional.";
+    $("w-obs").hidden = !modalidad().para_gastos;  // Observaciones: solo en «Combustible para gastos»
     $("factura-req").hidden = !oblig;
     $("factura-hint").textContent = oblig ? "Obligatoria en «Combustible para gastos»." : "Opcional en «Combustible».";
   }
@@ -659,7 +663,7 @@
       ["Precio por galón", pesos(parseNum($("precio").value))],
       ["Total", pesos(totalActual())],
       ["Kilometraje", `${fmtNum(parseNum($("km").value))} km`],
-      ["Ref. factura", $("ref").value.trim() || "—"],
+      ...(modalidad().para_gastos ? [["Observaciones", $("obs").value.trim() || "—"]] : []),
       ["Factura PDF", state.factura ? state.factura.nombre : "Sin adjunto"],
     ]);
   }
@@ -724,7 +728,7 @@
       precio_galon: parseNum($("precio").value),
       tipo_combustible: $("tipo").value,
       kilometraje: parseNum($("km").value),
-      ref_factura: $("ref").value.trim() || null,
+      observaciones: modalidad().para_gastos ? ($("obs").value.trim() || null) : null,
       factura: state.factura ? state.factura.data : null,
       factura_nombre: state.factura ? state.factura.nombre : null,
     };
@@ -846,7 +850,7 @@
       $(id).addEventListener("input", () => { normalizarDecimal($(id)); markDirty(); $("total").textContent = pesos(totalActual() || 0); });
     }
     $("km").addEventListener("input", () => { soloDigitos($("km")); markDirty(); });
-    for (const id of ["fecha", "tipo", "ref"]) $(id).addEventListener("input", markDirty);
+    for (const id of ["fecha", "tipo", "obs"]) $(id).addEventListener("input", markDirty);
     document.querySelectorAll("#w-galones input, #w-precio input, #km, #fecha, #tipo").forEach((i) => {
       i.addEventListener("input", () => { if (!$("pendientes").hidden) renderPendientes(); });
     });

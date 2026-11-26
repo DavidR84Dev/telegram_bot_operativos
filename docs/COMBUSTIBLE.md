@@ -1,4 +1,4 @@
-# Combustible: Mini App de Telegram → BD local → Odoo (XML-RPC)
+# Combustible: Mini App de Telegram → BD local → Odoo (`fuel` por XML-RPC, gastos por REST)
 
 Módulo `app/combustible/` de `telegram_bot_operativos`. El conductor registra cada tanqueo del vehículo
 reservado a su nombre desde la Mini App **⛽ Combustible** (cuarto botón del panel 📋 Formularios, debajo de
@@ -15,12 +15,15 @@ Referencia funcional: `docs/mapa_viacotur_form.md` § 3.5. Infraestructura compa
 |---|---|
 | Ubicación | Mini App en @OperativosViacoturBot, debajo de 🗺️ Prueba de Ruta; comando `/combustible`. |
 | Vehículo y contrato | El vehículo es el **reservado por el preoperacional de la jornada** (`reservas_vehiculo`) y el contrato (`agreement_id`) es el de ese preoperacional, que salió de su extracto aprobado. Sin reserva: "Primero el Preoperacional" (409). |
-| Pestañas | **Combustible** / **Combustible para gastos**, como el bot de referencia → `is_fuel_expenses` de Odoo. |
-| Proveedor | Lista local de **proveedores aprobados** (`proveedores_combustible`, se carga desde un CSV). Si el proveedor no está, el conductor **lo escribe** y va a Odoo como texto en `supplier`. Uno de la lista con contacto de Odoo va en `proveedor` (`res.partner`); sin contacto, su nombre va en `supplier`. |
+| Pestañas | **Combustible** → modelo `fuel` (XML-RPC). **Combustible para gastos** → `hr.expense` por la API REST (`POST /api/gastos/register`), ya no al modelo `fuel` (2026-11-26). |
+| Referencia de la factura | **Se quitó** de ambas pestañas: la Mini App no la muestra ni la envía y `fuel` ya no recibe `ref_invoice`. El esquema aún acepta `ref_factura` (reenvíos sin señal de clientes viejos) pero se ignora. |
+| Observaciones | Campo nuevo, **solo en gastos** (opcional, máx. 500): va en `description` del gasto. Vacío → se envía `""` (la clave siempre va). Se guarda en `combustible.observaciones`. |
+| Proveedor | En gastos el proveedor se sigue pidiendo y guardando en la BD local, pero **no se envía** (el endpoint no lo recibe). Lista local de **proveedores aprobados** (`proveedores_combustible`, se carga desde un CSV). Si el proveedor no está, el conductor **lo escribe** y va a Odoo como texto en `supplier`. Uno de la lista con contacto de Odoo va en `proveedor` (`res.partner`); sin contacto, su nombre va en `supplier`. |
 | Factura | **Solo PDF** (firma `%PDF-`, máx. 4 MB). **Obligatoria solo en "Combustible para gastos"**; opcional en "Combustible". |
 | Kilometraje | **Mayor o igual** al último registrado: el mayor entre Odoo (en vivo), la flota sincronizada y el odómetro del preoperacional de la jornada. Se valida en la Mini App y en el servidor. |
-| Total | `amount` = galones × precio por galón (se muestra en vivo en la Mini App). |
+| Total | `amount` (fuel) / `total_amount` (gastos) = galones × precio por galón (se muestra en vivo en la Mini App). |
 | Fecha | Por defecto hoy (hora de Colombia); no futura y como máximo 30 días atrás. |
+| Ubicación | **Obligatoria** en ambas pestañas, pedida **en el chat** (no en la Mini App) cuando el servidor acepta el registro (también un reenvío sin señal). El bot envía "Registro recibido… envía tu ubicación" con un teclado de un botón 📍 (`request_location`). El registro queda **retenido**: no sale a Odoo hasta tener ubicación. Recordatorios a los **10 y 30 min** del envío (máximo 2); después sigue retenido sin límite (visible en la BD y en el log). |
 | Sin señal | Regla de todos los formularios (`docs/GUIA_NUEVOS_BOTS.md` § 5), incluida la factura. |
 | Aviso | El bot confirma al conductor en el chat cuando el registro llega a Odoo. No hay aviso al jefe (el modelo no tiene plan de acción). |
 
@@ -44,18 +47,78 @@ Referencia funcional: `docs/mapa_viacotur_form.md` § 3.5. Infraestructura compa
 | `amount` | monetary ("Precio Total") | galones × precio |
 | `fuel_type` | selection (**obligatorio**) | `gasoline`, `extra`, `diesel` (por defecto), `electric`, `gas`, `glp`, `diesel urea`, `hydrogen` |
 | `km_tanking` | float | Kilometraje al tanqueo |
-| `ref_invoice` | char | Referencia de la factura (opcional) |
 | `image_bill` | binary ("Factura Tanqueo") | PDF en base64 |
 | `attachment_filename`, `fuel_attachment` | char, boolean | Nombre del PDF y `true` cuando se adjunta |
 | `name`, `currency_id` | — | Los asigna Odoo (`name` es el nombre del vehículo; no es un consecutivo) |
-| `buyer`, `cash_tannage`, `lat_origin`, `long_origin` | — | No se envían |
+| `ref_invoice` | char | Ya no se envía (se quitó de la Mini App) |
+| `lat_origin`, `long_origin` | sin verificar (float) | Ubicación compartida en el chat (solo si existe) |
+| `buyer`, `cash_tannage` | — | No se envían |
+
+## 2.1 Gastos: `hr.expense` por REST (`POST /api/gastos/register`)
+
+Cliente `OdooRestClient` (`app/preop/rest_client.py`): mismo login JWT (`ODOO_API_LOGIN`/`ODOO_API_PASSWORD`) y
+base `ODOO_API_URL` (o `ODOO_URL`). Cuerpo exacto:
+
+```json
+{"name": "COMBUSTIBLE", "product_id": 9629, "total_amount": 126200.0, "employee_id": 1,
+ "description": "Observaciones del conductor", "date": "2026-11-03", "is_fuel_expenses": true,
+ "gallon": 12.222, "fuel_type": "diesel", "km_tanking": 173700.0, "type_file": "pdf",
+ "attachment_filename": "factura.pdf", "attachment": "<base64 del PDF>"}
+```
+
+| Clave | Origen |
+|---|---|
+| `name`, `product_id`, `is_fuel_expenses`, `type_file` | Constantes: `"COMBUSTIBLE"`, `9629` (`PRODUCTO_GASTOS_ODOO_ID`), `true`, `"pdf"` (el adjunto es solo PDF) |
+| `total_amount` | galones × precio por galón |
+| `employee_id` | id Odoo del empleado |
+| `description` | Observaciones (`""` si va vacía) |
+| `date`, `gallon`, `fuel_type`, `km_tanking` | Los mismos valores del formulario |
+| `lat_origin`, `long_origin` | Ubicación del tanqueo (floats); se omiten solo en filas viejas sin ubicación |
+| `attachment_filename`, `attachment` | La factura PDF (obligatoria) en base64 |
+
+No viajan proveedor, precio por galón, vehículo ni contrato (solo quedan en la BD local).
+
+- **Idempotencia:** el endpoint crea un registro, así que antes de **cada** POST se busca por XML-RPC (solo lectura,
+  `OdooWriter.buscar_gasto_combustible`) un `hr.expense` con `employee_id` + `is_fuel_expenses` + `km_tanking` + `date` +
+  `total_amount` iguales; si existe se toma su id y no se postea. Si esa búsqueda falla de forma permanente (p. ej. el
+  campo no existe en `hr.expense`) se deja un `WARNING` en el log y se continúa con el POST; si falla por red se
+  reintenta después sin postear. El POST usa `post_json_once` (sin el reintento automático de `post_json`): el
+  reintento queda en la cola, siempre precedido de la verificación.
+- **Errores:** 4xx → `fallido` (definitivo, reencolable con `--requeue`); 5xx/429/red → `error` con backoff, y `fallido`
+  al agotar `PREOP_MAX_ATTEMPTS`.
+- **Id devuelto:** la respuesta no está documentada; se busca `id`, `expense_id`, `gasto_id`, `record_id` (también
+  dentro de `result`/`data`/`response`) y se guarda en `combustible.odoo_gasto_id` (columna aparte de `odoo_id`, que es
+  única y de `fuel`: los ids de dos modelos podrían chocar). Si no viene, el registro se marca enviado igualmente y la
+  respuesta (hasta 500 caracteres) queda en el log.
+- **Sin credenciales REST:** si `ODOO_API_LOGIN`/`ODOO_API_PASSWORD` no están, los gastos quedan en `error` con un
+  `ERROR` claro en el log y **sin consumir intentos** (se reintentan cada ~10 min); no se pierden.
+
+## 2.2 Ubicación del tanqueo (flujo)
+
+1. `POST /api/combustible` → 202; si el registro es nuevo, `CombustibleServices.on_accepted` (en `app/main.py`) manda el
+   mensaje con el botón 📍. El registro se guarda con `ubicacion_requerida = true`.
+2. `claim_batch` solo reclama filas con `ubicacion_requerida` no verdadera **o** con `latitud` (retención).
+   Las filas anteriores al despliegue (columna NULL) siguen saliendo como antes.
+3. `on_location` (`app/telegram_app.py`): conserva la asociación al preoperacional y, además, asigna la ubicación al
+   tanqueo **más antiguo** del usuario que la espera (`service.asignar_ubicacion`). Se ignoran los mensajes
+   reenviados y las ubicaciones con fecha anterior a la recepción del registro; las ubicaciones en vivo editadas siguen
+   ignoradas. Confirma con la placa y, si quedan más pendientes, vuelve a pedir la ubicación.
+4. `CombustibleSender.run_once` envía los recordatorios (10 y 30 min; `RECORDATORIOS_UBICACION_MIN`) y marca cada uno
+   antes de enviarlo (a lo sumo una vez; un fallo de Telegram se registra y no frena la cola).
+5. Con la ubicación, el registro se envía a `fuel` o a `hr.expense` con `lat_origin` / `long_origin`.
+
+Columnas nuevas en `combustible` (se añaden solas): `latitud`, `longitud`, `ubicacion_at`, `ubicacion_requerida`,
+`recordatorios_ubicacion`. Consulta de retenidos:
+`SELECT id, telegram_user_id, fecha, recordatorios_ubicacion FROM combustible WHERE ubicacion_requerida AND latitud IS NULL;`
 
 ## 3. Arquitectura y archivos
 
 ```
 Conductor ──/combustible o ⛽──▶ Mini App /combustible (app/static/combustible.html)
 Mini App ──initData (HMAC)──▶ POST /api/combustible ──▶ combustible + combustible_facturas (pendiente) ──▶ 202
-CombustibleSender ──▶ OdooWriter.create_combustible ──▶ Odoo `fuel` ──▶ aviso al conductor
+CombustibleSender ─┬─ pestaña Combustible ──▶ OdooWriter.create_combustible ──▶ Odoo `fuel`
+                   └─ pestaña gastos ──▶ búsqueda previa (XML-RPC) + POST /api/gastos/register ──▶ `hr.expense`
+                   └──▶ aviso al conductor
 ```
 
 | Archivo | Contenido |
@@ -63,10 +126,11 @@ CombustibleSender ──▶ OdooWriter.create_combustible ──▶ Odoo `fuel` 
 | `app/combustible/catalogo.py` | Fuente única: tipos de combustible (selection de Odoo), pestañas, rango de fecha. |
 | `app/combustible/proveedores.py` | Lista de proveedores aprobados: lectura del CSV, carga (UPSERT) y CLI. |
 | `app/combustible/schemas.py` | `CombustibleIn`: decimales con coma → punto, proveedor (lista o texto, exactamente uno), factura PDF por firma real y obligatoria en gastos, fecha. |
-| `app/combustible/service.py` | Contexto, `submit` / `submit_diferido`, kilometraje mínimo, `build_odoo_values`, `send_one`. |
+| `app/combustible/service.py` | Contexto, `submit` / `submit_diferido`, kilometraje mínimo, `build_odoo_values`, `build_gasto_payload`, `enviar_gasto`, `send_one`. |
 | `app/combustible/router.py` · `worker.py` | Rutas y cola (`CombustibleSender`, CLI). |
 | `app/preop/models.py` | Tablas `proveedores_combustible`, `combustible`, `combustible_facturas`, `combustible_envios_diferidos`. |
-| `app/preop/odoo_writer.py` | `create_combustible` (external id `combustible_<uuid>`; llave natural `employee_id` + `vehicle_id` + `km_tanking` en los últimos 2 min) y `buscar_contacto` (solo lectura, para la carga de proveedores). |
+| `app/preop/rest_client.py` | `post_json_once`: POST sin reintento automático (gastos). |
+| `app/preop/odoo_writer.py` | `buscar_gasto_combustible` (solo lectura), `create_combustible` (external id `combustible_<uuid>`; llave natural `employee_id` + `vehicle_id` + `km_tanking` en los últimos 2 min) y `buscar_contacto` (solo lectura, para la carga de proveedores). |
 
 ### Tablas
 
@@ -74,7 +138,8 @@ CombustibleSender ──▶ OdooWriter.create_combustible ──▶ Odoo `fuel` 
   `odoo_partner_id` y `activo`.
 - **`combustible`:** `uuid` (único), identidad de Telegram, `empleado_id`, `vehiculo_id`, `preop_id`,
   `contrato_odoo_id`, `fecha_transaccion`, `para_gastos`, proveedor (`proveedor_id`, `proveedor_nombre`,
-  `proveedor_odoo_id`), `galones`, `precio_galon`, `total`, `tipo_combustible`, `kilometraje`, `ref_factura` y la
+  `proveedor_odoo_id`), `galones`, `precio_galon`, `total`, `tipo_combustible`, `kilometraje`, `ref_factura` (en
+  desuso), `observaciones` (gastos), `odoo_id` (`fuel`), `odoo_gasto_id` (`hr.expense`) y la
   auditoría de sincronización común.
 - **`combustible_facturas`:** el PDF en `BYTEA` con `nombre_archivo`, `tamano` y `sha256` (fuera de la tabla
   principal para no cargar binarios al leer la cola).
@@ -92,7 +157,7 @@ Dos pasos: **Registro → Resumen**.
      fecha de la transacción.
    - *Detalles:* galones y precio por galón (coma → punto al escribir), **total en vivo** y tipo de combustible
      (Diesel / ACPM por defecto).
-   - *Referencias:* kilometraje (solo dígitos, con el último registrado como guía), referencia de la factura y
+   - *Referencias:* kilometraje (solo dígitos, con el último registrado como guía), **Observaciones** (solo en gastos) y
      **factura PDF** (obligatoria en "para gastos").
 2. **Resumen:** todos los datos y el total. **Enviar registro** pide confirmación con el valor.
 
@@ -130,6 +195,7 @@ al final lista los proveedores que quedaron sin contacto (irán como texto en `s
 ## 7. Pendientes
 
 - [ ] Cargar la lista real de proveedores aprobados (hoy la tabla está vacía: el conductor puede escribirlos).
+- [ ] Confirmar el formato de la respuesta de `/api/gastos/register` (hoy el id se extrae de forma tolerante) y hacer la prueba real en qa2 (crea un `hr.expense`); verificar también si `hr.expense` tiene `km_tanking` para la búsqueda anti-duplicados.
 - [ ] Prueba de punta a punta en qa2 y desde un móvil (crea un registro real en `fuel`).
 - [ ] Confirmar si el kilometraje del tanqueo debe actualizar el odómetro del vehículo en Odoo (hoy no se escribe en `fleet.vehicle.odometer`).
-- [ ] Ubicación del tanqueo (`lat_origin` / `long_origin`): hoy no se envía.
+- [ ] Verificar en qa2 el tipo real de `lat_origin` / `long_origin` en `fuel` (hoy se envían como float) y si `hr.expense` los acepta en `/api/gastos/register`.

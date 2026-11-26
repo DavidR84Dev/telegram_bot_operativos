@@ -59,6 +59,7 @@ from .odoo_queries import find_employee_by_pin, find_internal_token, find_ticket
 from .passenger_notifier import PassengerNotifier
 from .preop import registro as preop_registro
 from .preop import reservas as preop_reservas
+from .combustible import service as combustible_service
 from .preop import service as preop_service
 from .preop.rest_client import OdooRestClient
 from .scan_service import STATUS_MESSAGES, scan_qr
@@ -263,6 +264,15 @@ def main_keyboard() -> ReplyKeyboardMarkup:
         resize_keyboard=True,
         is_persistent=False,
         input_field_placeholder="Elige una opción del menú",
+    )
+
+
+def ubicacion_keyboard() -> ReplyKeyboardMarkup:
+    """Teclado con un solo botón 📍 que comparte la ubicación (tanqueo pendiente de ubicación)."""
+    return ReplyKeyboardMarkup(
+        [[KeyboardButton(BTN_UBICACION, request_location=True)]],
+        resize_keyboard=True, one_time_keyboard=True, is_persistent=False,
+        input_field_placeholder="Toca 📍 Enviar ubicación",
     )
 
 
@@ -543,8 +553,23 @@ async def on_location(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         preop_service.registrar_ubicacion, db, update.effective_user.id,
         loc.latitude, loc.longitude, loc.horizontal_accuracy,
     )
-    await update.message.reply_text(formatting.ubicacion_registrada(registro), parse_mode="HTML",
-                                    reply_markup=main_keyboard())
+    # Tanqueo pendiente de ubicación: el mensaje reenviado o anterior al registro no cuenta.
+    asignada = None
+    msg = update.message
+    if getattr(msg, "forward_origin", None) is None and getattr(msg, "date", None) is not None:
+        try:
+            asignada = await asyncio.to_thread(
+                combustible_service.asignar_ubicacion, db, update.effective_user.id,
+                loc.latitude, loc.longitude, msg.date)
+        except Exception:
+            logger.exception("No se pudo asignar la ubicación al combustible pendiente")
+    if asignada is None:
+        await msg.reply_text(formatting.ubicacion_registrada(registro), parse_mode="HTML",
+                             reply_markup=main_keyboard())
+        return
+    await msg.reply_text(
+        formatting.combustible_ubicacion_registrada(asignada.placa, asignada.pendientes), parse_mode="HTML",
+        reply_markup=ubicacion_keyboard() if asignada.pendientes else main_keyboard())
 
 
 async def cmd_finalizar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

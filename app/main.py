@@ -14,10 +14,11 @@ from .ast_trabajo.service import AstOutcome
 from .ast_trabajo.worker import AstSender
 from .combustible.router import CombustibleServices
 from .combustible.router import router as combustible_router
-from .combustible.service import CombustibleOutcome
-from .combustible.worker import CombustibleSender
+from .combustible.service import CombustibleOutcome, RecordatorioUbicacion
+from .combustible.worker import CombustibleSender, build_rest_client
 from .config import get_settings
 from .odoo_client import OdooClient
+from .preop import reservas
 from .preop.db import Database
 from .preop.etl import run_from_settings
 from .preop.rest_client import OdooRestClient
@@ -37,6 +38,7 @@ from .telegram_app import (
     SERVICES_KEY,
     RegistroServices,
     build_application,
+    ubicacion_keyboard,
 )
 from .watch_store import WatchStore
 from .web import router as web_router
@@ -177,15 +179,31 @@ def _start_combustible(app: FastAPI, application, db: Database, writer) -> Combu
             chat_id=outcome.telegram_user_id, text=formatting.combustible_result(outcome), parse_mode="HTML"
         )
 
+    async def remind(recordatorio: RecordatorioUbicacion) -> None:
+        await application.bot.send_message(
+            chat_id=recordatorio.telegram_user_id,
+            text=formatting.combustible_recordatorio_ubicacion(recordatorio.placa), parse_mode="HTML",
+            reply_markup=ubicacion_keyboard(),
+        )
+
+    async def on_accepted(registro) -> None:
+        """Registro aceptado (también el reenvío sin señal): se pide la ubicación en el chat."""
+        await application.bot.send_message(
+            chat_id=registro.telegram_user_id,
+            text=formatting.combustible_pedir_ubicacion(reservas.placa(registro.vehiculo)), parse_mode="HTML",
+            reply_markup=ubicacion_keyboard(),
+        )
+
     sender = CombustibleSender(
         db, writer, settings.preop_worker_interval_seconds, settings.preop_max_attempts,
-        settings.preop_sending_lease_seconds, notify=notify,
+        settings.preop_sending_lease_seconds, notify=notify, rest_client=build_rest_client(settings),
+        remind=remind,
     )
     sender.start()
     app.state.combustible = CombustibleServices(
         db=db, bot_token=settings.telegram_bot_token.get_secret_value(),
         max_age_seconds=settings.preop_auth_max_age_seconds, wake_worker=sender.wake,
-        odometro=writer.ultimo_odometro,
+        odometro=writer.ultimo_odometro, on_accepted=on_accepted,
     )
     return sender
 

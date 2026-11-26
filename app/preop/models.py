@@ -537,7 +537,16 @@ class Combustible(TimestampMixin, Base):
     total: Mapped[float] = mapped_column(Numeric(16, 2, asdecimal=False), nullable=False)
     tipo_combustible: Mapped[str] = mapped_column(String(32), nullable=False)
     kilometraje: Mapped[float] = mapped_column(Numeric(12, 1, asdecimal=False), nullable=False)
-    ref_factura: Mapped[str | None] = mapped_column(String(128))
+    ref_factura: Mapped[str | None] = mapped_column(String(128))  # en desuso: la Mini App ya no la pide
+    # Solo "Combustible para gastos" (-> ``description`` de hr.expense).
+    observaciones: Mapped[str | None] = mapped_column(String(500))
+    # Ubicación del tanqueo, pedida en el chat tras enviar el formulario. El registro no sale a Odoo
+    # mientras ``ubicacion_requerida`` sea verdadero y ``latitud`` esté vacía (filas viejas: NULL -> sin retención).
+    latitud: Mapped[float | None] = mapped_column(Float)
+    longitud: Mapped[float | None] = mapped_column(Float)
+    ubicacion_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    ubicacion_requerida: Mapped[bool | None] = mapped_column(Boolean)
+    recordatorios_ubicacion: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
 
     sync_status: Mapped[SyncStatus] = mapped_column(
         Enum(SyncStatus, name="combustible_sync_status", native_enum=False, length=16,
@@ -547,6 +556,8 @@ class Combustible(TimestampMixin, Base):
     )
     odoo_id: Mapped[int | None] = mapped_column(Integer, unique=True)
     odoo_name: Mapped[str | None] = mapped_column(String(255))
+    # id del ``hr.expense`` (pestaña gastos); aparte de ``odoo_id`` (único, de ``fuel``) para no colisionar.
+    odoo_gasto_id: Mapped[int | None] = mapped_column(Integer)
     error_log: Mapped[str | None] = mapped_column(Text)
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

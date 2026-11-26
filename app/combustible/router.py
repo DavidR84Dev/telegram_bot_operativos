@@ -43,6 +43,8 @@ class CombustibleServices:
     max_age_seconds: int
     wake_worker: Any = None
     odometro: Any = None  # OdooWriter.ultimo_odometro (último odómetro en vivo)
+    # async (registro): pide la ubicación en el chat cuando se acepta un registro nuevo.
+    on_accepted: Any = None
 
 
 def _services(request: Request) -> CombustibleServices:
@@ -121,6 +123,11 @@ async def combustible_submit(
         raise HTTPException(exc.status_code, str(exc)) from exc
     if not duplicated and svc.wake_worker is not None:
         svc.wake_worker()
+    if not duplicated and svc.on_accepted is not None:
+        try:
+            await svc.on_accepted(registro)
+        except Exception:  # el registro ya está guardado: el aviso fallido no debe devolver error al conductor
+            logger.exception("No se pudo pedir la ubicación del combustible %s", registro.id)
     logger.info("Combustible recibido id=%s uuid=%s usuario=%s duplicado=%s gastos=%s diferido=%s",
                 registro.id, registro.uuid, identity.user_id, duplicated, registro.para_gastos,
                 body.diferido is not None)

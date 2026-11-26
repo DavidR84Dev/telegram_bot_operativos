@@ -154,6 +154,7 @@ def test_location_is_saved_in_bot_database(monkeypatch):
         return SimpleNamespace(id=1, preop_id=9, preop_nombre="PRE-0009")
 
     monkeypatch.setattr(tga.preop_service, "registrar_ubicacion", fake_registrar)
+    monkeypatch.setattr(tga.combustible_service, "asignar_ubicacion", lambda *a, **k: None)
     upd = _update()
     upd.message.location = SimpleNamespace(latitude=6.25, longitude=-75.56, horizontal_accuracy=8.0)
     ctx = _ctx(_services())
@@ -243,3 +244,49 @@ def test_finalizar_from_forms_panel_requires_authorization():
     asyncio.run(tga.on_finalizar_confirm(upd, ctx))
     assert upd.callback_query.answer.await_args.kwargs["show_alert"] is True
     upd.callback_query.edit_message_text.assert_not_awaited()
+
+
+def _location_update(**extra):
+    from datetime import UTC, datetime
+
+    upd = _update()
+    upd.message.location = SimpleNamespace(latitude=6.25, longitude=-75.56, horizontal_accuracy=8.0)
+    upd.message.date = datetime.now(UTC)
+    for k, v in extra.items():
+        setattr(upd.message, k, v)
+    return upd
+
+
+def test_location_is_assigned_to_pending_fuel_and_asks_again_if_more(monkeypatch):
+    monkeypatch.setattr(tga.preop_service, "registrar_ubicacion",
+                        lambda *a, **k: SimpleNamespace(id=1, preop_id=None, preop_nombre=None))
+    calls = []
+
+    def fake_asignar(db, user_id, lat, lon, date):
+        calls.append((user_id, lat, lon))
+        return SimpleNamespace(combustible_id=3, placa="ABC123", pendientes=1)
+
+    monkeypatch.setattr(tga.combustible_service, "asignar_ubicacion", fake_asignar)
+    upd = _location_update()
+    ctx = _ctx(_services())
+    ctx.application.bot_data[tga.PREOP_DB_KEY] = "db"
+    asyncio.run(tga.on_location(upd, ctx))
+    assert calls == [(7913476225, 6.25, -75.56)]
+    text = upd.message.reply_text.await_args.args[0]
+    assert "ABC123" in text and "más sin ubicación" in text
+    assert upd.message.reply_text.await_args.kwargs["reply_markup"].keyboard[0][0].request_location is True
+
+
+def test_forwarded_location_is_not_assigned_to_fuel(monkeypatch):
+    monkeypatch.setattr(tga.preop_service, "registrar_ubicacion",
+                        lambda *a, **k: SimpleNamespace(id=1, preop_id=None, preop_nombre=None))
+
+    def boom(*a, **k):
+        raise AssertionError("no debe asignarse")
+
+    monkeypatch.setattr(tga.combustible_service, "asignar_ubicacion", boom)
+    upd = _location_update(forward_origin=object())
+    ctx = _ctx(_services())
+    ctx.application.bot_data[tga.PREOP_DB_KEY] = "db"
+    asyncio.run(tga.on_location(upd, ctx))
+    assert "Ubicación recibida" in upd.message.reply_text.await_args.args[0]

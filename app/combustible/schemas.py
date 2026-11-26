@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from ..preop.reservas import fecha_jornada
 from ..preop.schemas import EnvioDiferidoIn, _punto_decimal
-from .catalogo import DIAS_ATRAS_MAX, GALONES_MAX, PRECIO_GALON_MAX, TIPOS_BY_KEY
+from .catalogo import DIAS_ATRAS_MAX, GALONES_MAX, OBSERVACIONES_MAX, PRECIO_GALON_MAX, TIPOS_BY_KEY
 
 FACTURA_MAX_BYTES = 4 * 1024 * 1024  # el proxy (nginx) acepta 10 MB por petición
 _FACTURA_MAX_B64 = FACTURA_MAX_BYTES * 4 // 3 + 64
@@ -52,7 +52,10 @@ class CombustibleIn(BaseModel):
     precio_galon: float = Field(gt=0, le=PRECIO_GALON_MAX)
     tipo_combustible: str
     kilometraje: float = Field(ge=0, le=10_000_000)
+    # En desuso: la Mini App ya no la envía; se acepta por los reenvíos sin señal de clientes viejos.
     ref_factura: str | None = Field(default=None, max_length=128)
+    # Solo "Combustible para gastos" (-> description de hr.expense); en la otra pestaña se ignora.
+    observaciones: str | None = Field(default=None, max_length=OBSERVACIONES_MAX)
     # Factura en PDF (base64). Obligatoria solo con para_gastos.
     factura: str | None = Field(default=None, min_length=16, max_length=_FACTURA_MAX_B64)
     factura_nombre: str | None = Field(default=None, max_length=255)
@@ -80,9 +83,11 @@ class CombustibleIn(BaseModel):
     @model_validator(mode="after")
     def _normalize(self) -> CombustibleIn:
         self.uuid = self.uuid.lower()
-        for campo in ("proveedor_texto", "ref_factura", "factura_nombre", "factura"):
+        for campo in ("proveedor_texto", "ref_factura", "observaciones", "factura_nombre", "factura"):
             if getattr(self, campo) == "":
                 setattr(self, campo, None)
+        if not self.para_gastos:
+            self.observaciones = None
         if self.proveedor_texto:
             self.proveedor_texto = " ".join(self.proveedor_texto.split())
         if (self.proveedor_id is None) == (self.proveedor_texto is None):
