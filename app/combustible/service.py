@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -86,14 +86,54 @@ def _contrato(session: Session, reserva: ReservaVehiculo) -> tuple[int | None, s
     return cid, nombre
 
 
-def _km_minimo(session: Session, reserva: ReservaVehiculo, odometro: OdometroReader | None) -> float | None:
-    """Último kilometraje conocido: Odoo (o la flota sincronizada) y el del preoperacional de la jornada."""
-    valores = [ultimo_odometro(reserva.vehiculo, odometro)]
+@dataclass(frozen=True)
+class LimiteKm:
+    """Último kilometraje conocido. ``estricto``: el nuevo debe ser MAYOR que ``valor`` (no igual)."""
+
+    valor: float
+    estricto: bool
+
+    def acepta(self, km: float) -> bool:
+        return km > self.valor if self.estricto else km >= self.valor
+
+    def a_dict(self) -> dict[str, Any]:
+        return {"valor": self.valor, "estricto": self.estricto}
+
+    def mensaje(self, km: float) -> str:
+        regla = "mayor que" if self.estricto else "mayor o igual al"
+        return (f"El kilometraje ({km:,.0f} km) debe ser {regla} último registrado ({self.valor:,.0f} km)"
+                .replace(",", "."))
+
+
+def _limite(base: list[float | None], estrictos: list[float | None]) -> LimiteKm | None:
+    """Combina las fuentes: ``base`` (odómetro y preoperacional: igual vale) y ``estrictos`` (tanqueos previos:
+    Odoo exige un km estrictamente mayor). Con empate manda la regla estricta."""
+    b = max((float(v) for v in base if v is not None), default=None)
+    s = max((float(v) for v in estrictos if v is not None), default=None)
+    if s is not None and (b is None or s >= b):
+        return LimiteKm(s, True)
+    return LimiteKm(b, False) if b is not None else None
+
+
+def _km_limites(session: Session, reserva: ReservaVehiculo, odometro: OdometroReader | None,
+                km_fuel: OdometroReader | None = None, km_gastos: OdometroReader | None = None,
+                empleado_odoo_id: int | None = None) -> tuple[LimiteKm | None, LimiteKm | None]:
+    """(límite para la pestaña Combustible, límite para "Combustible para gastos").
+
+    Fuentes: odómetro en vivo de Odoo / flota sincronizada y preoperacional de la jornada (el mismo km vale);
+    mayor ``kilometraje`` de los tanqueos locales del vehículo (ambas pestañas, sin los fallidos); mayor
+    ``km_tanking`` de ``fuel`` en Odoo para el vehículo; y, solo en gastos, el de los ``hr.expense`` de
+    combustible del empleado (``hr.expense`` no tiene vehículo). Las lecturas de Odoo son tolerantes a fallo.
+    """
+    base: list[float | None] = [ultimo_odometro(reserva.vehiculo, odometro)]
     preop = session.get(Preoperacional, reserva.preop_id) if reserva.preop_id else None
     if preop is not None:
-        valores.append(preop.kilometraje)
-    conocidos = [float(v) for v in valores if v is not None]
-    return max(conocidos) if conocidos else None
+        base.append(preop.kilometraje)
+    local = session.scalar(select(func.max(Combustible.kilometraje)).where(
+        Combustible.vehiculo_id == reserva.vehiculo_id, Combustible.sync_status != SyncStatus.FALLIDO))
+    estrictos: list[float | None] = [local, km_fuel(reserva.vehiculo.odoo_id) if km_fuel else None]
+    gastos = estrictos + [km_gastos(empleado_odoo_id) if km_gastos and empleado_odoo_id else None]
+    return _limite(base, estrictos), _limite(base, gastos)
 
 
 # ───────────────────────────── consultas para la Mini App ─────────────────────────────
@@ -106,23 +146,30 @@ def form_full(db: Database) -> dict[str, Any]:
 
 
 def form_context(db: Database, empleado: Empleado, telegram_user_id: int,
-                 odometro: OdometroReader | None = None) -> dict[str, Any]:
+                 odometro: OdometroReader | None = None, km_fuel: OdometroReader | None = None,
+                 km_gastos: OdometroReader | None = None) -> dict[str, Any]:
     """Comprador, vehículo reservado por su preoperacional (o None), contrato y último kilometraje."""
     with db.session() as session:
         reserva = _reserva_propia(session, telegram_user_id)
-        vehiculo = contrato = km = None
+        vehiculo = contrato = None
+        km: tuple[LimiteKm | None, LimiteKm | None] = (None, None)
         if reserva is not None:
             v = reserva.vehiculo
             vehiculo = {"id": v.id, "nombre": v.nombre, "matricula": v.matricula,
                         "numero_interno": v.numero_interno, "placa": reservas.placa(v)}
             contrato = _contrato(session, reserva)[1]
-            km = _km_minimo(session, reserva, odometro)
+            km = _km_limites(session, reserva, odometro, km_fuel, km_gastos, empleado.odoo_id)
     return {
         "empleado": {"nombre": empleado.nombre, "puesto_trabajo": empleado.puesto_trabajo,
                      "responsable": empleado.responsable},
         "contrato": contrato,
         "vehiculo": vehiculo,
-        "ultimo_km": km,
+        # Pestaña Combustible / pestaña gastos (esta suma los hr.expense del empleado). ``*_estricto``: el nuevo
+        # km debe ser mayor (no igual).
+        "ultimo_km": km[0].valor if km[0] else None,
+        "ultimo_km_estricto": bool(km[0] and km[0].estricto),
+        "ultimo_km_gastos": km[1].valor if km[1] else None,
+        "ultimo_km_gastos_estricto": bool(km[1] and km[1].estricto),
         "hoy": reservas.fecha_jornada().isoformat(),
     }
 
@@ -130,7 +177,8 @@ def form_context(db: Database, empleado: Empleado, telegram_user_id: int,
 # ───────────────────────────────────── recepción ──────────────────────────────────────
 
 def submit_diferido(db: Database, identity: TelegramIdentity, data: CombustibleIn, tiempos: TiemposDiferido,
-                    odometro: OdometroReader | None = None) -> tuple[Combustible, bool]:
+                    odometro: OdometroReader | None = None, km_fuel: OdometroReader | None = None,
+                    km_gastos: OdometroReader | None = None) -> tuple[Combustible, bool]:
     """Recibe un tanqueo guardado en el teléfono por falta de señal (regla de ``app/preop/diferido.py``).
 
     Dentro de la ventana sigue el flujo normal; fuera de ella queda solo como auditoría
@@ -150,7 +198,7 @@ def submit_diferido(db: Database, identity: TelegramIdentity, data: CombustibleI
 
     motivo = motivo_vencido(tiempos.apertura, tiempos.sin_senal_desde, tiempos.recibido)
     if motivo is None:
-        return submit(db, identity, data, odometro, diferido=tiempos)
+        return submit(db, identity, data, odometro, diferido=tiempos, km_fuel=km_fuel, km_gastos=km_gastos)
 
     with db.session() as session:
         session.add(CombustibleEnvioDiferido(
@@ -169,7 +217,8 @@ def submit_diferido(db: Database, identity: TelegramIdentity, data: CombustibleI
 
 
 def submit(db: Database, identity: TelegramIdentity, data: CombustibleIn, odometro: OdometroReader | None = None,
-           diferido: TiemposDiferido | None = None) -> tuple[Combustible, bool]:
+           diferido: TiemposDiferido | None = None, km_fuel: OdometroReader | None = None,
+           km_gastos: OdometroReader | None = None) -> tuple[Combustible, bool]:
     """Guarda el tanqueo como ``pendiente`` con su factura. Devuelve (registro, era_duplicado).
 
     Idempotente por ``uuid``. ``diferido`` (ya validado dentro de la ventana) deja la
@@ -200,11 +249,11 @@ def submit(db: Database, identity: TelegramIdentity, data: CombustibleIn, odomet
             if proveedor is None or not proveedor.activo:
                 raise SubmissionError("El proveedor ya no está en la lista de aprobados; elígelo de nuevo o escríbelo")
 
-        minimo = _km_minimo(session, reserva, odometro)
-        if minimo is not None and data.kilometraje < minimo:
-            raise SubmissionError(
-                f"El kilometraje ({data.kilometraje:,.0f} km) debe ser mayor o igual al último registrado "
-                f"({minimo:,.0f} km)".replace(",", "."))
+        # El duplicado por uuid ya salió arriba: un reenvío del mismo uuid no se compara con su propio km.
+        limite_fuel, limite_gastos = _km_limites(session, reserva, odometro, km_fuel, km_gastos, empleado.odoo_id)
+        limite = limite_gastos if data.para_gastos else limite_fuel
+        if limite is not None and not limite.acepta(data.kilometraje):
+            raise SubmissionError(limite.mensaje(data.kilometraje))
 
         contrato_id, _ = _contrato(session, reserva)
         registro = Combustible(

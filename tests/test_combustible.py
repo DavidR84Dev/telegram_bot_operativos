@@ -605,7 +605,7 @@ def test_extraer_id_gasto_tolerante():
 
 def test_sender_despacha_por_pestana(listo):
     _con_ubicacion(listo, service.submit(listo, IDENTITY, _payload(uuid="1" * 8 + UUID[8:]))[0].id)
-    _con_ubicacion(listo, service.submit(listo, IDENTITY, _payload(para_gastos=True, factura=PDF_B64))[0].id)
+    _con_ubicacion(listo, service.submit(listo, IDENTITY, _payload(para_gastos=True, factura=PDF_B64, kilometraje=1700))[0].id)
     writer, rest = FakeWriter([(1, None, False)]), FakeRest()
     sender = CombustibleSender(listo, writer, 10, 8, 300, rest_client=rest)  # type: ignore[arg-type]
     writer.buscar_gasto_combustible = lambda vals: None  # type: ignore[attr-defined]
@@ -964,3 +964,100 @@ def test_product_id_de_gastos_sale_de_la_configuracion(monkeypatch):
         assert service._product_id_gastos() == 77
     finally:
         get_settings.cache_clear()
+
+
+# ─────────────────────── kilometraje mínimo: tanqueos previos y regla estricta ───────────────────────
+
+def _previo(db, km: float = 12600.0, **over) -> int:
+    """Tanqueo previo del mismo vehículo (queda como pendiente local)."""
+    return _recibir(db, UUID[:-1] + "9", kilometraje=km, **over)
+
+
+@pytest.mark.parametrize("gastos", [False, True])
+def test_km_debe_ser_estrictamente_mayor_que_el_tanqueo_local_previo(listo, gastos):
+    extra = {"para_gastos": True, "factura": PDF_B64} if gastos else {}
+    _previo(listo)
+    for km in (12560, 12600):
+        with pytest.raises(SubmissionError, match="mayor que") as exc:
+            service.submit(listo, IDENTITY, _payload(kilometraje=km, **extra))
+        assert exc.value.status_code == 422
+    assert service.submit(listo, IDENTITY, _payload(kilometraje=12601, **extra))[0].kilometraje == 12601
+
+
+def test_tanqueo_local_fallido_no_cuenta(listo):
+    previo = _previo(listo)
+    with listo.session() as s:
+        s.get(Combustible, previo).sync_status = SyncStatus.FALLIDO
+    assert service.submit(listo, IDENTITY, _payload(kilometraje=1600))[1] is False
+
+
+@pytest.mark.parametrize("gastos", [False, True])
+def test_km_de_fuel_en_odoo_cuenta_en_ambas_pestanas(listo, gastos):
+    extra = {"para_gastos": True, "factura": PDF_B64} if gastos else {}
+    with pytest.raises(SubmissionError, match="mayor que"):
+        service.submit(listo, IDENTITY, _payload(kilometraje=2000, **extra), None, km_fuel=lambda _v: 2000.0)
+    assert service.submit(listo, IDENTITY, _payload(kilometraje=2001, **extra), None,
+                          km_fuel=lambda _v: 2000.0)[0].kilometraje == 2001
+
+
+def test_km_de_gastos_del_empleado_solo_cuenta_en_la_pestana_gastos(listo):
+    vistos = []
+
+    def km_gastos(empleado_odoo_id):
+        vistos.append(empleado_odoo_id)
+        return 5000.0
+
+    # pestaña Combustible: los hr.expense no cuentan
+    assert service.submit(listo, IDENTITY, _payload(kilometraje=1600), None, km_gastos=km_gastos)[1] is False
+    with pytest.raises(SubmissionError, match="mayor que"):
+        service.submit(listo, IDENTITY, _payload(uuid="4" * 8 + UUID[8:], kilometraje=5000, para_gastos=True,
+                                                   factura=PDF_B64), None, km_gastos=km_gastos)
+    assert vistos and set(vistos) == {100}
+
+
+def test_odometro_y_preop_siguen_aceptando_igual_pero_el_tanqueo_exige_mayor(listo):
+    assert service.submit(listo, IDENTITY, _payload(kilometraje=1510))[0].kilometraje == 1510  # igual al preop
+    with pytest.raises(SubmissionError, match="mayor que"):  # y ahora el tanqueo previo (1510) es estricto
+        service.submit(listo, IDENTITY, _payload(uuid="5" * 8 + UUID[8:], kilometraje=1510))
+
+
+def test_reenvio_del_mismo_uuid_no_falla_por_su_propio_km(listo):
+    primero, _ = service.submit(listo, IDENTITY, _payload(kilometraje=1700))
+    again, duplicado = service.submit(listo, IDENTITY, _payload(kilometraje=1700))
+    assert duplicado is True and again.id == primero.id
+
+
+def test_contexto_devuelve_limites_por_pestana(listo, caplog):
+    _previo(listo, 12600.0)
+    with listo.session() as s:
+        from app.preop.models import Empleado
+        empleado = s.scalar(select(Empleado).where(Empleado.codigo_pin == str(TG_USER)))
+    ctx = service.form_context(listo, empleado, TG_USER, None, lambda _v: None, lambda _e: 13000.0)
+    assert ctx["ultimo_km"] == 12600 and ctx["ultimo_km_estricto"] is True
+    assert ctx["ultimo_km_gastos"] == 13000 and ctx["ultimo_km_gastos_estricto"] is True
+    sin_lecturas = service.form_context(listo, empleado, TG_USER)
+    assert sin_lecturas["ultimo_km_gastos"] == 12600
+
+
+def test_lecturas_de_km_en_odoo_toleran_fallos_y_filtran_bien(caplog):
+    objects = FakeObjects()
+    visto = []
+
+    def execute(db, uid, pw, model, method, args, kwargs):
+        visto.append((model, args[0], kwargs))
+        return [{"km_tanking": 777.0}]
+
+    objects.execute_kw = execute  # type: ignore[method-assign]
+    w = _writer(objects)
+    assert w.ultimo_km_fuel(10) == 777.0 and w.ultimo_km_gastos(100) == 777.0
+    assert visto[0][:2] == ("fuel", [["vehicle_id", "=", 10]])
+    assert visto[1][:2] == ("hr.expense", [["employee_id", "=", 100], ["is_fuel_expenses", "=", True]])
+    assert visto[1][2]["order"] == "km_tanking desc" and visto[1][2]["limit"] == 1
+
+    def falla(db, uid, pw, model, method, args, kwargs):
+        raise TimeoutError("timed out")
+
+    objects.execute_kw = falla  # type: ignore[method-assign]
+    with caplog.at_level("WARNING"):
+        assert w.ultimo_km_fuel(10) is None and w.ultimo_km_gastos(100) is None
+    assert "No se pudo leer el último km" in caplog.text

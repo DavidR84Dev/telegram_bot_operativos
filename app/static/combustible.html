@@ -502,6 +502,7 @@
       ? "Pagado por el conductor: la factura en PDF es obligatoria."
       : "Compra con el proveedor de la empresa: la factura es opcional.";
     $("w-obs").hidden = !modalidad().para_gastos;  // Observaciones: solo en «Combustible para gastos»
+    renderKmHint();  // el último km depende de la pestaña
     $("factura-req").hidden = !oblig;
     $("factura-hint").textContent = oblig ? "Obligatoria en «Combustible para gastos»." : "Opcional en «Combustible».";
   }
@@ -596,7 +597,19 @@
   }
 
   // ── Pendientes (cada uno lleva a su campo) ───────────────────────────────
-  function kmMinimo() { return state.ctx.ultimo_km; }
+  // Último km según la pestaña activa (gastos suma los hr.expense del empleado). estricto = debe ser MAYOR (no igual).
+  function kmLimite() {
+    const g = modalidad().para_gastos, c = state.ctx;
+    return { valor: g ? c.ultimo_km_gastos : c.ultimo_km, estricto: Boolean(g ? c.ultimo_km_gastos_estricto : c.ultimo_km_estricto) };
+  }
+  function kmMinimo() { return kmLimite().valor; }
+  function kmRegla() { return kmLimite().estricto ? "mayor que" : "mayor o igual a"; }
+  function kmInvalido(km) { const l = kmLimite(); return l.valor != null && (l.estricto ? km <= l.valor : km < l.valor); }
+  function renderKmHint() {
+    const km = kmMinimo();
+    $("km").placeholder = km != null ? `Último registrado: ${fmtNum(km)} km` : "Kilometraje actual";
+    $("km-hint").textContent = km != null ? `Debe ser ${kmRegla()} ${fmtNum(km)} km (último registrado).` : "";
+  }
 
   function pendientes() {
     const out = [];
@@ -610,7 +623,7 @@
     if (!(p > 0)) add("w-precio", "Precio por galón (mayor que 0)");
     if (!$("tipo").value) add("w-tipo", "Tipo de combustible");
     if (!Number.isFinite(km)) add("w-km", "Kilometraje al tanqueo");
-    else if (kmMinimo() != null && km < kmMinimo()) add("w-km", `Kilometraje: debe ser mayor o igual a ${fmtNum(kmMinimo())} km`);
+    else if (kmInvalido(km)) add("w-km", `Kilometraje: debe ser ${kmRegla()} ${fmtNum(kmMinimo())} km`);
     if (facturaObligatoria() && !state.factura) add("w-factura", "Factura en PDF (obligatoria en «Combustible para gastos»)");
     return out;
   }
@@ -837,9 +850,6 @@
     $("fecha").value = state.ctx.hoy;
     $("tipo").replaceChildren(...state.form.tipos.map((t) => el("option", { value: t.value, text: t.label })));
     $("tipo").value = state.form.tipo_por_defecto;
-    const km = state.ctx.ultimo_km;
-    $("km").placeholder = km != null ? `Último registrado: ${fmtNum(km)} km` : "Kilometraje actual";
-    $("km-hint").textContent = km != null ? `Debe ser mayor o igual a ${fmtNum(km)} km (último registrado).` : "";
     renderTabs();
     renderSugerencias();
     renderFactura();

@@ -211,6 +211,9 @@ def _start_combustible(app: FastAPI, application, db: Database, writer) -> Combu
         db=db, bot_token=settings.telegram_bot_token.get_secret_value(),
         max_age_seconds=settings.preop_auth_max_age_seconds, wake_worker=sender.wake,
         odometro=writer.ultimo_odometro, on_accepted=on_accepted,
+        # Sin km_gastos: en qa2 (2026-11-26) Odoo valida el km por vehículo (fuel), no por empleado; el
+        # máximo de hr.expense del empleado bloquearía al conductor que cambia de vehículo.
+        km_fuel=writer.ultimo_km_fuel,
     )
     return sender
 

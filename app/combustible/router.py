@@ -43,6 +43,8 @@ class CombustibleServices:
     max_age_seconds: int
     wake_worker: Any = None
     odometro: Any = None  # OdooWriter.ultimo_odometro (último odómetro en vivo)
+    km_fuel: Any = None  # OdooWriter.ultimo_km_fuel (mayor km_tanking del vehículo en fuel)
+    km_gastos: Any = None  # OdooWriter.ultimo_km_gastos (mayor km_tanking de los hr.expense del empleado)
     # async (registro): pide la ubicación en el chat cuando se acepta un registro nuevo.
     on_accepted: Any = None
 
@@ -90,7 +92,8 @@ async def combustible_context(request: Request, identity: Identity) -> dict[str,
             status.HTTP_403_FORBIDDEN,
             f"Tu ID de Telegram ({identity.user_id}) no está registrado como PIN de un empleado activo",
         )
-    return await asyncio.to_thread(service.form_context, svc.db, empleado, identity.user_id, svc.odometro)
+    return await asyncio.to_thread(service.form_context, svc.db, empleado, identity.user_id, svc.odometro,
+                                   svc.km_fuel, svc.km_gastos)
 
 
 def _out(registro: Combustible, duplicated: bool = False) -> CombustibleOut:
@@ -111,12 +114,13 @@ async def combustible_submit(
     try:
         if body.diferido is None:
             identity = _identity(x_telegram_init_data, svc.bot_token, svc.max_age_seconds)
-            registro, duplicated = await asyncio.to_thread(service.submit, svc.db, identity, body, svc.odometro)
+            registro, duplicated = await asyncio.to_thread(service.submit, svc.db, identity, body, svc.odometro,
+                                                                None, svc.km_fuel, svc.km_gastos)
         else:
             identity, tiempos = tiempos_diferido(body.diferido, x_telegram_init_data, svc.bot_token,
                                                  svc.max_age_seconds)
             registro, duplicated = await asyncio.to_thread(
-                service.submit_diferido, svc.db, identity, body, tiempos, svc.odometro)
+                service.submit_diferido, svc.db, identity, body, tiempos, svc.odometro, svc.km_fuel, svc.km_gastos)
     except preop_service.EnvioVencidoError as exc:
         raise HTTPException(status.HTTP_410_GONE, "Envío vencido: superó 1 hora sin señal") from exc
     except preop_service.SubmissionError as exc:

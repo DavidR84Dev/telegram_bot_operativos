@@ -20,7 +20,7 @@ Referencia funcional: `docs/mapa_viacotur_form.md` § 3.5. Infraestructura compa
 | Observaciones | Campo nuevo, **solo en gastos** (opcional, máx. 500): va en `description` del gasto. Vacío → se envía `""` (la clave siempre va). Se guarda en `combustible.observaciones`. |
 | Proveedor | En gastos el proveedor se sigue pidiendo y guardando en la BD local, pero **no se envía** (el endpoint no lo recibe). Lista local de **proveedores aprobados** (`proveedores_combustible`, se carga desde un CSV). Si el proveedor no está, el conductor **lo escribe** y va a Odoo como texto en `supplier`. Uno de la lista con contacto de Odoo va en `proveedor` (`res.partner`); sin contacto, su nombre va en `supplier`. |
 | Factura | **Solo PDF** (firma `%PDF-`, máx. 4 MB). **Obligatoria solo en "Combustible para gastos"**; opcional en "Combustible". |
-| Kilometraje | **Mayor o igual** al último registrado: el mayor entre Odoo (en vivo), la flota sincronizada y el odómetro del preoperacional de la jornada. Se valida en la Mini App y en el servidor. |
+| Kilometraje | Tiene que superar al último registrado (se valida en la Mini App y en el servidor, con la fuente de la pestaña del envío). **Fuentes:** (1) odómetro en vivo de Odoo o flota sincronizada y (2) odómetro del preoperacional de la jornada: el mismo km **vale** (mayor o igual); (3) mayor `kilometraje` de los tanqueos **locales** del mismo vehículo (ambas pestañas; no cuentan los `fallido`); (4) mayor `km_tanking` de `fuel` en Odoo para el vehículo; (5) **no se usa**: el mayor `km_tanking` de los `hr.expense` de combustible del empleado (`OdooWriter.ultimo_km_gastos`, parámetro `km_gastos`) existe pero **no se cablea** en `app/main.py`: en qa2 (2026-11-26) Odoo comparó el km del gasto contra el `fuel` del vehículo (12600), no contra los gastos del empleado (173700), y `hr.expense` no tiene vehículo, así que por empleado bloquearía al conductor que cambia de vehículo. Las fuentes 3 y 4 son de tanqueos previos y exigen un km **estrictamente mayor** (Odoo rechaza el igual); con empate manda la regla estricta. Las lecturas de Odoo son tolerantes: si fallan se deja un `WARNING` y se valida con las demás fuentes, sin bloquear al conductor. El reenvío del mismo uuid no se compara contra sí mismo. |
 | Total | `amount` (fuel) / `total_amount` (gastos) = galones × precio por galón (se muestra en vivo en la Mini App). |
 | Fecha | Por defecto hoy (hora de Colombia); no futura y como máximo 30 días atrás. |
 | Ubicación | **Obligatoria** en ambas pestañas, pedida **en el chat** (no en la Mini App) cuando el servidor acepta el registro (también un reenvío sin señal). El bot envía "Registro recibido… envía tu ubicación" con un teclado de un botón 📍 (`request_location`). El registro queda **retenido**: no sale a Odoo hasta tener ubicación. Recordatorios a los **10 y 30 min** del envío (máximo 2); después sigue retenido sin límite (visible en la BD y en el log). |
@@ -98,6 +98,11 @@ No viajan proveedor, precio por galón, vehículo ni contrato (solo quedan en la
   respuesta (hasta 500 caracteres) queda en el log.
 - **Sin credenciales REST:** si `ODOO_API_LOGIN`/`ODOO_API_PASSWORD` no están, los gastos quedan en `error` con un
   `ERROR` claro en el log y **sin consumir intentos** (se reintentan cada ~10 min); no se pierden.
+
+**Comportamiento verificado en qa2 (2026-11-26, `hr.expense` 161):** `/api/gastos/register` puede **crear el gasto y aun así
+responder 500** (p. ej. "Kilometraje inválido: 12560.0 (último) <= 12600.0 (penúltimo)"). Por eso la búsqueda previa
+anti-duplicados lo recupera en el reintento y no se crea otro: ese flujo es correcto y no cambia. Pendiente para el
+equipo de Odoo: validar el kilometraje **antes** de crear y responder 4xx.
 
 ## 2.2 Ubicación del tanqueo (flujo)
 
@@ -204,7 +209,7 @@ campo. Pantallas de bloqueo: **Primero el Preoperacional** y usuario no registra
 |---|---|
 | `GET /combustible` | HTML (sin caché; logo versionado) |
 | `GET /api/combustible/form` | tipos, pestañas, rango de fecha y **proveedores aprobados activos** |
-| `GET /api/combustible/context` | `empleado`, `contrato`, `vehiculo` reservado (o `null`), `ultimo_km` y `hoy`; 403 sin PIN |
+| `GET /api/combustible/context` | `empleado`, `contrato`, `vehiculo` reservado (o `null`), `ultimo_km` / `ultimo_km_gastos` (con `*_estricto`: debe ser mayor, no igual; la Mini App usa el de la pestaña activa) y `hoy`; 403 sin PIN |
 | `POST /api/combustible` | **202**; 401 firma, 403 sin empleado, 409 sin preoperacional / vehículo distinto / uuid ajeno, 422 validación o kilometraje menor, **410** reenvío sin señal vencido |
 | `GET /api/combustible/{uuid}` | estado de un envío propio |
 
@@ -238,4 +243,5 @@ al final lista los proveedores que quedaron sin contacto (irán como texto en `s
 - [ ] Verificar en qa2 el tipo real de `lat_origin` / `long_origin` en `fuel` (hoy se envían como float).
 - [ ] Confirmar la envoltura real de la respuesta del GPS de flota y fijar `GPS_FLOTA_URL`/`GPS_FLOTA_API_KEY` en el `.env` de qa2.
 - [ ] Reenviar el registro de prueba id 2 (falló con 400 por `lat_origin`): `python -m app.combustible.worker --requeue 2` y luego `--once`.
+- [ ] Equipo de Odoo: que `/api/gastos/register` valide el kilometraje antes de crear y responda 4xx (hoy crea y responde 500).
 - [ ] Confirmar que `hr.expense` ya tiene `ubicacion_gps_telegram` y `ubicacion_gps_vehiculo`.

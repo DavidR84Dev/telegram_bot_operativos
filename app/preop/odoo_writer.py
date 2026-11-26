@@ -210,6 +210,27 @@ class OdooWriter:
             return None
         return valor if valor > 0 else None
 
+    def _max_km_tanking(self, model: str, dominio: list[Any], etiqueta: str) -> float | None:
+        try:
+            with self._lock:
+                rows = self._execute(model, "search_read", [dominio],
+                                     {"fields": ["km_tanking"], "order": "km_tanking desc", "limit": 1})
+        except OdooWriteError as exc:  # igual que el odómetro: no se bloquea al conductor por un fallo de Odoo
+            logger.warning("No se pudo leer el último km de %s en Odoo: %s", etiqueta, exc)
+            return None
+        valor = float(rows[0].get("km_tanking") or 0) if rows else 0.0
+        return valor if valor > 0 else None
+
+    def ultimo_km_fuel(self, vehicle_odoo_id: int) -> float | None:
+        """Mayor ``km_tanking`` del modelo ``fuel`` para el vehículo (solo lectura); None si no hay o falla."""
+        return self._max_km_tanking("fuel", [["vehicle_id", "=", vehicle_odoo_id]], f"fuel del vehículo {vehicle_odoo_id}")
+
+    def ultimo_km_gastos(self, employee_odoo_id: int) -> float | None:
+        """Mayor ``km_tanking`` de los ``hr.expense`` de combustible del empleado (solo lectura)."""
+        return self._max_km_tanking(
+            "hr.expense", [["employee_id", "=", employee_odoo_id], ["is_fuel_expenses", "=", True]],
+            f"gastos del empleado {employee_odoo_id}")
+
     # ── idempotencia ───────────────────────────────────────────────────────
     @staticmethod
     def xmlid_name(external_ref: str, prefix: str = PREOPERACIONAL.prefix) -> str:
