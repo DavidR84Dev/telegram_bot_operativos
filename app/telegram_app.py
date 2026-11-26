@@ -5,7 +5,7 @@ referencia (@viacoturform_bot), el teclado de respuesta es plegable: Telegram lo
 muestra detrás de su botón de teclado (``toggle-reply-markup``) y solo tiene:
 
     📋 Formularios      -> panel inline, en este orden:
-                             • formularios de ``FORMULARIOS`` (✅ Preoperacional, ⚠️ AST, 🗺️ Prueba de Ruta, ⛽ Combustible, 💰 Gastos Operativos)
+                             • formularios de ``FORMULARIOS`` (✅ Preoperacional, ⚠️ AST, 🗺️ Prueba de Ruta, ⛽ Combustible, 💰 Gastos Operativos, 🧾 Pos-Operacional)
                              • 📷 Escanear QR (Mini App del escáner)
                              • 🔴 Finalizar   (fin de jornada: libera el vehículo reservado)
     📍 Enviar ubicación -> comparte la ubicación (se guarda en la BD del bot)
@@ -81,6 +81,7 @@ BTN_AST = "⚠️ AST"
 BTN_PRUEBA_RUTA = "🗺️ Prueba de Ruta"
 BTN_COMBUSTIBLE = "⛽ Combustible"
 BTN_GASTOS = "💰 Gastos Operativos"
+BTN_POS_OPERACIONAL = "🧾 Pos-Operacional"
 BTN_FINALIZAR = "🔴 Finalizar"
 CB_FINALIZAR_SI = "finalizar:si"
 CB_FINALIZAR_NO = "finalizar:no"
@@ -161,6 +162,7 @@ BOT_COMMANDS = [
     BotCommand("prueba_ruta", "Diligenciar la Prueba de Ruta del vehículo"),
     BotCommand("combustible", "Registrar un tanqueo de combustible"),
     BotCommand("gastos", "Registrar gastos operativos"),
+    BotCommand("pos_operacional", "Registrar el pos-operacional de la jornada"),
     BotCommand("escanear", "Abrir el escáner de QR"),
     BotCommand("finalizar", "Finalizar la jornada y liberar el vehículo reservado"),
     BotCommand("ayuda", "Qué hace cada opción del menú"),
@@ -195,6 +197,11 @@ def combustible_url(settings: Settings) -> str:
 def gastos_operativos_url(settings: Settings) -> str:
     base = settings.preop_base_url or settings.scanner_base_url
     return f"{base.rstrip('/')}/gastos-operativos"
+
+
+def pos_operacional_url(settings: Settings) -> str:
+    base = settings.preop_base_url or settings.scanner_base_url
+    return f"{base.rstrip('/')}/pos-operacional"
 
 
 def scanner_inline(base: str) -> InlineKeyboardMarkup:
@@ -247,6 +254,15 @@ FORMULARIOS: tuple[MenuOption, ...] = (
         help=("gastos de la jornada (alimentación, hospedaje, peajes…) con su valor y su soporte en PDF o foto; "
               "al enviarlos compartes tu ubicación en el chat."),
         url=gastos_operativos_url,
+    ),
+    MenuOption(
+        label=BTN_POS_OPERACIONAL,
+        open_text=BTN_POS_OPERACIONAL,
+        prompt=("Toca para registrar tu pos-operacional:\n\n"
+                "Recuerda que enviarlo no libera tu vehículo: al terminar tu jornada toca 🔴 Finalizar."),
+        help=("cierre de la jornada: kilometraje inicial y final, entrada, salida y la planilla de servicios "
+              "(PDF o foto). No libera el vehículo: para eso usa 🔴 Finalizar."),
+        url=pos_operacional_url,
     ),
 )
 _FORM_BY_LABEL = {option.label: option for option in FORMULARIOS}
@@ -378,6 +394,7 @@ def build_application(settings: Settings, odoo: OdooClient, store: WatchStore) -
     application.add_handler(CommandHandler("prueba_ruta", cmd_prueba_ruta))
     application.add_handler(CommandHandler("combustible", cmd_combustible))
     application.add_handler(CommandHandler("gastos", cmd_gastos))
+    application.add_handler(CommandHandler("pos_operacional", cmd_pos_operacional))
     application.add_handler(CommandHandler("escanear", cmd_escanear))
     application.add_handler(CommandHandler("finalizar", cmd_finalizar))
     application.add_handler(CallbackQueryHandler(on_finalizar_confirm, pattern=r"^finalizar:(si|no|pedir)$"))
@@ -559,6 +576,10 @@ async def cmd_combustible(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 async def cmd_gastos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await _open_option(update, context, _FORM_BY_LABEL[BTN_GASTOS])
+
+
+async def cmd_pos_operacional(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _open_option(update, context, _FORM_BY_LABEL[BTN_POS_OPERACIONAL])
 
 
 async def cmd_escanear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

@@ -3,7 +3,7 @@
 Se mantiene separado de ``app.odoo_client.OdooClient`` (solo lectura, usado por
 el validador de QR) para que el permiso de escritura quede acotado a métodos de
 creación: ``create_preoperacional``, ``create_ast``, ``create_prueba_ruta`` y
-``create_combustible``. Todos siguen el mismo flujo; solo cambian el modelo y la
+``create_combustible`` y ``create_pos_operacional``. Todos siguen el mismo flujo; solo cambian el modelo y la
 llave natural (``_Destino``).
 
 Flujo de creación:
@@ -68,6 +68,7 @@ PREOPERACIONAL = _Destino("preoperacional", "preop", ("employee_id", "vehicle_id
 AST = _Destino("ast", "ast", ("employee_id",))
 PRUEBA_RUTA = _Destino("prueba.ruta", "prueba_ruta", ("user_id", "vehicle_id"))
 COMBUSTIBLE = _Destino("fuel", "combustible", ("employee_id", "vehicle_id", "km_tanking"))
+POS_OPERACIONAL = _Destino("pos.operacional", "pos_operacional", ("employee_id", "check_in", "check_out"))
 ODOO_MODEL = PREOPERACIONAL.model
 
 # Fallos de Odoo que dependen del momento (concurrencia), no de los datos.
@@ -285,6 +286,23 @@ class OdooWriter:
                            previous_attempt_uncertain: bool) -> tuple[int, str | None, bool]:
         """Crea el tanqueo (modelo ``fuel``). Devuelve (odoo_id, name, ya_existía)."""
         return self._create(COMBUSTIBLE, external_ref, vals, submitted_at, previous_attempt_uncertain)
+
+    def create_pos_operacional(self, external_ref: str, vals: dict[str, Any], submitted_at: datetime,
+                               previous_attempt_uncertain: bool) -> tuple[int, str | None, bool]:
+        """Crea el Pos-Operacional (modelo ``pos.operacional``). Devuelve (odoo_id, name, ya_existía)."""
+        return self._create(POS_OPERACIONAL, external_ref, vals, submitted_at, previous_attempt_uncertain)
+
+    def buscar_pos_operacional(self, vals: dict[str, Any]) -> int | None:
+        """Id de un ``pos.operacional`` ya existente (solo lectura), o None.
+
+        Llave natural: ``employee_id`` + ``check_in`` + ``check_out`` (UTC naive ``YYYY-MM-DD HH:MM:SS``). Se consulta
+        antes de cada ``create`` para que un reintento tras un timeout no duplique el registro.
+        Lanza ``OdooWriteError`` si la búsqueda falla.
+        """
+        dominio = [(campo, "=", vals[campo]) for campo in POS_OPERACIONAL.llave_natural]
+        with self._lock:
+            ids = self._execute("pos.operacional", "search", [dominio], {"limit": 1, "order": "id desc"})
+        return int(ids[0]) if ids else None
 
     def buscar_gasto_combustible(self, vals: dict[str, Any]) -> int | None:
         """Id de un ``hr.expense`` de combustible ya existente (solo lectura), o None.

@@ -10,6 +10,7 @@ if TYPE_CHECKING:
     from .ast_trabajo.service import AstOutcome, AvisoJefeAst
     from .combustible.service import CombustibleOutcome
     from .gastos_operativos.service import GastosOutcome
+    from .pos_operacional.service import PosOperacionalOutcome
     from .preop.reservas import Liberacion
     from .prueba_ruta.service import AvisoJefePrueba, PruebaRutaOutcome
     from .preop.service import AvisoJefe, SendOutcome, UbicacionRegistrada
@@ -237,6 +238,35 @@ def gastos_ubicacion_registrada(placa: str | None, pendientes: int) -> str:
     if pendientes:
         text += f"\n\nTienes {pendientes} registro(s) más sin ubicación: envíala de nuevo."
     return text
+
+
+POS_RECORDATORIO_FINALIZAR = "Cuando termines tu jornada toca 🔴 <b>Finalizar</b> para liberar el vehículo."
+
+
+def pos_operacional_recibido(placa: str | None) -> str:
+    """Confirmación al recibir el formulario (aún no está en Odoo)."""
+    return ("🧾 <b>Pos-operacional recibido</b>" + (f" ({escape(placa)})" if placa else "") + "\n\n"
+            "Se está registrando en Odoo; te avisaré el resultado.\n"
+            "Enviarlo <b>no libera</b> tu vehículo. " + POS_RECORDATORIO_FINALIZAR)
+
+
+def pos_operacional_result(outcome: PosOperacionalOutcome) -> str:
+    """Resultado final del pos-operacional: registrado en Odoo con su id, o fallido con el motivo."""
+    if outcome.status.value == "enviado":
+        return (
+            "🧾 <b>Pos-operacional registrado en Odoo</b>\n\n"
+            + (f"🚌 Vehículo: {escape(outcome.placa)}\n" if outcome.placa else "")
+            + f"📄 Registro #{outcome.odoo_id}"
+            + (f" ({escape(outcome.odoo_name)})" if outcome.odoo_name else "") + "\n\n"
+            + POS_RECORDATORIO_FINALIZAR
+        )
+    motivo = escape((outcome.error or "motivo no disponible")[:400])
+    return (
+        "❌ <b>Tu pos-operacional no pudo guardarse en Odoo</b>\n\n"
+        f"Motivo: {motivo}\n\n"
+        f"Referencia local: #{outcome.pos_id}. El área de sistemas ya tiene el detalle; "
+        "no es necesario diligenciarlo de nuevo."
+    )
 
 
 def _lista_placas(placas: tuple[str, ...]) -> str:

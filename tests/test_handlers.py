@@ -91,17 +91,19 @@ def test_formularios_lists_preoperacional_first():
     call = upd.message.reply_text.await_args
     assert call.args[0] == "📂 Formularios disponibles:"
     rows = call.kwargs["reply_markup"].inline_keyboard
-    # Preoperacional -> AST -> Prueba de Ruta -> Combustible -> Gastos Operativos -> Escanear QR -> Finalizar.
+    # Preoperacional -> AST -> Prueba de Ruta -> Combustible -> Gastos Operativos -> Pos-Operacional -> Escanear QR -> Finalizar.
     assert [row[0].text for row in rows] == [tga.BTN_PREOP, tga.BTN_AST, tga.BTN_PRUEBA_RUTA,
-                                             tga.BTN_COMBUSTIBLE, tga.BTN_GASTOS, tga.BTN_ESCANEAR,
+                                             tga.BTN_COMBUSTIBLE, tga.BTN_GASTOS, tga.BTN_POS_OPERACIONAL,
+                                             tga.BTN_ESCANEAR,
                                              tga.BTN_FINALIZAR]
     assert rows[0][0].web_app.url == "https://scan.example.com/preoperacional"
     assert rows[1][0].web_app.url == "https://scan.example.com/ast"
     assert rows[2][0].web_app.url == "https://scan.example.com/prueba-ruta"
     assert rows[3][0].web_app.url == "https://scan.example.com/combustible"
     assert rows[4][0].web_app.url == "https://scan.example.com/gastos-operativos"
-    assert rows[5][0].web_app.url == "https://scan.example.com/scanner"
-    assert rows[6][0].web_app is None and rows[6][0].callback_data == tga.CB_FINALIZAR_PEDIR
+    assert rows[5][0].web_app.url == "https://scan.example.com/pos-operacional"
+    assert rows[6][0].web_app.url == "https://scan.example.com/scanner"
+    assert rows[7][0].web_app is None and rows[7][0].callback_data == tga.CB_FINALIZAR_PEDIR
 
 
 def test_combustible_command_opens_mini_app():

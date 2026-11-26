@@ -1,4 +1,4 @@
-"""Entrypoint FastAPI: validador de QR (solo lectura en Odoo), preoperacional, AST, Prueba de Ruta, Combustible y Gastos Operativos."""
+"""Entrypoint FastAPI: validador de QR (solo lectura en Odoo), preoperacional, AST, Prueba de Ruta, Combustible, Gastos Operativos y Pos-Operacional."""
 from __future__ import annotations
 
 import asyncio
@@ -27,6 +27,10 @@ from .gastos_operativos.router import router as gastos_operativos_router
 from .gastos_operativos.service import GastosOutcome
 from .gastos_operativos.worker import GastosOperativosSender
 from .odoo_client import OdooClient
+from .pos_operacional.router import PosOperacionalServices
+from .pos_operacional.router import router as pos_operacional_router
+from .pos_operacional.service import PosOperacionalOutcome
+from .pos_operacional.worker import PosOperacionalSender
 from .preop.db import Database
 from .preop.etl import run_from_settings
 from .preop.rest_client import OdooRestClient
@@ -91,6 +95,7 @@ def _start_preop(app: FastAPI, application) -> list:
     tasks.append(_start_prueba_ruta(app, application, db, writer))
     tasks.append(_start_combustible(app, application, db, writer))
     tasks.append(_start_gastos_operativos(app, application, db, writer))
+    tasks.append(_start_pos_operacional(app, application, db, writer))
     # El handler de 📍 Enviar ubicación guarda en esta misma BD.
     application.bot_data[PREOP_DB_KEY] = db
     app.state.preop = PreopServices(
@@ -279,6 +284,33 @@ def _start_gastos_operativos(app: FastAPI, application, db: Database, writer) ->
     return sender
 
 
+def _start_pos_operacional(app: FastAPI, application, db: Database, writer) -> PosOperacionalSender:
+    """Arranca el Pos-Operacional: misma BD y usuario de escritura; cola propia hacia ``pos.operacional``."""
+
+    async def notify(outcome: PosOperacionalOutcome) -> None:
+        await application.bot.send_message(
+            chat_id=outcome.telegram_user_id, text=formatting.pos_operacional_result(outcome), parse_mode="HTML"
+        )
+
+    async def on_accepted(recibido) -> None:
+        """Envío aceptado (también el reenvío sin señal): se confirma la recepción en el chat."""
+        await application.bot.send_message(
+            chat_id=recibido.telegram_user_id, text=formatting.pos_operacional_recibido(recibido.placa),
+            parse_mode="HTML",
+        )
+
+    sender = PosOperacionalSender(
+        db, writer, settings.preop_worker_interval_seconds, settings.preop_max_attempts,
+        settings.preop_sending_lease_seconds, notify=notify,
+    )
+    sender.start()
+    app.state.pos_operacional = PosOperacionalServices(
+        db=db, bot_token=settings.telegram_bot_token.get_secret_value(),
+        max_age_seconds=settings.preop_auth_max_age_seconds, wake_worker=sender.wake, on_accepted=on_accepted,
+    )
+    return sender
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     application = None
@@ -330,6 +362,7 @@ app.include_router(ast_router)
 app.include_router(prueba_ruta_router)
 app.include_router(combustible_router)
 app.include_router(gastos_operativos_router)
+app.include_router(pos_operacional_router)
 
 
 @app.get("/health")
