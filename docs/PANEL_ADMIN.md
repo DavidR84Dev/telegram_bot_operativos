@@ -120,7 +120,7 @@ La **lista blanca está en código** (`app/admin/envfile.py`, `PARAMETROS`), nun
 |---|---|
 | Operación | `LOG_LEVEL`, `POLL_INTERVAL_SECONDS`, `WATCH_TTL_HOURS`, `EMPLOYEE_CACHE_SECONDS`, `MASTER_SYNC_INTERVAL_SECONDS` |
 | Colas a Odoo | `PREOP_WORKER_INTERVAL_SECONDS`, `PREOP_MAX_ATTEMPTS`, `PREOP_SENDING_LEASE_SECONDS`, `PREOP_AUTH_MAX_AGE_SECONDS` |
-| Negocio | `PRUEBA_RUTA_ACUERDOS`, `COMBUSTIBLE_GASTOS_PRODUCT_ID`, `ODOO_API_COMPANY_IDS`, `ODOO_API_PAGE_SIZE` |
+| Negocio | `PRUEBA_RUTA_ACUERDOS`, `COMBUSTIBLE_GASTOS_PRODUCT_ID`, `GASTOS_OPERATIVOS_TIPOS`, `ODOO_API_COMPANY_IDS`, `ODOO_API_PAGE_SIZE` |
 | GPS | `GPS_FLOTA_URL`, `GPS_FLOTA_TIMEOUT_SECONDS` |
 | Secreto (solo escritura) | `GPS_FLOTA_API_KEY`: nunca se muestra su valor, solo «configurado» o «vacío»; se puede escribir uno nuevo o vaciar. |
 
@@ -129,7 +129,7 @@ credenciales de Odoo y URLs base.
 
 Validación: el tipo sale del campo en `Settings` (enteros > 0, decimales con **punto** > 0, texto). Además,
 `LOG_LEVEL` solo admite sus cinco niveles, las URL deben ser `http(s)://` (o vacías) y `ODOO_API_COMPANY_IDS` es
-una lista de números. Se rechazan comillas, `#`, `$`, `\` y saltos de línea. Todo o nada: si un valor es
+una lista de números, y `GASTOS_OPERATIVOS_TIPOS` debe ser `Nombre:product_id` separados por `;` (sin nombres repetidos ni ids no numéricos; el valor se guarda normalizado, p. ej. `Alimentación:1;Otros:6`; ver `docs/GASTOS_OPERATIVOS.md` § 3). Se rechazan comillas, `#`, `$`, `\` y saltos de línea. Todo o nada: si un valor es
 inválido no se escribe ninguno.
 
 Al guardar:

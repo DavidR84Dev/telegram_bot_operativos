@@ -59,6 +59,15 @@ def _lista_enteros(valor: str) -> str:
     return ",".join(p.strip() for p in valor.split(","))
 
 
+def _tipos_gastos(valor: str) -> str:
+    from ..gastos_operativos.catalogo import TiposGastoError, parse_tipos, texto_tipos
+
+    try:
+        return texto_tipos(parse_tipos(valor))
+    except TiposGastoError as exc:
+        raise ParametroError(str(exc).removeprefix("GASTOS_OPERATIVOS_TIPOS: ")) from exc
+
+
 PARAMETROS: dict[str, Parametro] = {p.clave: p for p in (
     Parametro("LOG_LEVEL", "Nivel de log (DEBUG, INFO, WARNING, ERROR, CRITICAL)", validador=_log_level),
     Parametro("POLL_INTERVAL_SECONDS", "Segundos entre consultas de la vigilancia de tickets"),
@@ -73,6 +82,8 @@ PARAMETROS: dict[str, Parametro] = {p.clave: p for p in (
     Parametro("GPS_FLOTA_URL", "URL de la API GPS de la flota (vacía = cotejo desactivado)", validador=_url_o_vacia),
     Parametro("GPS_FLOTA_TIMEOUT_SECONDS", "Tiempo máximo de espera de la API GPS (segundos)"),
     Parametro("COMBUSTIBLE_GASTOS_PRODUCT_ID", "product_id del gasto de combustible en hr.expense"),
+    Parametro("GASTOS_OPERATIVOS_TIPOS", "Tipos de Gastos Operativos: Nombre:product_id separados por «;»",
+              validador=_tipos_gastos),
     Parametro("ODOO_API_COMPANY_IDS", "Compañías de Odoo a sincronizar (ids separados por coma)",
               validador=_lista_enteros),
     Parametro("ODOO_API_PAGE_SIZE", "Registros por página en la sincronización con la API de Odoo"),

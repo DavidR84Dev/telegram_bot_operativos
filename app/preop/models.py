@@ -631,6 +631,137 @@ class CombustibleEnvioDiferido(TimestampMixin, Base):
     __table_args__ = (Index("ix_combustible_diferidos_estado_fecha", "estado", "recibido_at"),)
 
 
+class GastoOperativo(TimestampMixin, Base):
+    """Envío de la Mini App 💰 Gastos Operativos (cabecera): una fecha y N gastos (``GastoOperativoLinea``).
+
+    Es la unidad de la cola: se retiene entero hasta recibir la ubicación del conductor (``latitud``) y luego
+    se envía línea por línea a ``hr.expense``. Las columnas de ubicación y de GPS tienen los mismos nombres que
+    en ``Combustible`` para reutilizar las mismas funciones de ubicación pendiente y de cotejo con el GPS.
+    ``vehiculo_id`` es opcional: sin vehículo reservado el gasto se registra sin cotejo con el GPS.
+    """
+
+    __tablename__ = "gastos_operativos"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    uuid: Mapped[str] = mapped_column(String(36), nullable=False, unique=True, default=lambda: str(uuid.uuid4()))
+
+    telegram_user_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    telegram_username: Mapped[str | None] = mapped_column(String(64))
+    firma_nombre: Mapped[str] = mapped_column(String(255), nullable=False)
+
+    empleado_id: Mapped[int] = mapped_column(ForeignKey("empleados.id", ondelete="RESTRICT"), nullable=False)
+    vehiculo_id: Mapped[int | None] = mapped_column(ForeignKey("flota.id", ondelete="RESTRICT"))
+    fecha: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+    fecha_gasto: Mapped[date] = mapped_column(Date, nullable=False)
+    total: Mapped[float] = mapped_column(Numeric(16, 2, asdecimal=False), nullable=False)
+
+    latitud: Mapped[float | None] = mapped_column(Float)
+    longitud: Mapped[float | None] = mapped_column(Float)
+    ubicacion_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    ubicacion_requerida: Mapped[bool | None] = mapped_column(Boolean)
+    gps_latitud: Mapped[float | None] = mapped_column(Float)
+    gps_longitud: Mapped[float | None] = mapped_column(Float)
+    gps_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    gps_distancia_m: Mapped[int | None] = mapped_column(Integer)
+    ubicacion_gps_vehiculo: Mapped[str | None] = mapped_column(String(255))
+    recordatorios_ubicacion: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+
+    sync_status: Mapped[SyncStatus] = mapped_column(
+        Enum(SyncStatus, name="gasto_operativo_sync_status", native_enum=False, length=16,
+             values_callable=lambda e: [m.value for m in e]),
+        nullable=False,
+        default=SyncStatus.PENDIENTE,
+    )
+    error_log: Mapped[str | None] = mapped_column(Text)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    empleado: Mapped[Empleado] = relationship(lazy="joined")
+    vehiculo: Mapped[Flota | None] = relationship(lazy="joined")
+    lineas: Mapped[list[GastoOperativoLinea]] = relationship(
+        lazy="select", order_by="GastoOperativoLinea.numero", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        CheckConstraint("attempts >= 0", name="ck_gastos_operativos_attempts_no_negativo"),
+        Index("ix_gastos_operativos_cola", "sync_status", "next_attempt_at"),
+    )
+
+
+class GastoOperativoLinea(TimestampMixin, Base):
+    """Un gasto (tarjeta «Gasto #N») del envío: un ``hr.expense`` en Odoo, con su propio estado."""
+
+    __tablename__ = "gastos_operativos_lineas"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    gasto_id: Mapped[int] = mapped_column(ForeignKey("gastos_operativos.id", ondelete="CASCADE"), nullable=False)
+    numero: Mapped[int] = mapped_column(Integer, nullable=False)
+    tipo_nombre: Mapped[str] = mapped_column(String(80), nullable=False)
+    # product_id del tipo al recibir el envío (un cambio posterior del .env no altera lo ya recibido).
+    product_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    valor: Mapped[float] = mapped_column(Numeric(16, 2, asdecimal=False), nullable=False)
+    observacion: Mapped[str | None] = mapped_column(String(500))
+    sync_status: Mapped[SyncStatus] = mapped_column(
+        Enum(SyncStatus, name="gasto_operativo_linea_sync_status", native_enum=False, length=16,
+             values_callable=lambda e: [m.value for m in e]),
+        nullable=False,
+        default=SyncStatus.PENDIENTE,
+    )
+    odoo_gasto_id: Mapped[int | None] = mapped_column(Integer)  # hr.expense
+    error_log: Mapped[str | None] = mapped_column(Text)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        UniqueConstraint("gasto_id", "numero", name="uq_gastos_operativos_lineas_numero"),
+        CheckConstraint("valor > 0", name="ck_gastos_operativos_lineas_valor_positivo"),
+    )
+
+
+class GastoOperativoSoporte(TimestampMixin, Base):
+    """Soporte de un gasto, ya en PDF (una foto se convierte al recibirla), fuera de la tabla de líneas."""
+
+    __tablename__ = "gastos_operativos_soportes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    linea_id: Mapped[int] = mapped_column(ForeignKey("gastos_operativos_lineas.id", ondelete="CASCADE"),
+                                          nullable=False, unique=True)
+    nombre_archivo: Mapped[str] = mapped_column(String(255), nullable=False)
+    contenido: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    tamano: Mapped[int] = mapped_column(Integer, nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    convertido: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)  # True = venía como foto
+
+
+class GastoOperativoEnvioDiferido(TimestampMixin, Base):
+    """Trazabilidad de los envíos de gastos guardados en el teléfono por falta de señal.
+
+    Misma regla que ``PreopEnvioDiferido`` (``app/preop/diferido.py``). Un envío vencido guarda el formulario
+    completo en ``payload`` (con los soportes en base64, para no perderlos).
+    """
+
+    __tablename__ = "gastos_operativos_envios_diferidos"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    uuid: Mapped[str] = mapped_column(String(36), nullable=False, unique=True)
+    telegram_user_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    estado: Mapped[EstadoDiferido] = mapped_column(
+        Enum(EstadoDiferido, name="gasto_operativo_estado_diferido", native_enum=False, length=16,
+             values_callable=lambda e: [m.value for m in e]),
+        nullable=False,
+    )
+    motivo: Mapped[str | None] = mapped_column(Text)
+    gasto_id: Mapped[int | None] = mapped_column(ForeignKey("gastos_operativos.id", ondelete="SET NULL"))
+    apertura_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    sin_senal_desde: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    recibido_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+    retraso_segundos: Mapped[int] = mapped_column(Integer, nullable=False)
+    payload_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload: Mapped[dict[str, Any] | None] = mapped_column(JsonType)
+
+    __table_args__ = (Index("ix_gastos_operativos_diferidos_estado_fecha", "estado", "recibido_at"),)
+
+
 class Ubicacion(TimestampMixin, Base):
     """Ubicación compartida desde el chat (botón 📍 Enviar ubicación).
 

@@ -110,7 +110,7 @@ equipo de Odoo: validar el kilometraje **antes** de crear y responder 4xx.
    mensaje con el botón 📍. El registro se guarda con `ubicacion_requerida = true`.
 2. `claim_batch` solo reclama filas con `ubicacion_requerida` no verdadera **o** con `latitud` (retención).
    Las filas anteriores al despliegue (columna NULL) siguen saliendo como antes.
-3. `on_location` (`app/telegram_app.py`): conserva la asociación al preoperacional y, además, asigna la ubicación al
+3. `on_location` (`app/telegram_app.py`) reparte la ubicación entre **Combustible y Gastos Operativos**: va al pendiente **más antiguo** de los dos (`gastos_operativos.service.asignar_ubicacion_mas_antigua`; con empate, Combustible) y el siguiente se vuelve a pedir (`docs/GASTOS_OPERATIVOS.md` § 5). Para Combustible conserva la asociación al preoperacional y, además, asigna la ubicación al
    tanqueo **más antiguo** del usuario que la espera (`service.asignar_ubicacion`). Se ignoran los mensajes
    reenviados y las ubicaciones con fecha anterior a la recepción del registro; las ubicaciones en vivo editadas siguen
    ignoradas. Confirma con la placa y, si quedan más pendientes, vuelve a pedir la ubicación.

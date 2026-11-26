@@ -9,6 +9,7 @@ from . import ticket_state
 if TYPE_CHECKING:
     from .ast_trabajo.service import AstOutcome, AvisoJefeAst
     from .combustible.service import CombustibleOutcome
+    from .gastos_operativos.service import GastosOutcome
     from .preop.reservas import Liberacion
     from .prueba_ruta.service import AvisoJefePrueba, PruebaRutaOutcome
     from .preop.service import AvisoJefe, SendOutcome, UbicacionRegistrada
@@ -181,6 +182,54 @@ def combustible_ubicacion_registrada(placa: str | None, pendientes: int) -> str:
     text = "📍 <b>Ubicación registrada para el tanqueo</b>" + (f" de {escape(placa)}" if placa else "") + "."
     if pendientes:
         text += f"\n\nTienes {pendientes} tanqueo(s) más sin ubicación: envíala de nuevo."
+    return text
+
+
+def _plural_gastos(n: int) -> str:
+    return f"{n} gasto" if n == 1 else f"{n} gastos"
+
+
+def gastos_result(outcome: GastosOutcome) -> str:
+    """Aviso al conductor con el resultado final de su envío de gastos operativos."""
+    if outcome.status.value == "enviado":
+        verbo = "registrado" if outcome.enviados == 1 else "registrados"
+        return (
+            f"💰 <b>{_plural_gastos(outcome.enviados)} {verbo} en Odoo</b>\n\n"
+            + (f"🚌 Vehículo: {escape(outcome.placa)}\n" if outcome.placa else "")
+            + f"Total {_pesos(outcome.total)}"
+        )
+    lineas = [f"• Gasto #{f.numero} ({escape(f.tipo)}, {_pesos(f.valor)})" for f in outcome.fallidos]
+    verbo = "registrado" if outcome.enviados == 1 else "registrados"
+    registrados = (f"✅ {outcome.enviados} de {outcome.total_gastos} gastos {verbo} en Odoo.\n\n"
+                   if outcome.enviados else "")
+    return (
+        "❌ <b>Algunos gastos no pudieron guardarse en Odoo</b>\n\n" + registrados
+        + "No se registraron:\n" + "\n".join(lineas) + "\n\n"
+        f"Referencia local: #{outcome.gasto_id}. El área de sistemas ya tiene el detalle; "
+        "no es necesario diligenciarlos de nuevo."
+    )
+
+
+def gastos_pedir_ubicacion(placa: str | None, gastos: int) -> str:
+    return (
+        f"💰 <b>{_plural_gastos(gastos)} recibido{'' if gastos == 1 else 's'}</b>"
+        + (f" ({escape(placa)})" if placa else "") + "\n\n"
+        "📋 <b>Instrucciones para Gastos Operativos:</b>\n"
+        "1️⃣ Ya llenaste y enviaste el formulario\n"
+        "2️⃣ Toca 📍 <b>Enviar ubicación</b> aquí en el chat\n"
+        "⏱️ Tienes <b>10 minutos</b> para enviarla; mientras no lo hagas, tus gastos no se registran en Odoo."
+    )
+
+
+def gastos_recordatorio_ubicacion(placa: str | None) -> str:
+    return ("⏰ <b>Falta la ubicación de tus gastos operativos</b>" + (f" ({escape(placa)})" if placa else "")
+            + "\n\nToca <b>Enviar ubicación</b> para completarlos; mientras tanto no se registran en Odoo.")
+
+
+def gastos_ubicacion_registrada(placa: str | None, pendientes: int) -> str:
+    text = "📍 <b>Ubicación registrada para tus gastos operativos</b>" + (f" ({escape(placa)})" if placa else "") + "."
+    if pendientes:
+        text += f"\n\nTienes {pendientes} registro(s) más sin ubicación: envíala de nuevo."
     return text
 
 

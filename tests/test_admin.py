@@ -110,7 +110,9 @@ def test_admin_valido_entra_y_lista_vacia_no_deja_entrar_a_nadie(panel):
 def test_settings_admin_ids_y_pagina(panel):
     assert Settings(admin_telegram_ids="1, 2;3,x,,").admin_ids == frozenset({1, 2, 3})
     assert Settings(admin_telegram_ids="").admin_ids == frozenset()
-    assert Settings().admin_bot_token is None and Settings().admin_listen_port == 8012
+    # Sin leer el .env real (puede traer ADMIN_BOT_TOKEN): solo los valores por defecto del código.
+    por_defecto = Settings(_env_file=None, admin_bot_token=None)
+    assert Settings.model_fields["admin_bot_token"].default is None and por_defecto.admin_listen_port == 8012
     r = panel.client.get("/admin")
     assert r.status_code == 200 and "Panel Admin" in r.text and r.headers["cache-control"] == "no-cache"
     assert panel.client.get("/").status_code == 200

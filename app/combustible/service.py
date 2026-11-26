@@ -18,7 +18,7 @@ import hashlib
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, Callable
 
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import IntegrityError
@@ -402,56 +402,63 @@ class RestNoConfigurado(Exception):
     """Falta el cliente REST (``ODOO_API_LOGIN``/``ODOO_API_PASSWORD``): el gasto queda en cola."""
 
 
-def tomar_instantanea_gps(db: Database, combustible_id: int, gps: gps_flota.FlotaGpsClient | None) -> None:
+def tomar_instantanea_gps(db: Database, combustible_id: int, gps: gps_flota.FlotaGpsClient | None,
+                          model: Any = Combustible) -> None:
     """Consulta el GPS de la flota una sola vez por registro y guarda la instantánea (también el fallo).
 
     Si ``ubicacion_gps_vehiculo`` ya tiene valor, no consulta de nuevo (reintentos del envío). Nunca lanza.
+    ``model`` es la tabla del registro (``Combustible`` o ``GastoOperativo``: mismas columnas de ubicación y GPS);
+    sin vehículo reservado (solo gastos operativos) no hay placa que consultar y queda ``GPS no disponible``.
     """
     with db.session() as session:
-        registro = session.get(Combustible, combustible_id)
+        registro = session.get(model, combustible_id)
         if registro is None or registro.ubicacion_gps_vehiculo is not None or registro.latitud is None \
                 or registro.longitud is None:
             return
-        lat, lon, placa = registro.latitud, registro.longitud, reservas.placa(registro.vehiculo)
+        lat, lon = registro.latitud, registro.longitud
+        placa = reservas.placa(registro.vehiculo) if registro.vehiculo is not None else None
     posicion = None
-    if gps is not None:
+    if gps is not None and placa:
         try:
             posicion = gps.consultar(placa)
         except Exception:
-            logger.exception("Combustible %s: fallo inesperado consultando el GPS", combustible_id)
+            logger.exception("%s %s: fallo inesperado consultando el GPS", model.__name__, combustible_id)
     with db.session() as session:
-        registro = session.get(Combustible, combustible_id)
+        registro = session.get(model, combustible_id)
         assert registro is not None
         registro.ubicacion_gps_vehiculo = gps_flota.texto_vehiculo(posicion, lat, lon)
         if posicion is not None:
             registro.gps_latitud, registro.gps_longitud = posicion.latitud, posicion.longitud
             registro.gps_at = posicion.momento
             registro.gps_distancia_m = gps_flota.distancia_m(posicion, lat, lon)
-    logger.info("Combustible %s: GPS de la flota -> %s", combustible_id,
+    logger.info("%s %s: GPS de la flota -> %s", model.__name__, combustible_id,
                 "sin dato" if posicion is None else f"{registro.gps_distancia_m} m")
 
 
 def enviar_gasto(writer: OdooWriter, rest_client: OdooRestClient | None, payload: dict[str, Any],
-                 combustible_id: int) -> int | None:
+                 combustible_id: int, buscar: Callable[[dict[str, Any]], int | None] | None = None,
+                 etiqueta: str = "Combustible") -> int | None:
     """Crea el ``hr.expense`` por REST sin duplicar. Devuelve su id (None si la API no lo informa).
 
     Antes de cada POST busca por XML-RPC un gasto con la misma llave natural: el endpoint crea un
     registro y el reintento (nuestro o de la cola) podría duplicarlo. El POST no se reintenta solo.
+    ``buscar`` reemplaza la búsqueda de combustible (los gastos operativos buscan con su propia llave);
+    ``etiqueta`` solo rotula el log.
     Lanza ``OdooTransientError`` (red/5xx, reintentable) u ``OdooPermanentError`` (4xx, definitivo).
     """
     if rest_client is None:
         raise RestNoConfigurado("ODOO_API_LOGIN/ODOO_API_PASSWORD sin configurar: no se pueden enviar gastos")
     try:
-        existente = writer.buscar_gasto_combustible(payload)
+        existente = (buscar or writer.buscar_gasto_combustible)(payload)
     except OdooTransientError:
         raise  # sin saber si ya existe no se postea: reintento de la cola
     except OdooWriteError as exc:
         # Típico: el campo no existe en hr.expense. No se oculta; se continúa con el POST.
-        logger.warning("Combustible %s: no se pudo verificar duplicados en hr.expense (%s); se envía igual",
-                       combustible_id, exc)
+        logger.warning("%s %s: no se pudo verificar duplicados en hr.expense (%s); se envía igual",
+                       etiqueta, combustible_id, exc)
         existente = None
     if existente is not None:
-        logger.info("Combustible %s ya existía como hr.expense id=%s: no se duplicó", combustible_id, existente)
+        logger.info("%s %s ya existía como hr.expense id=%s: no se duplicó", etiqueta, combustible_id, existente)
         return existente
     try:
         respuesta = rest_client.post_json_once(GASTOS_PATH, payload)
@@ -465,8 +472,8 @@ def enviar_gasto(writer: OdooWriter, rest_client: OdooRestClient | None, payload
         raise
     gasto_id = extraer_id_gasto(respuesta)
     if gasto_id is None:
-        logger.warning("Combustible %s: %s no devolvió un id reconocible; respuesta=%.500s",
-                       combustible_id, GASTOS_PATH, respuesta)
+        logger.warning("%s %s: %s no devolvió un id reconocible; respuesta=%.500s",
+                       etiqueta, combustible_id, GASTOS_PATH, respuesta)
     return gasto_id
 
 
@@ -574,61 +581,92 @@ def _aware(value: datetime) -> datetime:
     return value if value.tzinfo else value.replace(tzinfo=UTC)
 
 
-def _esperando_ubicacion() -> Any:
-    return and_(Combustible.ubicacion_requerida.is_(True), Combustible.latitud.is_(None))
+def _esperando_ubicacion(model: Any = Combustible) -> Any:
+    return and_(model.ubicacion_requerida.is_(True), model.latitud.is_(None))
 
 
 @dataclass(frozen=True)
 class UbicacionAsignada:
-    combustible_id: int
+    combustible_id: int  # id del registro que recibió la ubicación (tanqueo o envío de gastos, según ``origen``)
     placa: str | None
-    pendientes: int  # otros tanqueos del usuario que aún esperan ubicación
+    pendientes: int  # otros registros del usuario que aún esperan ubicación
+    origen: str = "combustible"  # "combustible" o "gastos"
+
+
+def _filas_esperando(session: Session, model: Any, telegram_user_id: int) -> list[Any]:
+    """Registros del usuario que esperan ubicación, del más antiguo al más nuevo."""
+    return list(session.scalars(
+        select(model).where(model.telegram_user_id == telegram_user_id, _esperando_ubicacion(model))
+        .order_by(model.fecha, model.id)))
+
+
+def fecha_candidata_ubicacion(db: Database, telegram_user_id: int, enviada_at: datetime,
+                              model: Any = Combustible) -> datetime | None:
+    """Fecha de recepción del registro más antiguo que esperaría esta ubicación (recibido antes de ella), o None.
+
+    Sirve para repartir la ubicación entre Combustible y Gastos Operativos: gana el pendiente más antiguo.
+    """
+    enviada = _aware(enviada_at)
+    with db.session() as session:
+        for fila in _filas_esperando(session, model, telegram_user_id):
+            if _aware(fila.fecha) <= enviada:
+                return _aware(fila.fecha)
+    return None
+
+
+def contar_ubicaciones_pendientes(db: Database, telegram_user_id: int, model: Any = Combustible) -> int:
+    with db.session() as session:
+        return int(session.scalar(select(func.count()).select_from(model).where(
+            model.telegram_user_id == telegram_user_id, _esperando_ubicacion(model))) or 0)
 
 
 def asignar_ubicacion(db: Database, telegram_user_id: int, latitud: float, longitud: float,
-                      enviada_at: datetime, now: datetime | None = None) -> UbicacionAsignada | None:
-    """Asigna la ubicación al tanqueo MÁS ANTIGUO del usuario que la espera (y fue recibido antes de ella).
+                      enviada_at: datetime, now: datetime | None = None,
+                      model: Any = Combustible) -> UbicacionAsignada | None:
+    """Asigna la ubicación al registro MÁS ANTIGUO del usuario que la espera (y fue recibido antes de ella).
 
     Devuelve None si no hay ninguno; una ubicación anterior al registro (``enviada_at`` < ``fecha``) no cuenta.
     """
     now = now or utc_now()
     enviada = _aware(enviada_at)
     with db.session() as session:
-        filas = list(session.scalars(
-            select(Combustible).where(Combustible.telegram_user_id == telegram_user_id, _esperando_ubicacion())
-            .order_by(Combustible.fecha, Combustible.id)))
+        filas = _filas_esperando(session, model, telegram_user_id)
         elegible = next((f for f in filas if _aware(f.fecha) <= enviada), None)
         if elegible is None:
             return None
         elegible.latitud, elegible.longitud, elegible.ubicacion_at = latitud, longitud, now
-        placa = reservas.placa(elegible.vehiculo)
-        logger.info("Combustible %s: ubicación recibida", elegible.id)
+        placa = reservas.placa(elegible.vehiculo) if elegible.vehiculo is not None else None
+        logger.info("%s %s: ubicación recibida", model.__name__, elegible.id)
         return UbicacionAsignada(elegible.id, placa, len(filas) - 1)
 
 
-def placa_de(db: Database, combustible_id: int) -> str | None:
-    """Placa del vehículo de un tanqueo (en sesión propia: el registro del router ya está desligado)."""
+def placa_de(db: Database, combustible_id: int, model: Any = Combustible) -> str | None:
+    """Placa del vehículo de un registro (en sesión propia: el del router ya está desligado)."""
     with db.session() as session:
-        registro = session.get(Combustible, combustible_id)
-        return reservas.placa(registro.vehiculo) if registro is not None else None
+        registro = session.get(model, combustible_id)
+        if registro is None or registro.vehiculo is None:
+            return None
+        return reservas.placa(registro.vehiculo)
 
 
-def hay_ubicacion_pendiente(db: Database, telegram_user_id: int) -> bool:
+def hay_ubicacion_pendiente(db: Database, telegram_user_id: int, model: Any = Combustible) -> bool:
     with db.session() as session:
-        return session.scalar(select(Combustible.id).where(
-            Combustible.telegram_user_id == telegram_user_id, _esperando_ubicacion()).limit(1)) is not None
+        return session.scalar(select(model.id).where(
+            model.telegram_user_id == telegram_user_id, _esperando_ubicacion(model)).limit(1)) is not None
 
 
 @dataclass(frozen=True)
 class RecordatorioUbicacion:
-    combustible_id: int
+    combustible_id: int  # id del registro (tanqueo o envío de gastos, según ``origen``)
     telegram_user_id: int
     numero: int  # 1 o 2
     placa: str | None
+    origen: str = "combustible"  # "combustible" o "gastos"
 
 
-def recordatorios_pendientes(db: Database, now: datetime | None = None) -> list[RecordatorioUbicacion]:
-    """Tanqueos sin ubicación a los que ya les toca recordatorio (10 y 30 min tras el envío; máximo 2).
+def recordatorios_pendientes(db: Database, now: datetime | None = None,
+                             model: Any = Combustible) -> list[RecordatorioUbicacion]:
+    """Registros sin ubicación a los que ya les toca recordatorio (10 y 30 min tras el envío; máximo 2).
 
     Marca el recordatorio como enviado al devolverlo (como mucho una vez; un fallo de Telegram no lo repite).
     """
@@ -636,13 +674,14 @@ def recordatorios_pendientes(db: Database, now: datetime | None = None) -> list[
     maximo = len(RECORDATORIOS_UBICACION_MIN)
     out: list[RecordatorioUbicacion] = []
     with db.session() as session:
-        filas = session.scalars(select(Combustible).where(
-            _esperando_ubicacion(), Combustible.recordatorios_ubicacion < maximo))
+        filas = session.scalars(select(model).where(
+            _esperando_ubicacion(model), model.recordatorios_ubicacion < maximo))
         for fila in filas:
             n = fila.recordatorios_ubicacion
             if now - _aware(fila.fecha) >= timedelta(minutes=RECORDATORIOS_UBICACION_MIN[n]):
                 fila.recordatorios_ubicacion = n + 1
-                out.append(RecordatorioUbicacion(fila.id, fila.telegram_user_id, n + 1, reservas.placa(fila.vehiculo)))
+                placa = reservas.placa(fila.vehiculo) if fila.vehiculo is not None else None
+                out.append(RecordatorioUbicacion(fila.id, fila.telegram_user_id, n + 1, placa))
     return out
 
 

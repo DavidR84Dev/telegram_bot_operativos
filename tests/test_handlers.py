@@ -91,15 +91,17 @@ def test_formularios_lists_preoperacional_first():
     call = upd.message.reply_text.await_args
     assert call.args[0] == "📂 Formularios disponibles:"
     rows = call.kwargs["reply_markup"].inline_keyboard
-    # Preoperacional -> AST -> Prueba de Ruta -> Combustible -> Escanear QR -> Finalizar.
+    # Preoperacional -> AST -> Prueba de Ruta -> Combustible -> Gastos Operativos -> Escanear QR -> Finalizar.
     assert [row[0].text for row in rows] == [tga.BTN_PREOP, tga.BTN_AST, tga.BTN_PRUEBA_RUTA,
-                                             tga.BTN_COMBUSTIBLE, tga.BTN_ESCANEAR, tga.BTN_FINALIZAR]
+                                             tga.BTN_COMBUSTIBLE, tga.BTN_GASTOS, tga.BTN_ESCANEAR,
+                                             tga.BTN_FINALIZAR]
     assert rows[0][0].web_app.url == "https://scan.example.com/preoperacional"
     assert rows[1][0].web_app.url == "https://scan.example.com/ast"
     assert rows[2][0].web_app.url == "https://scan.example.com/prueba-ruta"
     assert rows[3][0].web_app.url == "https://scan.example.com/combustible"
-    assert rows[4][0].web_app.url == "https://scan.example.com/scanner"
-    assert rows[5][0].web_app is None and rows[5][0].callback_data == tga.CB_FINALIZAR_PEDIR
+    assert rows[4][0].web_app.url == "https://scan.example.com/gastos-operativos"
+    assert rows[5][0].web_app.url == "https://scan.example.com/scanner"
+    assert rows[6][0].web_app is None and rows[6][0].callback_data == tga.CB_FINALIZAR_PEDIR
 
 
 def test_combustible_command_opens_mini_app():
@@ -154,7 +156,7 @@ def test_location_is_saved_in_bot_database(monkeypatch):
         return SimpleNamespace(id=1, preop_id=9, preop_nombre="PRE-0009")
 
     monkeypatch.setattr(tga.preop_service, "registrar_ubicacion", fake_registrar)
-    monkeypatch.setattr(tga.combustible_service, "asignar_ubicacion", lambda *a, **k: None)
+    monkeypatch.setattr(tga.gastos_service, "asignar_ubicacion_mas_antigua", lambda *a, **k: None)
     upd = _update()
     upd.message.location = SimpleNamespace(latitude=6.25, longitude=-75.56, horizontal_accuracy=8.0)
     ctx = _ctx(_services())
@@ -264,9 +266,9 @@ def test_location_is_assigned_to_pending_fuel_and_asks_again_if_more(monkeypatch
 
     def fake_asignar(db, user_id, lat, lon, date):
         calls.append((user_id, lat, lon))
-        return SimpleNamespace(combustible_id=3, placa="ABC123", pendientes=1)
+        return SimpleNamespace(combustible_id=3, placa="ABC123", pendientes=1, origen="combustible")
 
-    monkeypatch.setattr(tga.combustible_service, "asignar_ubicacion", fake_asignar)
+    monkeypatch.setattr(tga.gastos_service, "asignar_ubicacion_mas_antigua", fake_asignar)
     upd = _location_update()
     ctx = _ctx(_services())
     ctx.application.bot_data[tga.PREOP_DB_KEY] = "db"
@@ -284,7 +286,7 @@ def test_forwarded_location_is_not_assigned_to_fuel(monkeypatch):
     def boom(*a, **k):
         raise AssertionError("no debe asignarse")
 
-    monkeypatch.setattr(tga.combustible_service, "asignar_ubicacion", boom)
+    monkeypatch.setattr(tga.gastos_service, "asignar_ubicacion_mas_antigua", boom)
     upd = _location_update(forward_origin=object())
     ctx = _ctx(_services())
     ctx.application.bot_data[tga.PREOP_DB_KEY] = "db"
@@ -295,8 +297,8 @@ def test_forwarded_location_is_not_assigned_to_fuel(monkeypatch):
 def test_location_wakes_fuel_worker(monkeypatch):
     monkeypatch.setattr(tga.preop_service, "registrar_ubicacion",
                         lambda *a, **k: SimpleNamespace(id=1, preop_id=None, preop_nombre=None))
-    monkeypatch.setattr(tga.combustible_service, "asignar_ubicacion",
-                        lambda *a, **k: SimpleNamespace(combustible_id=3, placa="ABC123", pendientes=0))
+    monkeypatch.setattr(tga.gastos_service, "asignar_ubicacion_mas_antigua",
+                        lambda *a, **k: SimpleNamespace(combustible_id=3, placa="ABC123", pendientes=0, origen="combustible"))
     despertado = []
     upd = _location_update()
     ctx = _ctx(_services())

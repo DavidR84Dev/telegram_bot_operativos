@@ -33,7 +33,7 @@ import threading
 import xmlrpc.client
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Iterable
 from urllib.parse import urlparse
 
 from tenacity import (
@@ -301,6 +301,29 @@ class OdooWriter:
             ("date", "=", vals["date"]),
             ("total_amount", "=", vals["total_amount"]),
         ]
+        with self._lock:
+            ids = self._execute("hr.expense", "search", [dominio], {"limit": 1, "order": "id desc"})
+        return int(ids[0]) if ids else None
+
+    def buscar_gasto_operativo(self, vals: dict[str, Any], excluir_ids: Iterable[int] = ()) -> int | None:
+        """Id de un ``hr.expense`` de gasto operativo ya existente (solo lectura), o None.
+
+        Llave natural: ``employee_id`` + ``date`` + ``total_amount`` + ``product_id`` + ``is_fuel_expenses`` falso.
+        Lo usa el envío de Gastos Operativos antes de cada POST a ``/api/gastos/register``. ``excluir_ids`` son
+        los gastos que otras líneas del mismo envío ya tienen asignados: dos tarjetas iguales (mismo tipo y valor)
+        son dos gastos distintos y no deben colapsar en uno.
+        Lanza ``OdooWriteError`` si la búsqueda falla.
+        """
+        dominio: list[Any] = [
+            ("employee_id", "=", vals["employee_id"]),
+            ("is_fuel_expenses", "=", False),
+            ("date", "=", vals["date"]),
+            ("total_amount", "=", vals["total_amount"]),
+            ("product_id", "=", vals["product_id"]),
+        ]
+        excluir = [int(i) for i in excluir_ids]
+        if excluir:
+            dominio.append(("id", "not in", excluir))
         with self._lock:
             ids = self._execute("hr.expense", "search", [dominio], {"limit": 1, "order": "id desc"})
         return int(ids[0]) if ids else None

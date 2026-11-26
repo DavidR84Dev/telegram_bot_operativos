@@ -76,6 +76,11 @@ class Settings(BaseSettings):
     # (producción 9629, qa2 77 «[I011] COMBUSTIBLE»).
     combustible_gastos_product_id: int = 9629
 
+    # Tipos de la Mini App 💰 Gastos Operativos: «Nombre:product_id» separados por «;». El product_id es el de
+    # product.product en hr.expense y cambia por ambiente (qa2: Meals=1, Travel & Accommodation=2, Others=6).
+    # Se valida al arrancar (app/gastos_operativos/catalogo.py).
+    gastos_operativos_tipos: str = "Alimentación:1;Hospedaje:2;Peajes:6;Parqueadero:6;Lavado:6;Otros:6"
+
     # Escritura XML-RPC del preoperacional. Vacíos = mismas credenciales de ODOO_USERNAME/ODOO_PASSWORD.
     odoo_write_username: str = ""
     odoo_write_password: SecretStr | None = None
