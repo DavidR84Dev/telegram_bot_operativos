@@ -28,7 +28,7 @@ MODALIDADES: tuple[dict[str, Any], ...] = (
 )
 
 # "Combustible para gastos" va a ``hr.expense`` (POST /api/gastos/register), no al modelo ``fuel``.
-PRODUCTO_GASTOS_ODOO_ID = 9629  # product_id fijo del gasto de combustible
+PRODUCTO_GASTOS_ODOO_ID = 9629  # product_id por defecto (producción); se configura con COMBUSTIBLE_GASTOS_PRODUCT_ID
 NOMBRE_GASTO = "COMBUSTIBLE"
 OBSERVACIONES_MAX = 500
 

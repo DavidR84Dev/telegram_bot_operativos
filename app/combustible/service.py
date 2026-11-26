@@ -292,7 +292,18 @@ def build_odoo_values(registro: Combustible, factura: CombustibleFactura | None)
 GASTOS_PATH = "/api/gastos/register"
 
 
-def build_gasto_payload(registro: Combustible, factura: CombustibleFactura) -> dict[str, Any]:
+def _product_id_gastos() -> int:
+    """``COMBUSTIBLE_GASTOS_PRODUCT_ID`` (.env); 9629 (producción) si no se configura."""
+    from ..config import get_settings
+
+    try:
+        return int(get_settings().combustible_gastos_product_id)
+    except Exception:  # sin .env válido (p. ej. pruebas aisladas): el valor de producción
+        return PRODUCTO_GASTOS_ODOO_ID
+
+
+def build_gasto_payload(registro: Combustible, factura: CombustibleFactura,
+                        product_id: int | None = None) -> dict[str, Any]:
     """Cuerpo JSON de ``POST /api/gastos/register`` (``hr.expense``) para "Combustible para gastos".
 
     ``total_amount`` = galones × precio por galón. El proveedor, el precio por galón, el vehículo
@@ -301,7 +312,7 @@ def build_gasto_payload(registro: Combustible, factura: CombustibleFactura) -> d
     """
     payload: dict[str, Any] = {
         "name": NOMBRE_GASTO,
-        "product_id": PRODUCTO_GASTOS_ODOO_ID,
+        "product_id": product_id if product_id is not None else _product_id_gastos(),
         "total_amount": float(registro.total),
         "employee_id": registro.empleado.odoo_id,
         "description": registro.observaciones or "",

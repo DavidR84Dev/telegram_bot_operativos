@@ -72,6 +72,10 @@ class Settings(BaseSettings):
     gps_flota_api_key: SecretStr | None = None
     gps_flota_timeout_seconds: float = 10
 
+    # product_id (product.product) del gasto de combustible en hr.expense; cambia por ambiente
+    # (producción 9629, qa2 77 «[I011] COMBUSTIBLE»).
+    combustible_gastos_product_id: int = 9629
+
     # Escritura XML-RPC del preoperacional. Vacíos = mismas credenciales de ODOO_USERNAME/ODOO_PASSWORD.
     odoo_write_username: str = ""
     odoo_write_password: SecretStr | None = None

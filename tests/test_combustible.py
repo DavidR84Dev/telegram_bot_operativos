@@ -493,7 +493,8 @@ def _gasto(db, **over) -> int:
     return _queue(db, para_gastos=True, factura=PDF_B64, observaciones="Tanqueo en ruta", **over)
 
 
-def test_gasto_envia_el_json_exacto_a_gastos_register_y_no_toca_fuel(listo):
+def test_gasto_envia_el_json_exacto_a_gastos_register_y_no_toca_fuel(listo, monkeypatch):
+    monkeypatch.setattr(service, "_product_id_gastos", lambda: PRODUCTO_GASTOS_ODOO_ID)  # sin depender del .env local
     registro_id = _gasto(listo, ref_factura="FE-9")
     writer, rest = FakeGastoWriter(), FakeRest({"id": 8001})
     outcome = service.send_one(listo, writer, registro_id, 8, rest)  # type: ignore[arg-type]
@@ -952,3 +953,14 @@ def test_migracion_agrega_columnas_gps(tmp_path):
     eng.dispose()
     cols = {c["name"] for c in inspect(Database(url).engine).get_columns("combustible")}
     assert {"gps_latitud", "gps_longitud", "gps_at", "gps_distancia_m", "ubicacion_gps_vehiculo"} <= cols
+
+
+def test_product_id_de_gastos_sale_de_la_configuracion(monkeypatch):
+    from app.config import get_settings
+
+    monkeypatch.setenv("COMBUSTIBLE_GASTOS_PRODUCT_ID", "77")
+    get_settings.cache_clear()
+    try:
+        assert service._product_id_gastos() == 77
+    finally:
+        get_settings.cache_clear()

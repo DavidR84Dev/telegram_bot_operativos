@@ -117,6 +117,7 @@ LISTEN_HOST=127.0.0.1
 LISTEN_PORT=8011
 # Mismos valores que qa2: ODOO_USERNAME/PASSWORD, ODOO_API_LOGIN/PASSWORD, TELEGRAM_BOT_TOKEN
 # Opcional (cotejo GPS de Combustible para gastos): GPS_FLOTA_URL, GPS_FLOTA_API_KEY, GPS_FLOTA_TIMEOUT_SECONDS
+COMBUSTIBLE_GASTOS_PRODUCT_ID=77                 # producto de combustible en qa2 (producción: 9629)
 ```
 
 La base local (SQLite) arranca vacía: al iniciar, el bot sincroniza empleados, flota,

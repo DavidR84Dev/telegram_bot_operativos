@@ -70,7 +70,8 @@ base `ODOO_API_URL` (o `ODOO_URL`). Cuerpo exacto:
 
 | Clave | Origen |
 |---|---|
-| `name`, `product_id`, `is_fuel_expenses`, `type_file` | Constantes: `"COMBUSTIBLE"`, `9629` (`PRODUCTO_GASTOS_ODOO_ID`), `true`, `"pdf"` (el adjunto es solo PDF) |
+| `name`, `is_fuel_expenses`, `type_file` | Constantes: `"COMBUSTIBLE"`, `true`, `"pdf"` (el adjunto es solo PDF) |
+| `product_id` | `COMBUSTIBLE_GASTOS_PRODUCT_ID` del `.env` (`product.product`): **9629 en producción** (valor por defecto), **77 en qa2** (`[I011] COMBUSTIBLE`). Con un id que no existe en el ambiente, Odoo responde 500 *Record does not exist… product.product(…)* |
 | `total_amount` | galones × precio por galón |
 | `employee_id` | id Odoo del empleado |
 | `description` | Observaciones (`""` si va vacía) |
