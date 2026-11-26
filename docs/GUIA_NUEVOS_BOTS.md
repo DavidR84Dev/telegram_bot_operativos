@@ -104,6 +104,22 @@ preoperacional, el AST, la Prueba de Ruta y Combustible.
 Pruebas mínimas por formulario: dentro de la ventana, vencido (410 y solo auditoría), primer intento que sí
 llegó (duplicado) y firmas/usuario (`tests/test_ast.py` § envío sin señal).
 
+## 5b. Reserva vigente: requisito de todo formulario de jornada
+
+Regla del usuario (2026-11-26): **AST, Prueba de Ruta, Combustible, Gastos Operativos y Pos-Operacional** solo se usan con
+una **reserva vigente** de vehículo, es decir, un preoperacional registrado en la jornada. El Preoperacional no cambia.
+Todo formulario nuevo que dependa de la jornada del conductor debe cumplirla.
+
+| Capa | Regla | Implementación de referencia |
+|---|---|---|
+| Definición | Vigente = existe fila en `reservas_vehiculo` para su id de Telegram, no se liberó con 🔴 Finalizar y no venció (`reservas.RESERVA_HORAS`). **No** se exige que la fecha sea hoy (turno nocturno después de medianoche). | `reservas.reserva_vigente` |
+| Servidor | Contexto y recepción llaman `preop_service.exigir_reserva(session, user_id[, diferido])`, que lanza `SinReservaVigenteError`: **409**, cabecera `X-Error-Code: sin_reserva_vigente` y el mensaje común `reservas.MSG_SIN_RESERVA`. Los routers lo convierten con `http_error` / `contexto_http` (`app/preop/router.py`). No se duplica la consulta en cada servicio. | `form_context` y `submit` de `app/combustible/service.py` |
+| Envío sin señal | Aceptado si la reserva estaba vigente **al abrir** el formulario (`apertura`, firmada por Telegram) según `reservas_historial`, aunque ya esté liberada al llegar. Si al llegar hay una reserva **más nueva** que la apertura (finalizó y reservó otro vehículo), rige la jornada de la apertura, no la nueva. Si no se puede comprobar, o el formulario se abrió antes de cualquier reserva: 409. | `reservas.reserva_al_instante` |
+| Mini App | Si el contexto responde `X-Error-Code: sin_reserva_vigente` (`err.codigo`), intenta vaciar la bandeja y muestra la pantalla de bloqueo «Primero el Preoperacional» con el botón «Volver al chat» (`tg.close()`). | `sinReserva` en `app/static/combustible.html` |
+
+Pruebas mínimas: sin reserva (contexto y envío), reserva vencida (> 24 h), reserva de ayer aún vigente y diferido
+(`tests/test_reserva_requerida.py`: agrega tu formulario a `FORMS`).
+
 ## 6. Lista de verificación para un bot nuevo
 
 - [ ] Campos decimales con `normalizarDecimal` + `parseNum` + `fmtNum` (punto) y
@@ -113,4 +129,5 @@ llegó (duplicado) y firmas/usuario (`tests/test_ast.py` § envío sin señal).
 - [ ] Sin botones de "marcar todo conforme" en inspecciones.
 - [ ] Usuarios sin PIN reciben el flujo de registro, no un rechazo.
 - [ ] Envío sin señal: bandeja en el teléfono, reenvío automático y ventana de 1 h en el servidor (§ 5).
+- [ ] Si depende de la jornada: exige reserva vigente en contexto y envío, con el bloqueo común de la Mini App (§ 5b).
 - [ ] Pruebas de cada regla (servidor) y `node --check` del JavaScript de la Mini App.

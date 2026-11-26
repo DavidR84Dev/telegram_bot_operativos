@@ -42,7 +42,7 @@ from app.prueba_ruta.schemas import PruebaRutaIn
 from app.prueba_ruta.worker import PruebaRutaSender
 
 from . import test_preop as _preop
-from .helpers import BOT_TOKEN, make_init_data
+from .helpers import BOT_TOKEN, antedatar_reservas, make_init_data
 from .test_preop import JPEG, FakeObjects, FakeRest, TG_USER, _empleado, _extracto, _flota, _ids, _writer
 
 db = _preop.db
@@ -210,6 +210,7 @@ def test_con_reserva_cuenta_solo_el_extracto_del_vehiculo_reservado(seeded):
 def test_contexto_contrato_no_autorizado(seeded):
     from app.preop.service import employee_for_telegram
 
+    _reservar(seeded)
     ctx = service.form_context(seeded, employee_for_telegram(seeded, TG_USER), TG_USER, AUTORIZADOS)
     assert ctx["autorizado"] is False and ctx["mensaje"] == CONTRATO_NO_AUTORIZADO and ctx["vehiculo"] is None
     assert ctx["empleado"]["contrato"] == "Contrato Minera" and ctx["contratos_extracto"] == ["Contrato Minera"]
@@ -220,8 +221,9 @@ def test_contexto_autorizado_sin_y_con_vehiculo_reservado(seeded):
 
     _con_acuerdo(seeded)
     empleado = employee_for_telegram(seeded, TG_USER)
-    ctx = service.form_context(seeded, empleado, TG_USER, AUTORIZADOS)
-    assert ctx["autorizado"] is True and ctx["vehiculo"] is None
+    with pytest.raises(SubmissionError) as exc:
+        service.form_context(seeded, empleado, TG_USER, AUTORIZADOS)
+    assert exc.value.status_code == 409 and str(exc.value) == reservas.MSG_SIN_RESERVA
     vehiculo = _reservar(seeded)
     ctx = service.form_context(seeded, empleado, TG_USER, AUTORIZADOS)
     assert ctx["vehiculo"]["id"] == vehiculo and ctx["vehiculo"]["placa"]
@@ -391,9 +393,11 @@ def test_api_exige_init_data(api):
 
 def test_api_contrato_no_autorizado(api, seeded):
     client, woke = api
+    sin = client.get("/api/prueba-ruta/context", headers=_headers())  # sin reserva: 409 antes que el contrato
+    assert sin.status_code == 409 and sin.headers["x-error-code"] == reservas.CODIGO_SIN_RESERVA
+    _reservar(seeded)
     ctx = client.get("/api/prueba-ruta/context", headers=_headers()).json()
     assert ctx["autorizado"] is False and ctx["mensaje"] == "Contrato No Autorizado"
-    _reservar(seeded)
     response = client.post("/api/prueba-ruta", json=_payload().model_dump(mode="json"), headers=_headers())
     assert response.status_code == 403 and response.json()["detail"] == "Contrato No Autorizado" and woke == []
 
@@ -438,6 +442,7 @@ def test_api_diferido_en_ventana_y_trazabilidad(api, seeded):
     client, woke = api
     _con_acuerdo(seeded)
     _reservar(seeded)
+    antedatar_reservas(seeded)  # la reserva ya existía al abrir el formulario
     body = _diferido_body(abierto_hace=timedelta(minutes=80), sin_senal_hace=timedelta(minutes=40))
     headers = {"X-Telegram-Init-Data": body["diferido"]["init_data_original"]}
     assert client.post("/api/prueba-ruta", json=body, headers=headers).status_code == 202 and woke == [1]

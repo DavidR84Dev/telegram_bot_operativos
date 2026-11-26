@@ -14,7 +14,8 @@ Referencia funcional: `docs/mapa_viacotur_form.md` § 3.5. Infraestructura compa
 | Tema | Decisión |
 |---|---|
 | Ubicación | Mini App en @OperativosViacoturBot, debajo de 🗺️ Prueba de Ruta; comando `/combustible`. |
-| Vehículo y contrato | El vehículo es el **reservado por el preoperacional de la jornada** (`reservas_vehiculo`) y el contrato (`agreement_id`) es el de ese preoperacional, que salió de su extracto aprobado. Sin reserva: "Primero el Preoperacional" (409). |
+| Vehículo y contrato | El vehículo es el **reservado por el preoperacional de la jornada** (`reservas_vehiculo`) y el contrato (`agreement_id`) es el de ese preoperacional, que salió de su extracto aprobado. Sin reserva: "Primero el Preoperacional" (409, `X-Error-Code: sin_reserva_vigente`). |
+| Reserva vigente (regla 2026-11-26) | **Reserva vigente (regla 2026-11-26).** Exige una reserva vigente de vehículo, es decir, un preoperacional registrado en la jornada: existe en `reservas_vehiculo` para el id de Telegram, no se liberó con 🔴 Finalizar y no venció (`RESERVA_HORAS` = 24 h). **No** exige que la fecha sea hoy (un turno nocturno hace su Pos-Operacional pasada la medianoche). Sin ella el `context` y el `POST` responden **409** con `X-Error-Code: sin_reserva_vigente` y «Para usar este formulario primero debes registrar el ✅ Preoperacional de hoy (vehículo reservado).»; la Mini App muestra la pantalla de bloqueo **Primero el Preoperacional** con «Volver al chat». Helper único: `reservas.reserva_vigente` (y `preop_service.exigir_reserva`). Envío sin señal: se acepta si la reserva estaba vigente **al abrir** el formulario (`apertura`, firmada por Telegram) según `reservas_historial` (`reservas.reserva_al_instante`), aunque ya se haya liberado al llegar; si no, 409. |
 | Pestañas | **Combustible** → modelo `fuel` (XML-RPC). **Combustible para gastos** → `hr.expense` por la API REST (`POST /api/gastos/register`), ya no al modelo `fuel` (2026-11-26). |
 | Referencia de la factura | **Se quitó** de ambas pestañas: la Mini App no la muestra ni la envía y `fuel` ya no recibe `ref_invoice`. El esquema aún acepta `ref_factura` (reenvíos sin señal de clientes viejos) pero se ignora. |
 | Observaciones | Campo nuevo, **solo en gastos** (opcional, máx. 500): va en `description` del gasto. Vacío → se envía `""` (la clave siempre va). Se guarda en `combustible.observaciones`. |
@@ -213,8 +214,8 @@ campo. Pantallas de bloqueo: **Primero el Preoperacional** y usuario no registra
 |---|---|
 | `GET /combustible` | HTML (sin caché; logo versionado) |
 | `GET /api/combustible/form` | tipos, pestañas, rango de fecha y **proveedores aprobados activos** (`id`, `nombre`, `latitud`, `longitud`, `ciudad`, `direccion`; la ubicación puede ser `null`) |
-| `GET /api/combustible/context` | `empleado`, `contrato`, `vehiculo` reservado (o `null`), `ultimo_km` / `ultimo_km_gastos` (con `*_estricto`: debe ser mayor, no igual; la Mini App usa el de la pestaña activa) y `hoy`; 403 sin PIN |
-| `POST /api/combustible` | **202**; 401 firma, 403 sin empleado, 409 sin preoperacional / vehículo distinto / uuid ajeno, 422 validación o kilometraje menor, **410** reenvío sin señal vencido |
+| `GET /api/combustible/context` | `empleado`, `contrato`, `vehiculo` reservado (**409** sin reserva vigente), `ultimo_km` / `ultimo_km_gastos` (con `*_estricto`: debe ser mayor, no igual; la Mini App usa el de la pestaña activa) y `hoy`; 403 sin PIN |
+| `POST /api/combustible` | **202**; 401 firma, 403 sin empleado, 409 sin reserva vigente (`X-Error-Code: sin_reserva_vigente`) / vehículo distinto / uuid ajeno, 422 validación o kilometraje menor, **410** reenvío sin señal vencido |
 | `GET /api/combustible/{uuid}` | estado de un envío propio |
 
 ## 6. Operación

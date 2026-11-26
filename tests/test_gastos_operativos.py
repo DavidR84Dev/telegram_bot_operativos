@@ -44,7 +44,7 @@ from app.preop.service import SubmissionError
 
 from . import test_combustible as _comb
 from . import test_preop as _preop
-from .helpers import BOT_TOKEN, make_init_data
+from .helpers import BOT_TOKEN, antedatar_reservas, make_init_data
 from .test_preop import TG_USER, FakeObjects, _writer
 
 db = _preop.db
@@ -316,11 +316,12 @@ def test_submit_guarda_cabecera_lineas_y_es_idempotente(listo):
     assert dup is True and again.id == recibido.id and again.gastos == 2
 
 
-def test_submit_sin_vehiculo_reservado_no_bloquea(seeded):
-    recibido, _ = service.submit(seeded, IDENTITY, _form(), TIPOS)
+def test_submit_sin_reserva_vigente_se_rechaza_con_409(seeded):
+    with pytest.raises(SubmissionError) as exc:
+        service.submit(seeded, IDENTITY, _form(), TIPOS)
+    assert exc.value.status_code == 409 and str(exc.value) == reservas.MSG_SIN_RESERVA
     with seeded.session() as s:
-        assert s.get(GastoOperativo, recibido.id).vehiculo_id is None
-    assert service.placa_de(seeded, recibido.id) is None
+        assert s.scalar(select(func.count()).select_from(GastoOperativo)) == 0
 
 
 def test_submit_rechaza_tipo_inexistente_y_empleado_desconocido(listo):
@@ -347,10 +348,11 @@ def test_submit_uuid_ajeno_responde_409(listo):
 
 def test_contexto_con_y_sin_vehiculo(seeded):
     empleado = _comb.preop_service.employee_for_telegram(seeded, TG_USER)
-    ctx = service.form_context(seeded, empleado, TG_USER)
-    assert ctx["vehiculo"] is None and ctx["hoy"] == _hoy().isoformat() and ctx["empleado"]["nombre"]
+    with pytest.raises(_comb.preop_service.SinReservaVigenteError):
+        service.form_context(seeded, empleado, TG_USER)
     _comb._reservar(seeded)
-    assert service.form_context(seeded, empleado, TG_USER)["vehiculo"]["placa"] == "ABC123"
+    ctx = service.form_context(seeded, empleado, TG_USER)
+    assert ctx["vehiculo"]["placa"] == "ABC123" and ctx["hoy"] == _hoy().isoformat() and ctx["empleado"]["nombre"]
 
 
 # ────────────────────────────────── payload: un hr.expense por tarjeta ──────────────────────────────────
@@ -617,8 +619,11 @@ def test_sender_envia_recordatorios_tolera_fallos_de_telegram_y_notifica(listo):
 
 # ─────────────────────────────────────────── GPS de la flota ───────────────────────────────────────────
 
-def test_gps_no_disponible_sin_vehiculo_reservado_y_no_retiene(seeded):
-    gid = _queue(seeded)  # sin preoperacional: no hay vehículo ni placa que consultar
+def test_gps_no_disponible_en_un_envio_antiguo_sin_vehiculo_y_no_retiene(listo):
+    seeded = listo
+    gid = _queue(seeded)
+    with seeded.session() as s:  # envío previo al 2026-11-26 (cuando el vehículo era opcional): sin placa que consultar
+        s.get(GastoOperativo, gid).vehiculo_id = None
     fake = _comb.FakeGps(gps.PosicionGps(6.2, -75.5, datetime(2026, 11, 26, 14, 4, tzinfo=UTC)))
     rest = FakeRest()
     out = service.send_one(seeded, FakeBuscador(), gid, 8, rest, fake)  # type: ignore[arg-type]
@@ -774,7 +779,9 @@ def _diferido_body(*, abierto_hace: timedelta, sin_senal_hace: timedelta, **over
     return body
 
 
-def test_diferido_en_ventana_flujo_normal_y_trazabilidad(api, seeded):
+def test_diferido_en_ventana_flujo_normal_y_trazabilidad(api, listo):
+    seeded = listo
+    antedatar_reservas(seeded)  # la reserva ya existía al abrir el formulario
     body = _diferido_body(abierto_hace=timedelta(minutes=80), sin_senal_hace=timedelta(minutes=40))
     headers = {"X-Telegram-Init-Data": body["diferido"]["init_data_original"]}
     first = api.post("/api/gastos-operativos", json=body, headers=headers)
@@ -827,13 +834,19 @@ def _app_sin_servicios() -> FastAPI:
     return app
 
 
-def test_api_envio_completo_con_y_sin_vehiculo(api, seeded):
+def test_api_envio_completo_con_y_sin_reserva(api, seeded):
     form = api.get("/api/gastos-operativos/form", headers=_headers()).json()
     assert [t["value"] for t in form["tipos"]] == [t.nombre for t in TIPOS] and "product_id" not in str(form)
-    ctx = api.get("/api/gastos-operativos/context", headers=_headers()).json()
-    assert ctx["vehiculo"] is None and ctx["empleado"]["nombre"] and ctx["hoy"] == _hoy().isoformat()
     body = _body(gastos=[_gasto(), _gasto("Peajes", 8500, observacion=None)])
-    first = api.post("/api/gastos-operativos", json=body, headers=_headers())  # sin vehículo: no bloquea
+    for r in (api.get("/api/gastos-operativos/context", headers=_headers()),
+              api.post("/api/gastos-operativos", json=body, headers=_headers())):  # sin reserva: 409 con código
+        assert r.status_code == 409 and r.json()["detail"] == reservas.MSG_SIN_RESERVA
+        assert r.headers["x-error-code"] == reservas.CODIGO_SIN_RESERVA
+    assert api.woke == []
+    _comb._reservar(seeded)
+    ctx = api.get("/api/gastos-operativos/context", headers=_headers()).json()
+    assert ctx["vehiculo"]["placa"] == "ABC123" and ctx["empleado"]["nombre"] and ctx["hoy"] == _hoy().isoformat()
+    first = api.post("/api/gastos-operativos", json=body, headers=_headers())
     assert first.status_code == 202 and first.json()["sync_status"] == "pendiente"
     assert (first.json()["total"], first.json()["gastos"], first.json()["duplicado"]) == (73500, 2, False)
     assert api.woke == [1] and api.pedidos == [(first.json()["id"], 2)]
@@ -841,8 +854,6 @@ def test_api_envio_completo_con_y_sin_vehiculo(api, seeded):
     assert api.post("/api/gastos-operativos", json=body, headers=_headers()).json()["duplicado"] is True
     assert api.get(f"/api/gastos-operativos/{UUID}", headers=_headers()).json()["id"] == first.json()["id"]
     assert api.get(f"/api/gastos-operativos/{UUID}", headers=_headers(user_id=1)).status_code == 404
-    _comb._reservar(seeded)
-    assert api.get("/api/gastos-operativos/context", headers=_headers()).json()["vehiculo"]["placa"] == "ABC123"
 
 
 def test_api_rechaza_tipo_desconocido_y_foto_corrupta_con_422(api):
@@ -853,7 +864,8 @@ def test_api_rechaza_tipo_desconocido_y_foto_corrupta_con_422(api):
     assert r.status_code == 422 and "foto" in r.json()["detail"] and api.woke == []
 
 
-def test_api_aviso_fallido_de_ubicacion_no_devuelve_error(seeded):
+def test_api_aviso_fallido_de_ubicacion_no_devuelve_error(listo):
+    seeded = listo
     app = _app_sin_servicios()
 
     async def boom(_):
@@ -871,7 +883,7 @@ def test_pagina_sin_cache_logo_versionado_y_marcas_del_formulario(api):
     assert re.findall(r'src="/static/viacotur-logo\.png\?v=([0-9a-f]{12})"', page.text)
     for marca in ('IDB_NAME = "gastos-operativos-offline"', "vaciarBandeja()", 'addEventListener("online"',
                   "+ Agregar gasto", "Total general", "Cancelar", "Enviar", "Gasto #", "Soporte (PDF o foto)",
-                  "sin cotejo con el GPS del vehículo", "capture", "application/pdf", "%PDF", "soloDigitos",
+                  "Primero el Preoperacional", "sin_reserva_vigente", "capture", "application/pdf", "%PDF", "soloDigitos",
                   "/api/gastos-operativos"):
         assert marca in page.text
     assert "innerHTML" not in page.text and "toLocaleString" not in page.text

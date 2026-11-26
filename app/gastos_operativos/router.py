@@ -25,7 +25,15 @@ from sqlalchemy import func, select
 from ..preop import service as preop_service
 from ..preop.db import Database
 from ..preop.models import GastoOperativo, GastoOperativoLinea
-from ..preop.router import _LOGO_URL, _identity, _logo_version, firma_previa_diferida, tiempos_diferido
+from ..preop.router import (
+    _LOGO_URL,
+    _identity,
+    _logo_version,
+    contexto_http,
+    firma_previa_diferida,
+    http_error,
+    tiempos_diferido,
+)
 from . import service
 from .catalogo import TipoGasto
 from .schemas import GastosOperativosIn, GastosOperativosOut
@@ -96,7 +104,7 @@ async def gastos_operativos_context(request: Request, identity: Identity) -> dic
             status.HTTP_403_FORBIDDEN,
             f"Tu ID de Telegram ({identity.user_id}) no está registrado como PIN de un empleado activo",
         )
-    return await asyncio.to_thread(service.form_context, svc.db, empleado, identity.user_id)
+    return await contexto_http(service.form_context, svc.db, empleado, identity.user_id)
 
 
 def _out(recibido: service.GastoRecibido, duplicated: bool = False) -> GastosOperativosOut:
@@ -136,9 +144,9 @@ async def gastos_operativos_submit(
                     await svc.on_rejected(identity.user_id, str(exc))
                 except Exception:
                     logger.exception("No se pudo avisar del rechazo por tope al usuario %s", identity.user_id)
-        raise HTTPException(exc.status_code, str(exc)) from exc
+        raise http_error(exc) from exc
     except preop_service.SubmissionError as exc:
-        raise HTTPException(exc.status_code, str(exc)) from exc
+        raise http_error(exc) from exc
     if not duplicated and svc.wake_worker is not None:
         svc.wake_worker()
     if not duplicated and svc.on_accepted is not None:

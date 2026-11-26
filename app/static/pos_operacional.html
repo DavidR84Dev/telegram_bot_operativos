@@ -102,6 +102,7 @@
   #blocked.warn { border: 2px solid var(--warn); }
   #blocked.warn h2 { color: var(--warn); }
   #done-text, #blocked-text { white-space: pre-line; }
+  #blocked-close { width: 100%; min-height: 50px; margin-top: 14px; padding: 12px; border: 0; border-radius: 12px; font: inherit; font-size: 16px; font-weight: 600; }
   [hidden] { display: none !important; }
 </style>
 </head>
@@ -125,8 +126,7 @@
 
     <div class="card">
       <h2>Vehículo</h2>
-      <div class="banner ok" id="vehiculo-ok" hidden>✔ <span id="vehiculo-texto"></span></div>
-      <div class="banner warn" id="vehiculo-aviso" hidden>⚠️ <span>No hay vehículo asignado. El pos-operacional se registrará sin vehículo.</span></div>
+      <div class="banner ok" id="vehiculo-ok">✔ <span id="vehiculo-texto"></span></div>
       <div class="field-wrap" id="w-km-inicial">
         <label class="field" for="km-inicial">KM inicial <span class="req">*</span></label>
         <input id="km-inicial" type="text" inputmode="decimal" autocomplete="off" placeholder="0">
@@ -186,6 +186,7 @@
     <div class="state-icon" id="blocked-icon">🚫</div>
     <h2 class="center" id="blocked-title"></h2>
     <p class="hint center" id="blocked-text"></p>
+    <button type="button" class="btn-primary" id="blocked-close" hidden>Volver al chat</button>
   </section>
 
   <section id="done" class="card" hidden>
@@ -308,6 +309,7 @@
       if (Array.isArray(detail)) detail = detail.map((d) => String(d.msg).replace(/^Value error, /, "")).join("\n");
       const err = new Error(detail || `Error ${res.status}`);
       err.status = res.status;
+      err.codigo = res.headers.get("X-Error-Code");
       throw err;
     }
     return body;
@@ -740,6 +742,20 @@
     setMsg("");
   }
 
+  // Regla 2026-11-26: sin reserva vigente (preoperacional de la jornada) este formulario no se usa. Primero se intenta
+  // enviar lo guardado sin señal (el servidor lo acepta si la reserva estaba vigente al abrirlo) y luego se bloquea.
+  const CODIGO_SIN_RESERVA = "sin_reserva_vigente";
+
+  async function sinReserva(err) {
+    let previo = { aceptado: null, aviso: "" };
+    try { previo = await vaciarBandeja(); } catch (_) { /* sin bandeja */ }
+    if (previo.aceptado) { showDone(previo.aceptado, true); return; }
+    block("Primero el Preoperacional",
+      `${err.message}\nSi ya lo hiciste, revisa que no hayas tocado «🔴 Finalizar».` + (previo.aviso ? `\n\n${previo.aviso}` : ""), true);
+    $("blocked-close").hidden = false;
+    $("blocked-close").addEventListener("click", () => tg.close());
+  }
+
   // ── Arranque ─────────────────────────────────────────────────────────────
   async function init() {
     if (!tg || !tg.initData) {
@@ -760,6 +776,7 @@
       if (previo.aceptado) { showDone(previo.aceptado, true); return; }
       state.avisoBandeja = previo.aviso;
     } catch (err) {
+      if (err.codigo === CODIGO_SIN_RESERVA) { await sinReserva(err); return; }
       if (err.status === 403) block("Usuario no registrado", `${err.message}.\nPide a Recursos Humanos que lo registre.`);
       else block("No se pudo cargar el formulario", `${err.message}\nVerifica tu señal y vuelve a abrirlo.`);
       return;
@@ -769,11 +786,9 @@
     const c = state.ctx;
     $("conductor").value = c.empleado.nombre;
     $("contrato").value = c.contrato ? (c.contrato.nombre || `Contrato ${c.contrato.id}`) : "";
-    // Sin vehículo reservado no se bloquea: el pos-operacional se registra sin vehículo.
+    // El vehículo siempre viene: sin reserva vigente el contexto responde 409 y se bloquea el formulario.
     const v = c.vehiculo;
-    $("vehiculo-ok").hidden = !v;
-    $("vehiculo-aviso").hidden = Boolean(v);
-    if (v) $("vehiculo-texto").textContent = `Vehículo asignado: ${[v.placa, v.numero_interno && `N.º interno ${v.numero_interno}`].filter(Boolean).join(" · ")}`;
+    $("vehiculo-texto").textContent = `Vehículo asignado: ${[v.placa, v.numero_interno && `N.º interno ${v.numero_interno}`].filter(Boolean).join(" · ")}`;
     if (c.km_inicial !== null && c.km_inicial !== undefined) {
       $("km-inicial").value = String(c.km_inicial);
       $("km-inicial-hint").textContent = "Odómetro de tu último preoperacional de la jornada; puedes corregirlo.";

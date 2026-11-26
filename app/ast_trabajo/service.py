@@ -61,9 +61,15 @@ def _contratos(extractos: list[Extracto], empleado: Empleado) -> list[dict[str, 
     return list(vistos.values())
 
 
-def form_context(db: Database, empleado: Empleado, now: datetime | None = None) -> dict[str, Any]:
-    """Información del personal: empleado, responsable y contratos de sus extractos aprobados."""
+def form_context(db: Database, empleado: Empleado, telegram_user_id: int,
+                 now: datetime | None = None) -> dict[str, Any]:
+    """Información del personal: empleado, responsable y contratos de sus extractos aprobados.
+
+    Exige una reserva vigente (regla 2026-11-26): sin ella lanza ``SinReservaVigenteError`` (409). El AST no lleva
+    vehículo; la reserva solo habilita el formulario.
+    """
     with db.session() as session:
+        preop_service.exigir_reserva(session, telegram_user_id)
         contratos = _contratos(preop_service.extractos_del_conductor(session, empleado, now), empleado)
     return {
         "empleado": {"nombre": empleado.nombre, "puesto_trabajo": empleado.puesto_trabajo,
@@ -135,6 +141,7 @@ def submit(db: Database, identity: TelegramIdentity, data: AstIn,
         )
         if empleado is None:
             raise SubmissionError("Tu usuario de Telegram no está asociado a un empleado activo", 403)
+        preop_service.exigir_reserva(session, identity.user_id, diferido)
 
         contratos = _contratos(preop_service.extractos_del_conductor(session, empleado), empleado)
         if not contratos:

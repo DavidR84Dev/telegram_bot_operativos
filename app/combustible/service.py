@@ -3,8 +3,8 @@
 Reglas de acceso (igual en el contexto de la Mini App y al recibir):
 
 1. El id de Telegram es el PIN de un empleado activo (si no, 403).
-2. Tiene un vehículo reservado por su preoperacional de la jornada (``reservas_vehiculo``);
-   si no, debe hacer primero el preoperacional (409). El contrato (``agreement_id``) es el de
+2. Tiene una reserva vigente (``reservas.reserva_vigente``: su preoperacional de la jornada, sin liberar ni vencer);
+   si no, ``SinReservaVigenteError`` (409; en el envío diferido basta con que estuviera vigente al abrir). El contrato (``agreement_id``) es el de
    ese preoperacional, que salió de su extracto aprobado.
 3. El kilometraje del tanqueo es **mayor o igual** al último registrado (Odoo, la flota
    sincronizada y el odómetro del preoperacional de la jornada).
@@ -60,16 +60,6 @@ from .proveedores import listar_activos
 from .schemas import CombustibleIn, decode_pdf
 
 logger = logging.getLogger(__name__)
-
-MSG_SIN_PREOP = ("No tienes un vehículo reservado. Diligencia primero el ✅ Preoperacional del vehículo "
-                 "y luego registra el combustible.")
-
-
-def _reserva_propia(session: Session, telegram_user_id: int) -> ReservaVehiculo | None:
-    """Vehículo reservado a este conductor por su preoperacional (libera antes las vencidas)."""
-    reservas.liberar_vencidas(session)
-    return session.scalar(select(ReservaVehiculo).where(ReservaVehiculo.telegram_user_id == telegram_user_id))
-
 
 def _contrato(session: Session, reserva: ReservaVehiculo) -> tuple[int | None, str | None]:
     """Contrato (agreement) del preoperacional que reservó el vehículo: (id de Odoo, nombre)."""
@@ -149,17 +139,14 @@ def form_full(db: Database) -> dict[str, Any]:
 def form_context(db: Database, empleado: Empleado, telegram_user_id: int,
                  odometro: OdometroReader | None = None, km_fuel: OdometroReader | None = None,
                  km_gastos: OdometroReader | None = None) -> dict[str, Any]:
-    """Comprador, vehículo reservado por su preoperacional (o None), contrato y último kilometraje."""
+    """Comprador, vehículo reservado por su preoperacional, contrato y último kilometraje (sin reserva: 409)."""
     with db.session() as session:
-        reserva = _reserva_propia(session, telegram_user_id)
-        vehiculo = contrato = None
-        km: tuple[LimiteKm | None, LimiteKm | None] = (None, None)
-        if reserva is not None:
-            v = reserva.vehiculo
-            vehiculo = {"id": v.id, "nombre": v.nombre, "matricula": v.matricula,
-                        "numero_interno": v.numero_interno, "placa": reservas.placa(v)}
-            contrato = _contrato(session, reserva)[1]
-            km = _km_limites(session, reserva, odometro, km_fuel, km_gastos, empleado.odoo_id)
+        reserva = preop_service.exigir_reserva(session, telegram_user_id)
+        v = reserva.vehiculo
+        vehiculo = {"id": v.id, "nombre": v.nombre, "matricula": v.matricula,
+                    "numero_interno": v.numero_interno, "placa": reservas.placa(v)}
+        contrato = _contrato(session, reserva)[1]
+        km = _km_limites(session, reserva, odometro, km_fuel, km_gastos, empleado.odoo_id)
     return {
         "empleado": {"nombre": empleado.nombre, "puesto_trabajo": empleado.puesto_trabajo,
                      "responsable": empleado.responsable},
@@ -238,9 +225,7 @@ def submit(db: Database, identity: TelegramIdentity, data: CombustibleIn, odomet
         )
         if empleado is None:
             raise SubmissionError("Tu usuario de Telegram no está asociado a un empleado activo", 403)
-        reserva = _reserva_propia(session, identity.user_id)
-        if reserva is None:
-            raise SubmissionError(MSG_SIN_PREOP, 409)
+        reserva = preop_service.exigir_reserva(session, identity.user_id, diferido)
         if data.vehiculo_id is not None and data.vehiculo_id != reserva.vehiculo_id:
             raise SubmissionError("El vehículo no es el reservado por tu preoperacional", 409)
 

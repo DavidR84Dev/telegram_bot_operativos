@@ -26,7 +26,15 @@ from sqlalchemy import select
 from ..preop import service as preop_service
 from ..preop.db import Database
 from ..preop.models import PosOperacional
-from ..preop.router import _LOGO_URL, _identity, _logo_version, firma_previa_diferida, tiempos_diferido
+from ..preop.router import (
+    _LOGO_URL,
+    _identity,
+    _logo_version,
+    contexto_http,
+    firma_previa_diferida,
+    http_error,
+    tiempos_diferido,
+)
 from . import service
 from .catalogo import form_definition
 from .schemas import PosOperacionalIn, PosOperacionalOut
@@ -91,7 +99,7 @@ async def pos_operacional_context(request: Request, identity: Identity) -> dict[
             status.HTTP_403_FORBIDDEN,
             f"Tu ID de Telegram ({identity.user_id}) no está registrado como PIN de un empleado activo",
         )
-    return await asyncio.to_thread(service.form_context, svc.db, empleado, identity.user_id)
+    return await contexto_http(service.form_context, svc.db, empleado, identity.user_id)
 
 
 def _out(recibido: service.PosRecibido, duplicated: bool = False) -> PosOperacionalOut:
@@ -119,7 +127,7 @@ async def pos_operacional_submit(
     except preop_service.EnvioVencidoError as exc:
         raise HTTPException(status.HTTP_410_GONE, "Envío vencido: superó 1 hora sin señal") from exc
     except preop_service.SubmissionError as exc:
-        raise HTTPException(exc.status_code, str(exc)) from exc
+        raise http_error(exc) from exc
     if not duplicated and svc.wake_worker is not None:
         svc.wake_worker()
     if not duplicated and svc.on_accepted is not None:

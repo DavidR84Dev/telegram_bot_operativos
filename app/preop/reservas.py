@@ -56,6 +56,11 @@ def fecha_jornada(now: datetime | None = None) -> date:
     return (now or utc_now()).astimezone(ZONA_JORNADA).date()
 
 
+def reservado_desde(reserva: ReservaVehiculo) -> datetime:
+    """``reservado_at`` con zona UTC (SQLite la devuelve sin zona)."""
+    return _aware(reserva.reservado_at)
+
+
 def vence_at(reserva: ReservaVehiculo) -> datetime:
     return _aware(reserva.reservado_at) + timedelta(hours=RESERVA_HORAS)
 
@@ -174,6 +179,46 @@ def reservar(session: Session, *, vehiculo: Flota, empleado: Empleado, telegram_
         session.add(reserva)
     reserva.extracto_id, reserva.preop_id, reserva.ultimo_preop_at = extracto_id, preop_id, now
     return reserva
+
+
+# ─────────────────── reserva vigente: requisito de los formularios de la jornada ───────────────────
+
+# Regla del 2026-11-26: AST, Prueba de Ruta, Combustible, Gastos Operativos y Pos-Operacional solo se usan con
+# una reserva vigente (preoperacional de la jornada). Mismo código HTTP y cabecera ``X-Error-Code`` en todos.
+HTTP_SIN_RESERVA = 409
+CODIGO_SIN_RESERVA = "sin_reserva_vigente"
+MSG_SIN_RESERVA = "Para usar este formulario primero debes registrar el ✅ Preoperacional de hoy (vehículo reservado)."
+
+
+def reserva_vigente(session: Session, telegram_user_id: int, now: datetime | None = None) -> ReservaVehiculo | None:
+    """Reserva del conductor: existe, no se liberó con 🔴 Finalizar y no venció (``RESERVA_HORAS``).
+
+    No exige que la fecha sea hoy: un turno nocturno hace su pos-operacional pasada la medianoche.
+    """
+    liberar_vencidas(session, now)
+    return session.scalar(select(ReservaVehiculo).where(ReservaVehiculo.telegram_user_id == telegram_user_id))
+
+
+def reserva_al_instante(session: Session, telegram_user_id: int, instante: datetime) -> ReservaVehiculo | None:
+    """Reserva que el conductor tenía en ``instante`` aunque ya se haya liberado (envío diferido sin señal).
+
+    Se busca en ``reservas_historial`` la jornada que cubría ese instante y se devuelve una ``ReservaVehiculo``
+    **transitoria** (no se agrega a la sesión) con vehículo, extracto y preoperacional de esa jornada.
+    """
+    fila = session.scalar(
+        select(ReservaHistorial).where(
+            ReservaHistorial.telegram_user_id == telegram_user_id,
+            ReservaHistorial.vehiculo_id.is_not(None),
+            ReservaHistorial.reservado_at <= instante,
+            ReservaHistorial.liberado_at >= instante,
+        ).order_by(ReservaHistorial.liberado_at.desc()).limit(1))
+    vehiculo = session.get(Flota, fila.vehiculo_id) if fila is not None and fila.vehiculo_id else None
+    if fila is None or vehiculo is None:
+        return None
+    return ReservaVehiculo(vehiculo_id=vehiculo.id, empleado_id=fila.empleado_id, telegram_user_id=telegram_user_id,
+                           extracto_id=fila.extracto_id, preop_id=fila.ultimo_preop_id,
+                           fecha_jornada=fila.fecha_jornada, reservado_at=fila.reservado_at,
+                           ultimo_preop_at=fila.ultimo_preop_at, vehiculo=vehiculo)
 
 
 def es_conflicto_de_reserva(exc: Exception) -> bool:

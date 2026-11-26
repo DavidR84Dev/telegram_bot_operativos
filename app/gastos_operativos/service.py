@@ -4,8 +4,8 @@ Un envío (``GastoOperativo``) lleva una fecha y N gastos. Cada gasto es **un ``
 (``POST /api/gastos/register``, igual que «Combustible para gastos»). Reglas:
 
 1. El id de Telegram es el PIN de un empleado activo (si no, 403).
-2. El vehículo reservado por el preoperacional es **opcional**: sin él, el gasto se registra sin cotejo con el GPS
-   del vehículo (``GPS no disponible``).
+2. Exige una **reserva vigente** (preoperacional de la jornada; ``reservas.reserva_vigente``): sin ella
+   ``SinReservaVigenteError`` (409). El vehículo de la reserva es el que se coteja con el GPS de la flota.
 3. Cada soporte (PDF o foto) llega obligatorio; una foto se convierte a PDF al recibirla.
 4. El envío queda **retenido** hasta que el conductor comparte su ubicación en el chat; esa ubicación se usa en todas
    las líneas. Tras recibirla, cada línea sale por su cuenta y tiene su propio estado.
@@ -23,7 +23,6 @@ from typing import Any
 
 from sqlalchemy import or_, select, update
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
 
 from ..combustible import gps as gps_flota
 from ..combustible import service as combustible_service
@@ -39,7 +38,6 @@ from ..preop.models import (
     GastoOperativoEnvioDiferido,
     GastoOperativoLinea,
     GastoOperativoSoporte,
-    ReservaVehiculo,
     SyncStatus,
     utc_now,
 )
@@ -54,12 +52,6 @@ from .schemas import GastosOperativosIn
 logger = logging.getLogger(__name__)
 
 
-def _reserva_propia(session: Session, telegram_user_id: int) -> ReservaVehiculo | None:
-    """Vehículo reservado a este conductor por su preoperacional (libera antes las vencidas)."""
-    reservas.liberar_vencidas(session)
-    return session.scalar(select(ReservaVehiculo).where(ReservaVehiculo.telegram_user_id == telegram_user_id))
-
-
 # ───────────────────────────── consultas para la Mini App ─────────────────────────────
 
 def form_full(tipos: tuple[TipoGasto, ...], topes: dict[str, int] | None = None) -> dict[str, Any]:
@@ -67,14 +59,11 @@ def form_full(tipos: tuple[TipoGasto, ...], topes: dict[str, int] | None = None)
 
 
 def form_context(db: Database, empleado: Empleado, telegram_user_id: int) -> dict[str, Any]:
-    """Conductor, vehículo reservado (o None: el gasto se registra sin cotejo con el GPS) y fecha de hoy."""
+    """Conductor, vehículo reservado y fecha de hoy (sin reserva vigente: 409)."""
     with db.session() as session:
-        reserva = _reserva_propia(session, telegram_user_id)
-        vehiculo = None
-        if reserva is not None:
-            v = reserva.vehiculo
-            vehiculo = {"id": v.id, "nombre": v.nombre, "matricula": v.matricula,
-                        "numero_interno": v.numero_interno, "placa": reservas.placa(v)}
+        v = preop_service.exigir_reserva(session, telegram_user_id).vehiculo
+        vehiculo = {"id": v.id, "nombre": v.nombre, "matricula": v.matricula,
+                    "numero_interno": v.numero_interno, "placa": reservas.placa(v)}
     return {
         "empleado": {"nombre": empleado.nombre, "puesto_trabajo": empleado.puesto_trabajo,
                      "responsable": empleado.responsable},
@@ -205,7 +194,7 @@ def submit(db: Database, identity: TelegramIdentity, data: GastosOperativosIn, t
         )
         if empleado is None:
             raise SubmissionError("Tu usuario de Telegram no está asociado a un empleado activo", 403)
-        reserva = _reserva_propia(session, identity.user_id)  # opcional: sin ella no hay cotejo con el GPS
+        reserva = preop_service.exigir_reserva(session, identity.user_id, diferido)
 
         cab = GastoOperativo(
             uuid=data.uuid,
@@ -213,7 +202,7 @@ def submit(db: Database, identity: TelegramIdentity, data: GastosOperativosIn, t
             telegram_username=identity.username,
             firma_nombre=identity.full_name[:255] or empleado.nombre,
             empleado_id=empleado.id,
-            vehiculo_id=reserva.vehiculo_id if reserva is not None else None,
+            vehiculo_id=reserva.vehiculo_id,
             fecha=utc_now(),
             fecha_gasto=data.fecha_gasto,
             total=float(data.total),

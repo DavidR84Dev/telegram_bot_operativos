@@ -7,7 +7,7 @@ Seguridad igual que los demás formularios: las rutas ``/api/combustible/*`` exi
 * ``GET  /api/combustible/form``     tipos de combustible, pestañas y proveedores aprobados
 * ``GET  /api/combustible/context``  comprador, vehículo reservado, contrato y último kilometraje
 * ``POST /api/combustible``          recibe el formulario -> 202 + ``pendiente``
-  (409 sin preoperacional; 422 validación o kilometraje menor; 410 reenvío sin señal vencido)
+  (409 sin reserva vigente; 422 validación o kilometraje menor; 410 reenvío sin señal vencido)
 * ``GET  /api/combustible/{uuid}``   estado de un envío propio
 """
 from __future__ import annotations
@@ -25,7 +25,15 @@ from sqlalchemy import select
 from ..preop import service as preop_service
 from ..preop.db import Database
 from ..preop.models import Combustible
-from ..preop.router import _LOGO_URL, _identity, _logo_version, firma_previa_diferida, tiempos_diferido
+from ..preop.router import (
+    _LOGO_URL,
+    _identity,
+    _logo_version,
+    contexto_http,
+    firma_previa_diferida,
+    http_error,
+    tiempos_diferido,
+)
 from . import service
 from .schemas import CombustibleIn, CombustibleOut
 
@@ -92,8 +100,8 @@ async def combustible_context(request: Request, identity: Identity) -> dict[str,
             status.HTTP_403_FORBIDDEN,
             f"Tu ID de Telegram ({identity.user_id}) no está registrado como PIN de un empleado activo",
         )
-    return await asyncio.to_thread(service.form_context, svc.db, empleado, identity.user_id, svc.odometro,
-                                   svc.km_fuel, svc.km_gastos)
+    return await contexto_http(service.form_context, svc.db, empleado, identity.user_id, svc.odometro,
+                           svc.km_fuel, svc.km_gastos)
 
 
 def _out(registro: Combustible, duplicated: bool = False) -> CombustibleOut:
@@ -124,7 +132,7 @@ async def combustible_submit(
     except preop_service.EnvioVencidoError as exc:
         raise HTTPException(status.HTTP_410_GONE, "Envío vencido: superó 1 hora sin señal") from exc
     except preop_service.SubmissionError as exc:
-        raise HTTPException(exc.status_code, str(exc)) from exc
+        raise http_error(exc) from exc
     if not duplicated and svc.wake_worker is not None:
         svc.wake_worker()
     if not duplicated and svc.on_accepted is not None:

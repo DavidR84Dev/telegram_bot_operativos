@@ -22,15 +22,14 @@ PosOperacionalSender ──▶ búsqueda de duplicado (XML-RPC) ──▶ create
 
 1. **Información del personal.** Empleado (de solo lectura) y **contrato** (de solo lectura). El contrato lo resuelve
    el servidor y es **exactamente el del preoperacional** de la reserva (regla 2026-11-26: `preoperacional.contrato_id`
-   y `pos.operacional.agreement_id` apuntan al mismo modelo `agreement`). Sin reserva o sin contrato en el
+   y `pos.operacional.agreement_id` apuntan al mismo modelo `agreement`). Sin contrato en el
    preoperacional va vacío; no se deduce del extracto ni de la ficha del empleado. El cliente **nunca** envía contrato ni vehículo.
-2. **Vehículo.** El reservado al conductor por su preoperacional (`reservas_vehiculo`). Sin reserva no se bloquea: aviso
-   amarillo «No hay vehículo asignado» y el registro va sin vehículo.
+2. **Reserva vigente y vehículo.** El vehículo es el reservado al conductor por su preoperacional (`reservas_vehiculo`). **Reserva vigente (regla 2026-11-26).** Exige una reserva vigente de vehículo, es decir, un preoperacional registrado en la jornada: existe en `reservas_vehiculo` para el id de Telegram, no se liberó con 🔴 Finalizar y no venció (`RESERVA_HORAS` = 24 h). **No** exige que la fecha sea hoy (un turno nocturno hace su Pos-Operacional pasada la medianoche). Sin ella el `context` y el `POST` responden **409** con `X-Error-Code: sin_reserva_vigente` y «Para usar este formulario primero debes registrar el ✅ Preoperacional de hoy (vehículo reservado).»; la Mini App muestra la pantalla de bloqueo **Primero el Preoperacional** con «Volver al chat». Helper único: `reservas.reserva_vigente` (y `preop_service.exigir_reserva`). Envío sin señal: se acepta si la reserva estaba vigente **al abrir** el formulario (`apertura`, firmada por Telegram) según `reservas_historial` (`reservas.reserva_al_instante`), aunque ya se haya liberado al llegar; si no, 409. (Antes, sin reserva el registro iba sin vehículo: se quitó.)
 3. **KM inicial** (precargado con el odómetro del último preoperacional de la jornada; editable) y **KM final**, ambos
    obligatorios, enteros o decimales con punto (`normalizarDecimal`, `parseNum`, `fmtNum`; el servidor acepta además
    `"1510,5"` y lo vuelve `1510.5`). **KM final ≥ KM inicial**. Rango 0 a 9 999 999.
 4. **Fechas y horarios** (hora de Colombia en la pantalla): **Entrada** (por defecto el inicio de la reserva,
-   `reservado_at`; vacía sin reserva) y **Salida** (por defecto ahora). Ambas obligatorias; **Salida > Entrada** y como
+   `reservado_at`) y **Salida** (por defecto ahora). Ambas obligatorias; **Salida > Entrada** y como
    máximo **24 horas** entre las dos.
 5. **Planilla de servicios**, obligatoria: 📷 cámara dentro de la Mini App (`getUserMedia`; Telegram en Android ignora
    `capture` y abre la galería, así que `abrirCamara` / `capturarFoto` abren la cámara trasera y, sin permiso o soporte,
@@ -55,7 +54,7 @@ PosOperacionalSender ──▶ búsqueda de duplicado (XML-RPC) ──▶ create
 |---|---|
 | `employee_id` | Id Odoo del empleado (PIN = id de Telegram) |
 | `agreement_id` | Contrato de la jornada (ver § 1, punto 1). **Se omite** si no hay |
-| `vehicle_id` | Vehículo reservado (id Odoo de `fleet.vehicle`). **Se omite** si no hay reserva |
+| `vehicle_id` | Vehículo reservado (id Odoo de `fleet.vehicle`). Siempre va (los registros anteriores al 2026-11-26 pueden no tenerlo y se omite) |
 | `km_start`, `km_end` | `float` de Python (XML-RPC los serializa con punto). `km_traveled` lo calcula Odoo |
 | `check_in`, `check_out` | Entrada y Salida en **UTC naive** `YYYY-MM-DD HH:MM:SS` (la hora de Colombia, UTC-5, + 5 h) |
 | `attachment` | Planilla **en PDF** y base64, sin prefijo `data:` (una foto se convierte a PDF de una página en el servidor) |
@@ -122,7 +121,7 @@ llegó, responde como duplicado y no repite el aviso.
 | `GET /pos-operacional` | HTML (sin caché; logo versionado) |
 | `GET /api/pos-operacional/form` | límites: `km_max`, `rango_max_horas`, `observacion_max`, `planilla_max_bytes` |
 | `GET /api/pos-operacional/context` | `empleado`, `contrato`, `vehiculo` (o `null`), `km_inicial`, `entrada` y `salida` (`YYYY-MM-DDTHH:MM`, Colombia); 403 sin PIN |
-| `POST /api/pos-operacional` | **202**; 401 firma, 403 sin empleado, 409 uuid ajeno, 422 validación, **410** reenvío sin señal vencido |
+| `POST /api/pos-operacional` | **202**; 401 firma, 403 sin empleado, 409 uuid ajeno o sin reserva vigente (`X-Error-Code: sin_reserva_vigente`), 422 validación, **410** reenvío sin señal vencido |
 | `GET /api/pos-operacional/{uuid}` | estado de un envío propio |
 
 ## 7. Tablas (las crea `create_all`; no se tocan tablas existentes)
@@ -166,7 +165,7 @@ llegó, responde como duplicado y no repite el aviso.
 
 Decisiones tomadas (confirmar si no son las deseadas):
 
-- KM inicial es **obligatorio** (sin él no hay recorrido que validar), aunque venga vacío cuando no hay preoperacional.
+- KM inicial es **obligatorio** (sin él no hay recorrido que validar), aunque venga vacío cuando el preoperacional no lo tiene.
 - Rango máximo entre Entrada y Salida: **24 h** (igual que el vencimiento de la reserva). No se valida que las horas no
   sean futuras ni un recorrido máximo en km.
 - `agreement_id` y `vehicle_id` se **omiten** (no van en `False`) cuando no hay dato.
@@ -181,4 +180,4 @@ Pendientes para confirmar con Odoo:
 - [ ] Que una restricción de Odoo sobre `km_start` (p. ej. frente al `odometer_post` del vehículo) no rechace el
       KM inicial editado por el conductor: un rechazo deja el registro `fallido` con el motivo de Odoo.
 - [ ] Prueba de punta a punta en qa2 y desde un móvil (crea un `pos.operacional` real): foto de cámara y de galería,
-      PDF, sin vehículo y sin señal.
+      PDF, sin reserva vigente y sin señal.

@@ -38,7 +38,7 @@ from app.preop.rest_client import OdooApiError, OdooRestClient, _RetryableHttpEr
 from app.preop.service import SubmissionError, TelegramIdentity
 
 from . import test_preop as _preop
-from .helpers import BOT_TOKEN, make_init_data
+from .helpers import BOT_TOKEN, antedatar_reservas, make_init_data
 from .test_preop import TG_USER, FakeObjects, _ids, _writer
 
 db = _preop.db
@@ -175,8 +175,9 @@ def test_writer_busca_contacto_por_nit_y_luego_por_nombre():
 
 def test_contexto_sin_y_con_vehiculo_reservado(seeded):
     empleado = preop_service.employee_for_telegram(seeded, TG_USER)
-    ctx = service.form_context(seeded, empleado, TG_USER)
-    assert ctx["vehiculo"] is None and ctx["contrato"] is None and ctx["hoy"] == _hoy().isoformat()
+    with pytest.raises(preop_service.SinReservaVigenteError) as exc:
+        service.form_context(seeded, empleado, TG_USER)
+    assert exc.value.status_code == 409 and exc.value.code == reservas.CODIGO_SIN_RESERVA
     vehiculo = _reservar(seeded)
     ctx = service.form_context(seeded, empleado, TG_USER, odometro=lambda _id: 1400.0)
     assert ctx["vehiculo"]["id"] == vehiculo and ctx["vehiculo"]["placa"] == "ABC123"
@@ -446,8 +447,9 @@ def test_api_exige_init_data(api):
 def test_api_envio_completo(api, seeded):
     client, woke = api
     _proveedor(seeded)
-    ctx = client.get("/api/combustible/context", headers=_headers()).json()
-    assert ctx["vehiculo"] is None
+    sin = client.get("/api/combustible/context", headers=_headers())
+    assert sin.status_code == 409 and sin.json()["detail"] == reservas.MSG_SIN_RESERVA
+    assert sin.headers["x-error-code"] == reservas.CODIGO_SIN_RESERVA
     body = _payload().model_dump(mode="json")
     assert client.post("/api/combustible", json=body, headers=_headers()).status_code == 409 and woke == []
     _reservar(seeded)
@@ -497,6 +499,7 @@ def _diferido_body(*, abierto_hace: timedelta, sin_senal_hace: timedelta, **over
 def test_api_diferido_en_ventana_y_trazabilidad(api, seeded):
     client, woke = api
     _reservar(seeded)
+    antedatar_reservas(seeded)  # la reserva ya existía al abrir el formulario
     body = _diferido_body(abierto_hace=timedelta(minutes=80), sin_senal_hace=timedelta(minutes=40))
     headers = {"X-Telegram-Init-Data": body["diferido"]["init_data_original"]}
     assert client.post("/api/combustible", json=body, headers=headers).status_code == 202 and woke == [1]

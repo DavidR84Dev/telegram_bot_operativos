@@ -63,9 +63,38 @@ FOTO_TESTIGOS = "testigos"
 class SubmissionError(Exception):
     """El formulario no puede aceptarse (mensaje apto para mostrar al usuario)."""
 
+    code: str | None = None  # código estable para la Mini App (cabecera ``X-Error-Code``); None = solo el mensaje
+
     def __init__(self, message: str, status_code: int = 422) -> None:
         super().__init__(message)
         self.status_code = status_code
+
+
+class SinReservaVigenteError(SubmissionError):
+    """El conductor no tiene una reserva vigente (preoperacional de la jornada): 409 en todos los formularios."""
+
+    code = reservas.CODIGO_SIN_RESERVA
+
+    def __init__(self) -> None:
+        super().__init__(reservas.MSG_SIN_RESERVA, reservas.HTTP_SIN_RESERVA)
+
+
+def exigir_reserva(session: Session, telegram_user_id: int,
+                   diferido: "TiemposDiferido | None" = None) -> reservas.ReservaVehiculo:
+    """Reserva vigente del conductor o ``SinReservaVigenteError``.
+
+    Envío diferido sin señal (``diferido``): si la reserva ya se liberó, se acepta cuando estaba vigente al **abrir**
+    el formulario (``apertura`` va firmada por Telegram; el reloj del teléfono no es fiable) según
+    ``reservas_historial``.
+    """
+    reserva = reservas.reserva_vigente(session, telegram_user_id)
+    if diferido is not None and (reserva is None or reservas.reservado_desde(reserva) > diferido.apertura):
+        # La reserva actual es posterior a la apertura (finalizó y reservó otro vehículo): el envío pertenece a la
+        # jornada que estaba vigente al abrir el formulario, no a la nueva.
+        reserva = reservas.reserva_al_instante(session, telegram_user_id, diferido.apertura)
+    if reserva is None:
+        raise SinReservaVigenteError()
+    return reserva
 
 
 @dataclass(frozen=True)

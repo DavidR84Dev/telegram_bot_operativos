@@ -6,8 +6,8 @@ Orden de las reglas de acceso (igual en el contexto de la Mini App y al recibir)
 2. Tiene un extracto **aprobado y vigente** con un acuerdo autorizado
    (``acuerdos.contrato_autorizado``); si ya reservó el vehículo, debe serlo el extracto de esa
    reserva. Si no, **"Contrato No Autorizado"** (403).
-3. Tiene un vehículo reservado por su preoperacional de la jornada (``reservas_vehiculo``);
-   si no, debe hacer primero el preoperacional (409).
+3. Tiene una reserva vigente (preoperacional de la jornada; ``reservas.reserva_vigente``); si no,
+   ``SinReservaVigenteError`` (409). Esta regla se evalúa **antes** que la del contrato.
 
 Todo es síncrono (SQLAlchemy + XML-RPC); el código async lo llama con ``asyncio.to_thread``.
 """
@@ -34,7 +34,6 @@ from ..preop.models import (
     PruebaRuta,
     PruebaRutaEnvioDiferido,
     PruebaRutaFoto,
-    ReservaVehiculo,
     SyncStatus,
     utc_now,
 )
@@ -53,28 +52,18 @@ from .schemas import PruebaRutaIn
 
 logger = logging.getLogger(__name__)
 
-MSG_SIN_PREOP = ("No tienes un vehículo reservado. Diligencia primero el ✅ Preoperacional del vehículo "
-                 "y luego la Prueba de Ruta.")
-
-
-def _reserva_propia(session: Session, telegram_user_id: int) -> ReservaVehiculo | None:
-    """Vehículo reservado a este conductor por su preoperacional (libera antes las vencidas)."""
-    reservas.liberar_vencidas(session)
-    return session.scalar(select(ReservaVehiculo).where(ReservaVehiculo.telegram_user_id == telegram_user_id))
-
-
 # ───────────────────────────── consultas para la Mini App ─────────────────────────────
 
 def form_context(db: Database, empleado: Empleado, telegram_user_id: int,
                  autorizados: frozenset[str]) -> dict[str, Any]:
-    """Empleado, autorización por el extracto aprobado y vehículo reservado por su preoperacional."""
+    """Empleado, autorización por el extracto aprobado y vehículo reservado por su preoperacional (sin reserva: 409)."""
     with db.session() as session:
-        reserva = _reserva_propia(session, telegram_user_id)
-        extracto_id = reserva.extracto_id if reserva is not None else None
+        reserva = preop_service.exigir_reserva(session, telegram_user_id)
+        extracto_id = reserva.extracto_id
         contrato = contrato_autorizado(session, empleado, autorizados, extracto_id)
         contratos = contratos_extractos(session, empleado, extracto_id)
         vehiculo = None
-        if reserva is not None and contrato is not None:
+        if contrato is not None:
             v = reserva.vehiculo
             vehiculo = {"id": v.id, "nombre": v.nombre, "matricula": v.matricula,
                         "numero_interno": v.numero_interno, "placa": reservas.placa(v)}
@@ -153,13 +142,10 @@ def submit(db: Database, identity: TelegramIdentity, data: PruebaRutaIn, autoriz
         )
         if empleado is None:
             raise SubmissionError("Tu usuario de Telegram no está asociado a un empleado activo", 403)
-        reserva = _reserva_propia(session, identity.user_id)
-        contrato = contrato_autorizado(session, empleado, autorizados,
-                                       reserva.extracto_id if reserva is not None else None)
+        reserva = preop_service.exigir_reserva(session, identity.user_id, diferido)
+        contrato = contrato_autorizado(session, empleado, autorizados, reserva.extracto_id)
         if contrato is None:
             raise SubmissionError(CONTRATO_NO_AUTORIZADO, 403)
-        if reserva is None:
-            raise SubmissionError(MSG_SIN_PREOP, 409)
         if data.vehiculo_id is not None and data.vehiculo_id != reserva.vehiculo_id:
             raise SubmissionError("El vehículo no es el reservado por tu preoperacional", 409)
 

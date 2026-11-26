@@ -4,7 +4,8 @@ Reglas:
 
 1. El id de Telegram es el PIN de un empleado activo (si no, 403).
 2. El vehículo, el contrato y el KM inicial sugerido salen de la **reserva de la jornada** (la del preoperacional).
-   Sin reserva el formulario no se bloquea: el registro va sin vehículo ni contrato.
+   Exige una **reserva vigente** (``reservas.reserva_vigente``): sin ella ``SinReservaVigenteError`` (409). No tiene
+   que ser de hoy: un turno nocturno hace su pos-operacional pasada la medianoche.
 3. La planilla (PDF, JPG o PNG, validada por su firma) se envía a Odoo **siempre en PDF** (``type_file="pdf"``):
    una foto se convierte a PDF en el servidor.
 4. No pide ubicación y **no libera** la reserva: eso lo hace 🔴 Finalizar.
@@ -59,21 +60,15 @@ def _hora_colombia(valor: datetime) -> str:
 
 # ───────────────────────────── consultas para la Mini App ─────────────────────────────
 
-def _reserva_propia(session: Session, telegram_user_id: int) -> ReservaVehiculo | None:
-    """Vehículo reservado a este conductor por su preoperacional (libera antes las vencidas)."""
-    reservas.liberar_vencidas(session)
-    return session.scalar(select(ReservaVehiculo).where(ReservaVehiculo.telegram_user_id == telegram_user_id))
-
-
 def _contrato_de_la_jornada(session: Session, empleado: Empleado,
-                            reserva: ReservaVehiculo | None) -> tuple[int, str | None] | None:
+                            reserva: ReservaVehiculo) -> tuple[int, str | None] | None:
     """Contrato (id de ``agreement`` y nombre) de la jornada, como lo resuelve el preoperacional.
 
     Regla (2026-11-26): es **exactamente** el contrato del preoperacional de la reserva (``preoperacional.contrato_id``
-    y ``pos.operacional.agreement_id`` apuntan al mismo modelo ``agreement``). Sin reserva, sin preoperacional o sin
-    contrato en él, es ``None`` (no se deduce de otras fuentes).
+    y ``pos.operacional.agreement_id`` apuntan al mismo modelo ``agreement``). Sin preoperacional o sin contrato en
+    él, es ``None`` (no se deduce de otras fuentes).
     """
-    if reserva is None or not reserva.preop_id:
+    if not reserva.preop_id:
         return None
     preop = session.get(Preoperacional, reserva.preop_id)
     contrato_id = preop.contrato_odoo_id if preop is not None else None
@@ -91,24 +86,23 @@ def _contrato_de_la_jornada(session: Session, empleado: Empleado,
 
 def form_context(db: Database, empleado: Empleado, telegram_user_id: int,
                  now: datetime | None = None) -> dict[str, Any]:
-    """Conductor, contrato, vehículo reservado (o None), KM inicial sugerido y horas por defecto (hora de Colombia).
+    """Conductor, contrato, vehículo reservado, KM inicial sugerido y horas por defecto (hora de Colombia).
 
     ``entrada`` es el inicio de la reserva (``reservado_at``) y ``salida`` es ahora; ambas ``YYYY-MM-DDTHH:MM``.
     ``km_inicial`` es el odómetro del último preoperacional de la jornada (None si no hay).
+    Sin reserva vigente lanza ``SinReservaVigenteError`` (409).
     """
     now = now or utc_now()
     with db.session() as session:
-        reserva = _reserva_propia(session, telegram_user_id)
-        vehiculo = contrato = km_inicial = entrada = None
-        if reserva is not None:
-            v = reserva.vehiculo
-            vehiculo = {"id": v.id, "nombre": v.nombre, "matricula": v.matricula,
-                        "numero_interno": v.numero_interno, "placa": reservas.placa(v)}
-            preop = session.get(Preoperacional, reserva.preop_id) if reserva.preop_id else None
-            km_inicial = float(preop.kilometraje) if preop is not None else None
-            entrada = _hora_colombia(reserva.reservado_at)
-            resuelto = _contrato_de_la_jornada(session, empleado, reserva)
-            contrato = {"id": resuelto[0], "nombre": resuelto[1]} if resuelto else None
+        reserva = preop_service.exigir_reserva(session, telegram_user_id)
+        v = reserva.vehiculo
+        vehiculo = {"id": v.id, "nombre": v.nombre, "matricula": v.matricula,
+                    "numero_interno": v.numero_interno, "placa": reservas.placa(v)}
+        preop = session.get(Preoperacional, reserva.preop_id) if reserva.preop_id else None
+        km_inicial = float(preop.kilometraje) if preop is not None else None
+        entrada = _hora_colombia(reserva.reservado_at)
+        resuelto = _contrato_de_la_jornada(session, empleado, reserva)
+        contrato = {"id": resuelto[0], "nombre": resuelto[1]} if resuelto else None
     return {
         "empleado": {"nombre": empleado.nombre, "puesto_trabajo": empleado.puesto_trabajo,
                      "responsable": empleado.responsable},
@@ -211,7 +205,7 @@ def submit(db: Database, identity: TelegramIdentity, data: PosOperacionalIn,
         )
         if empleado is None:
             raise SubmissionError("Tu usuario de Telegram no está asociado a un empleado activo", 403)
-        reserva = _reserva_propia(session, identity.user_id)  # opcional: sin ella no hay vehículo ni contrato
+        reserva = preop_service.exigir_reserva(session, identity.user_id, diferido)
         contrato = _contrato_de_la_jornada(session, empleado, reserva)
 
         pos = PosOperacional(
@@ -220,7 +214,7 @@ def submit(db: Database, identity: TelegramIdentity, data: PosOperacionalIn,
             telegram_username=identity.username,
             firma_nombre=identity.full_name[:255] or empleado.nombre,
             empleado_id=empleado.id,
-            vehiculo_id=reserva.vehiculo_id if reserva is not None else None,
+            vehiculo_id=reserva.vehiculo_id,
             contrato_odoo_id=contrato[0] if contrato else None,
             contrato=contrato[1][:255] if contrato and contrato[1] else None,
             fecha=utc_now(),

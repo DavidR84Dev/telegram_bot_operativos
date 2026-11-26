@@ -28,7 +28,7 @@ from app.preop.service import SubmissionError
 
 from . import test_admin as _admin
 from . import test_gastos_operativos as _go
-from .helpers import BOT_TOKEN
+from .helpers import BOT_TOKEN, antedatar_reservas
 from .test_admin import ADMIN_ID, _audit, _h
 from .test_gastos_operativos import (
     IDENTITY,
@@ -414,7 +414,8 @@ def _api_con_topes(db, topes, avisos: list | None = None) -> TestClient:
     return TestClient(app)
 
 
-def test_api_form_trae_el_tope_y_el_post_responde_422(seeded):
+def test_api_form_trae_el_tope_y_el_post_responde_422(listo):
+    seeded = listo
     api = _api_con_topes(seeded, {"Alimentación": 50000})
     form = api.get("/api/gastos-operativos/form", headers=_headers()).json()
     assert [(t["value"], t["tope"]) for t in form["tipos"]][:2] == [("Alimentación", 50000), ("Hospedaje", None)]
@@ -424,7 +425,9 @@ def test_api_form_trae_el_tope_y_el_post_responde_422(seeded):
                     headers=_headers()).status_code == 202
 
 
-def test_envio_diferido_se_valida_con_el_tope_vigente_al_recibir_y_se_avisa_por_el_chat(seeded):
+def test_envio_diferido_se_valida_con_el_tope_vigente_al_recibir_y_se_avisa_por_el_chat(listo):
+    seeded = listo
+    antedatar_reservas(seeded)  # la reserva ya existía al abrir el formulario
     avisos: list = []
     api = _api_con_topes(seeded, {"Alimentación": 50000}, avisos)
     body = _diferido_body(abierto_hace=timedelta(minutes=80), sin_senal_hace=timedelta(minutes=40),

@@ -119,6 +119,7 @@
   .center { text-align: center; }
   .state-icon { font-size: 52px; text-align: center; margin: 8px 0; }
   #done-text, #blocked-text { white-space: pre-line; }
+  #blocked-close { width: 100%; min-height: 50px; margin-top: 14px; padding: 12px; border: 0; border-radius: 12px; font: inherit; font-size: 16px; font-weight: 600; }
   [hidden] { display: none !important; }
 </style>
 </head>
@@ -184,6 +185,7 @@
     <div class="state-icon">🚫</div>
     <h2 class="center" id="blocked-title"></h2>
     <p class="hint center" id="blocked-text"></p>
+    <button type="button" class="btn-primary" id="blocked-close" hidden>Volver al chat</button>
   </section>
 
   <!-- Enviado -->
@@ -269,6 +271,7 @@
       if (Array.isArray(detail)) detail = detail.map((d) => d.msg).join("\n");
       const err = new Error(detail || `Error ${res.status}`);
       err.status = res.status;
+      err.codigo = res.headers.get("X-Error-Code");
       throw err;
     }
     return body;
@@ -687,6 +690,20 @@
     setMsg("");
   }
 
+  // Regla 2026-11-26: sin reserva vigente (preoperacional de la jornada) este formulario no se usa. Primero se intenta
+  // enviar lo guardado sin señal (el servidor lo acepta si la reserva estaba vigente al abrirlo) y luego se bloquea.
+  const CODIGO_SIN_RESERVA = "sin_reserva_vigente";
+
+  async function sinReserva(err) {
+    let previo = { aceptado: null, aviso: "" };
+    try { previo = await vaciarBandeja(); } catch (_) { /* sin bandeja */ }
+    if (previo.aceptado) { showDone(previo.aceptado, true); return; }
+    block("Primero el Preoperacional",
+      `${err.message}\nSi ya lo hiciste, revisa que no hayas tocado «🔴 Finalizar».` + (previo.aviso ? `\n\n${previo.aviso}` : ""), true);
+    $("blocked-close").hidden = false;
+    $("blocked-close").addEventListener("click", () => tg.close());
+  }
+
   // ── Arranque ─────────────────────────────────────────────────────────────
   async function init() {
     if (!tg || !tg.initData) {
@@ -709,6 +726,7 @@
       if (previo.aceptado) { showDone(previo.aceptado, true); return; }
       state.avisoBandeja = previo.aviso;
     } catch (err) {
+      if (err.codigo === CODIGO_SIN_RESERVA) { await sinReserva(err); return; }
       if (err.status === 403) block("Usuario no registrado", `${err.message}.\nPide a Recursos Humanos que lo registre.`);
       else block("No se pudo cargar el formulario", err.message);
       return;

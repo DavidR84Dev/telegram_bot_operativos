@@ -37,7 +37,7 @@ from app.preop.odoo_writer import OdooTransientError, OdooPermanentError
 
 from . import test_combustible as _comb
 from . import test_preop as _preop
-from .helpers import BOT_TOKEN, make_init_data
+from .helpers import BOT_TOKEN, antedatar_reservas, make_init_data
 from .test_preop import TG_USER, FakeObjects, _writer
 
 db = _preop.db
@@ -190,12 +190,12 @@ def test_contrato_es_solo_el_del_preoperacional(listo):
     assert "agreement_id" not in writer.creados[0][1]
 
 
-def test_contexto_sin_vehiculo_no_bloquea(seeded):
-    from app.preop.service import employee_for_telegram
+def test_contexto_sin_reserva_vigente_se_bloquea(seeded):
+    from app.preop.service import SinReservaVigenteError, employee_for_telegram
 
-    ctx = service.form_context(seeded, employee_for_telegram(seeded, TG_USER), TG_USER)
-    assert ctx["vehiculo"] is None and ctx["contrato"] is None and ctx["km_inicial"] is None
-    assert ctx["entrada"] is None and ctx["salida"]
+    with pytest.raises(SinReservaVigenteError) as exc:
+        service.form_context(seeded, employee_for_telegram(seeded, TG_USER), TG_USER)
+    assert exc.value.status_code == 409 and str(exc.value) == reservas.MSG_SIN_RESERVA
 
 
 def test_form_definition_expone_los_limites():
@@ -228,8 +228,12 @@ def test_uuid_ajeno_responde_409_y_sin_empleado_403(listo):
     assert exc.value.status_code == 403
 
 
-def test_sin_vehiculo_el_registro_va_sin_vehiculo_ni_contrato(seeded):
+def test_registro_antiguo_sin_vehiculo_sale_sin_vehiculo_ni_contrato(listo):
+    seeded = listo
     pid = _queue(seeded)
+    with seeded.session() as s:  # registro previo al 2026-11-26 (cuando la reserva era opcional)
+        pos = s.get(PosOperacional, pid)
+        pos.vehiculo_id, pos.contrato_odoo_id, pos.contrato = None, None, None
     writer = FakeWriter()
     outcome = service.send_one(seeded, writer, pid, 5)
     assert outcome.status == SyncStatus.ENVIADO and outcome.placa is None
@@ -279,7 +283,8 @@ def _imagen(fmt: str) -> bytes:
     ("PNG", "scan.png", "scan.pdf"),
     ("JPEG", None, "planilla.pdf"),
 ])
-def test_foto_se_convierte_a_pdf_antes_de_odoo(seeded, fmt, nombre, esperado):
+def test_foto_se_convierte_a_pdf_antes_de_odoo(listo, fmt, nombre, esperado):
+    seeded = listo
     """Regla 2026-11-26: pos.operacional recibe la planilla solo en PDF."""
     pid = _queue(seeded, planilla=_b64(_imagen(fmt), "application/octet-stream"), planilla_nombre=nombre)
     writer = FakeWriter()
@@ -291,7 +296,8 @@ def test_foto_se_convierte_a_pdf_antes_de_odoo(seeded, fmt, nombre, esperado):
 
 @pytest.mark.parametrize("nombre, esperado", [("factura.pdf", "factura.pdf"),
                                               ("C:\fakepath\mi planilla.PDF", "mi planilla.pdf")])
-def test_pdf_viaja_tal_cual(seeded, nombre, esperado):
+def test_pdf_viaja_tal_cual(listo, nombre, esperado):
+    seeded = listo
     pid = _queue(seeded, planilla=_b64(PDF, "application/pdf"), planilla_nombre=nombre)
     writer = FakeWriter()
     service.send_one(seeded, writer, pid, 5)
@@ -305,7 +311,8 @@ def test_foto_danada_se_rechaza(seeded):
         _queue(seeded, planilla=_b64(JPG, "image/jpeg"))
 
 
-def test_observaciones_vacias_se_envian_en_blanco(seeded):
+def test_observaciones_vacias_se_envian_en_blanco(listo):
+    seeded = listo
     pid = _queue(seeded, observaciones="   ")
     writer = FakeWriter()
     service.send_one(seeded, writer, pid, 5)
@@ -516,8 +523,11 @@ def test_api_sin_servicios_responde_503():
 
 
 def test_api_contexto_envio_duplicado_y_estado(api, seeded):
-    ctx = api.get("/api/pos-operacional/context", headers=_headers()).json()
-    assert ctx["vehiculo"] is None and ctx["km_inicial"] is None and ctx["salida"]
+    for r in (api.get("/api/pos-operacional/context", headers=_headers()),
+              api.post("/api/pos-operacional", json=_body(), headers=_headers())):  # sin reserva: 409 con código
+        assert r.status_code == 409 and r.json()["detail"] == reservas.MSG_SIN_RESERVA
+        assert r.headers["x-error-code"] == reservas.CODIGO_SIN_RESERVA
+    assert api.woke == [] and api.avisos == []
     _comb._reservar(seeded)
     ctx = api.get("/api/pos-operacional/context", headers=_headers()).json()
     assert ctx["vehiculo"]["placa"] == "ABC123" and ctx["km_inicial"] == 1510.0 and ctx["contrato"]["id"] == 55
@@ -546,7 +556,8 @@ def test_api_km_final_menor_o_salida_no_posterior_dan_422(api):
     assert api.woke == [] and api.avisos == []
 
 
-def test_api_acepta_km_con_coma_y_las_horas_de_colombia(api, seeded):
+def test_api_acepta_km_con_coma_y_las_horas_de_colombia(api, listo):
+    seeded = listo
     body = _body() | {"km_inicial": "1510,5", "km_final": "1600,75", "entrada": "2026-11-26T08:00",
                       "salida": "2026-11-26T17:30"}
     assert api.post("/api/pos-operacional", json=body, headers=_headers()).status_code == 202
@@ -557,7 +568,8 @@ def test_api_acepta_km_con_coma_y_las_horas_de_colombia(api, seeded):
         assert pos.check_out.replace(tzinfo=None) == datetime(2026, 11, 26, 22, 30)
 
 
-def test_api_aviso_fallido_de_recepcion_no_devuelve_error(seeded):
+def test_api_aviso_fallido_de_recepcion_no_devuelve_error(listo):
+    seeded = listo
     app = FastAPI()
     app.include_router(pos_router)
 
@@ -568,11 +580,13 @@ def test_api_aviso_fallido_de_recepcion_no_devuelve_error(seeded):
     assert TestClient(app).post("/api/pos-operacional", json=_body(), headers=_headers()).status_code == 202
 
 
-def test_diferido_en_ventana_flujo_normal_y_trazabilidad(api, seeded):
+def test_diferido_en_ventana_flujo_normal_y_trazabilidad(api, listo):
+    seeded = listo
+    antedatar_reservas(seeded)  # la reserva ya existía al abrir el formulario
     body = _diferido_body(abierto_hace=timedelta(minutes=80), sin_senal_hace=timedelta(minutes=40))
     headers = {"X-Telegram-Init-Data": body["diferido"]["init_data_original"]}
     first = api.post("/api/pos-operacional", json=body, headers=headers)
-    assert first.status_code == 202 and api.woke == [1] and api.avisos == [(first.json()["id"], None)]
+    assert first.status_code == 202 and api.woke == [1] and api.avisos == [(first.json()["id"], "ABC123")]
     with seeded.session() as s:
         pos = s.scalar(select(PosOperacional))
         traza = s.scalar(select(PosOperacionalEnvioDiferido))
@@ -611,7 +625,7 @@ def test_pagina_sin_cache_logo_versionado_y_marcas_del_formulario(api):
     assert re.findall(r'src="/static/viacotur-logo\.png\?v=([0-9a-f]{12})"', page.text)
     for marca in ('IDB_NAME = "pos-operacional-offline"', "vaciarBandeja()", 'addEventListener("online"',
                   "Información del personal", "Contrato", "KM inicial", "KM final", "Entrada", "Salida",
-                  "Planilla de servicios", "Observaciones", "No hay vehículo asignado", "getUserMedia", "abrirCamara",
+                  "Planilla de servicios", "Observaciones", "Primero el Preoperacional", "sin_reserva_vigente", "getUserMedia", "abrirCamara",
                   "capturarFoto", "capture", "application/pdf", "%PDF", "normalizarDecimal", "parseNum", "fmtNum",
                   'inputmode="decimal"', "Finalizar", "/api/pos-operacional"):
         assert marca in page.text

@@ -21,3 +21,18 @@ def make_init_data(user_id=7913476225, auth_date=None, bot_token=BOT_TOKEN, tamp
     if tamper:
         fields["user"] = json.dumps({"id": 111}, separators=(",", ":"))
     return urlencode(fields)
+
+
+def antedatar_reservas(db, horas: float = 3) -> None:
+    """Mueve las reservas vigentes ``horas`` atrás: un envío diferido solo vale si la reserva ya existía al abrir
+    el formulario (regla del 2026-11-26), y los tests crean la reserva "ahora"."""
+    from datetime import timedelta
+
+    from sqlalchemy import select
+
+    from app.preop.models import ReservaVehiculo
+
+    with db.session() as s:
+        for r in s.scalars(select(ReservaVehiculo)):
+            r.reservado_at = r.reservado_at - timedelta(hours=horas)
+            r.ultimo_preop_at = r.ultimo_preop_at - timedelta(hours=horas)

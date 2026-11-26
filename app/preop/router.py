@@ -20,7 +20,7 @@ import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Callable
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from fastapi.responses import FileResponse, HTMLResponse
@@ -126,6 +126,20 @@ async def preop_context(request: Request, identity: Identity) -> dict[str, Any]:
             f"Tu ID de Telegram ({identity.user_id}) no está registrado como PIN de un empleado activo",
         )
     return await asyncio.to_thread(service.form_context, svc.db, empleado, None, svc.odometro)
+
+
+def http_error(exc: service.SubmissionError) -> HTTPException:
+    """``SubmissionError`` -> HTTP; con código estable lo expone en ``X-Error-Code`` (la Mini App lo distingue)."""
+    headers = {"X-Error-Code": exc.code} if exc.code else None
+    return HTTPException(exc.status_code, str(exc), headers=headers)
+
+
+async def contexto_http(fn: Callable[..., dict[str, Any]], *args: Any) -> dict[str, Any]:
+    """Contexto de una Mini App en un hilo; sin reserva vigente responde 409 con ``X-Error-Code`` (``http_error``)."""
+    try:
+        return await asyncio.to_thread(fn, *args)
+    except service.SubmissionError as exc:
+        raise http_error(exc) from exc
 
 
 def tiempos_diferido(diferido_in: EnvioDiferidoIn, init_data: str | None, bot_token: str,

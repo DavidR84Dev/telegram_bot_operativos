@@ -17,6 +17,7 @@ Infraestructura compartida: `docs/PREOPERACIONAL.md` (tablas maestras, `initData
 | Ubicación | Mini App dentro de **@OperativosViacoturBot**, segundo botón del panel 📋 Formularios (`⚠️ AST`) y comando `/ast`. Módulo hermano `app/ast_trabajo/` que reutiliza `app/preop/` (BD, maestros, auth, cola y conector). |
 | Preguntas | Las **10** del modelo `ast` de Odoo, incluidas `documentos` y `descanso`, que el bot de referencia no muestra. Todas **obligatorias**. |
 | "No conforme" o medicamentos = "Sí" | **Se permite enviar** previa confirmación. Odoo deja el registro *no conforme* con plan de acción y el bot **avisa al jefe inmediato** por Telegram. Con medicamentos = "Sí" el **nombre del medicamento es obligatorio**. |
+| Reserva vigente | **Reserva vigente (regla 2026-11-26).** Exige una reserva vigente de vehículo, es decir, un preoperacional registrado en la jornada: existe en `reservas_vehiculo` para el id de Telegram, no se liberó con 🔴 Finalizar y no venció (`RESERVA_HORAS` = 24 h). **No** exige que la fecha sea hoy (un turno nocturno hace su Pos-Operacional pasada la medianoche). Sin ella el `context` y el `POST` responden **409** con `X-Error-Code: sin_reserva_vigente` y «Para usar este formulario primero debes registrar el ✅ Preoperacional de hoy (vehículo reservado).»; la Mini App muestra la pantalla de bloqueo **Primero el Preoperacional** con «Volver al chat». Helper único: `reservas.reserva_vigente` (y `preop_service.exigir_reserva`). Envío sin señal: se acepta si la reserva estaba vigente **al abrir** el formulario (`apertura`, firmada por Telegram) según `reservas_historial` (`reservas.reserva_al_instante`), aunque ya se haya liberado al llegar; si no, 409. El AST no lleva vehículo: la reserva solo habilita el formulario. |
 | Contrato y acceso | Igual que el preoperacional: contratos de los **extractos aprobados y vigentes** del conductor. Uno solo: se asigna y se bloquea; varios: el conductor elige; ninguno: pantalla de bloqueo. El AST no lleva vehículo. |
 
 > El nombre del paquete es `ast_trabajo` y no `ast` para no confundirse con el módulo `ast` de la
@@ -102,8 +103,8 @@ avisa a nadie.
 |---|---|
 | `GET /ast` | HTML de la Mini App (sin caché; logo versionado) |
 | `GET /api/ast/form` | catálogo de preguntas |
-| `GET /api/ast/context` | empleado, responsable, `validado` y contratos de sus extractos aprobados; **403** si el id de Telegram no es PIN de un empleado activo |
-| `POST /api/ast` | **202** `{id, uuid, sync_status: "pendiente", no_conformes, duplicado}`; 401 (firma), 403 (sin empleado o sin extracto), 409 (uuid ajeno), 422 (validación o contrato ajeno); **410** si es un reenvío sin señal fuera de la ventana de 1 h |
+| `GET /api/ast/context` | empleado, responsable, `validado` y contratos de sus extractos aprobados; **403** si el id de Telegram no es PIN de un empleado activo; **409** sin reserva vigente |
+| `POST /api/ast` | **202** `{id, uuid, sync_status: "pendiente", no_conformes, duplicado}`; 401 (firma), 403 (sin empleado o sin extracto), 409 (uuid ajeno o **sin reserva vigente**, `X-Error-Code: sin_reserva_vigente`), 422 (validación o contrato ajeno); **410** si es un reenvío sin señal fuera de la ventana de 1 h |
 | `GET /api/ast/{uuid}` | estado de un envío propio |
 
 Seguridad: igual que el preoperacional (`initData` con HMAC-SHA256 del token del bot y antigüedad máxima

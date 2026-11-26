@@ -28,8 +28,8 @@ GastosOperativosSender ──▶ cotejo con el GPS de la flota (una vez) ──�
    `$ 65 000` en vivo), **soporte** obligatorio (📷 tomar foto, 🖼️ galería o PDF) y **observación** opcional (máx. 500).
    Una tarjeta **Total general** suma todos los valores y una barra fija ofrece **Cancelar** y **Enviar**. Si falta algo,
    el aviso de pendientes lista todo y cada elemento lleva a su campo (nunca un botón gris sin explicación).
-2. **Sin vehículo reservado** no se bloquea: aparece el aviso amarillo «El gasto se registrará sin cotejo con el GPS del
-   vehículo». Con vehículo se muestra su placa.
+2. **Reserva vigente obligatoria (regla 2026-11-26).** **Reserva vigente (regla 2026-11-26).** Exige una reserva vigente de vehículo, es decir, un preoperacional registrado en la jornada: existe en `reservas_vehiculo` para el id de Telegram, no se liberó con 🔴 Finalizar y no venció (`RESERVA_HORAS` = 24 h). **No** exige que la fecha sea hoy (un turno nocturno hace su Pos-Operacional pasada la medianoche). Sin ella el `context` y el `POST` responden **409** con `X-Error-Code: sin_reserva_vigente` y «Para usar este formulario primero debes registrar el ✅ Preoperacional de hoy (vehículo reservado).»; la Mini App muestra la pantalla de bloqueo **Primero el Preoperacional** con «Volver al chat». Helper único: `reservas.reserva_vigente` (y `preop_service.exigir_reserva`). Envío sin señal: se acepta si la reserva estaba vigente **al abrir** el formulario (`apertura`, firmada por Telegram) según `reservas_historial` (`reservas.reserva_al_instante`), aunque ya se haya liberado al llegar; si no, 409. Con reserva se muestra la placa del vehículo
+   y el gasto se coteja con su GPS. (Antes el vehículo era opcional y había un aviso «sin cotejo con el GPS»: se quitó.)
 3. **Recepción.** El servidor valida (esquema + tipos + soportes), convierte las fotos a PDF y guarda el envío como
    `pendiente` y **retenido**. Un reenvío con el mismo `uuid` responde como duplicado y no repite el aviso.
 4. **Ubicación.** El bot responde «💰 N gastos recibidos» con las instrucciones de `docs/mapa_viacotur_form.md` § 2
@@ -157,8 +157,8 @@ Mismas reglas que Combustible (`docs/COMBUSTIBLE.md` §§ 2.2 y 2.3), con las mi
 3. La ubicación se guarda en la cabecera y **se usa en todas las líneas**. Se ignoran los mensajes reenviados y las
    ubicaciones anteriores a la recepción del envío.
 4. **Cotejo con el GPS** (`app/combustible/gps.py`): una sola consulta por envío, con la **placa del vehículo reservado**.
-   Sin vehículo reservado, o con cualquier fallo del GPS, el texto es `GPS no disponible` y el envío sale igual (el GPS
-   nunca retiene).
+   Con cualquier fallo del GPS el texto es `GPS no disponible` y el envío sale igual (el GPS nunca retiene). Los envíos
+   anteriores al 2026-11-26 sin vehículo se siguen enviando con `GPS no disponible`.
 5. **Convivencia con Combustible.** `on_location` llama a `asignar_ubicacion_mas_antigua`
    (`app/gastos_operativos/service.py`): la ubicación va al **pendiente más antiguo entre los dos módulos** (por fecha de
    recepción; con empate gana Combustible), solo cuenta lo recibido antes de la ubicación, y el mensaje de respuesta avisa
@@ -196,13 +196,13 @@ pérdida de señal. El cuerpo acepta `diferido: {init_data_original, sin_senal_d
 |---|---|
 | `GET /gastos-operativos` | HTML (sin caché; logo versionado) |
 | `GET /api/gastos-operativos/form` | tipos (solo nombres, con su `tope` o `null`), límites y rango de fecha |
-| `GET /api/gastos-operativos/context` | conductor, vehículo reservado (o `null`) y `hoy`; 403 sin PIN |
-| `POST /api/gastos-operativos` | **202**; 401 firma, 403 sin empleado, 409 uuid ajeno, 422 validación (tipo, valor, tope, soporte, fecha), **410** reenvío sin señal vencido |
+| `GET /api/gastos-operativos/context` | conductor, vehículo reservado y `hoy`; 403 sin PIN; **409** sin reserva vigente |
+| `POST /api/gastos-operativos` | **202**; 401 firma, 403 sin empleado, 409 uuid ajeno o sin reserva vigente (`X-Error-Code: sin_reserva_vigente`), 422 validación (tipo, valor, tope, soporte, fecha), **410** reenvío sin señal vencido |
 | `GET /api/gastos-operativos/{uuid}` | estado de un envío propio |
 
 ## 9. Tablas (las crea `create_all`; no se tocan tablas existentes)
 
-- **`gastos_operativos`:** cabecera: `uuid` (único), identidad de Telegram, `empleado_id`, `vehiculo_id` (opcional),
+- **`gastos_operativos`:** cabecera: `uuid` (único), identidad de Telegram, `empleado_id`, `vehiculo_id` (siempre desde el 2026-11-26; nulo solo en envíos anteriores),
   `fecha` (recepción), `fecha_gasto`, `total`, ubicación (`latitud`, `longitud`, `ubicacion_at`, `ubicacion_requerida`,
   `recordatorios_ubicacion`), GPS (`gps_latitud`, `gps_longitud`, `gps_at`, `gps_distancia_m`, `ubicacion_gps_vehiculo`) y
   la auditoría de sincronización común.
@@ -279,5 +279,5 @@ FROM gastos_operativos_lineas l JOIN gastos_operativos g ON g.id = l.gasto_id OR
       «Combustible para gastos») y que la búsqueda por `product_id` e `is_fuel_expenses` es válida en `hr.expense`.
 - [ ] Confirmar el formato de la respuesta de `/api/gastos/register` (hoy el id se extrae de forma tolerante).
 - [ ] Prueba de punta a punta en qa2 y desde un móvil (crea `hr.expense` reales): foto de cámara y de galería, PDF, varios
-      gastos, sin señal y sin vehículo.
+      gastos, sin señal y sin reserva vigente.
 - [ ] Soporte HEIC en el servidor: hoy solo lo cubre la reconversión a JPG en la Mini App.
