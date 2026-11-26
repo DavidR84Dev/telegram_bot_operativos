@@ -55,6 +55,10 @@
   .field-wrap.flash { animation: flash 1.6s ease-out; border-radius: 10px; }
   @keyframes flash { 0%, 40% { background: color-mix(in srgb, var(--warn) 22%, transparent); } 100% { background: transparent; } }
   .valor-fmt { margin-top: 4px; font-size: 13px; font-weight: 600; color: var(--brand-2); }
+  .tope-hint { margin-top: 2px; font-size: 13px; color: var(--hint); }
+  .card.gasto.excede { border: 2px solid var(--bad); }
+  .card.gasto.excede .tope-hint { color: var(--bad); font-weight: 600; }
+  .card.gasto.excede input[id$="-valor"] { border-color: var(--bad); }
 
   /* Tarjetas de gasto */
   .gasto { border: 1px solid var(--line); }
@@ -244,6 +248,12 @@
   }
   const pesos = (n) => `$ ${fmtNum(n, 0)}`;
   const valorDe = (g) => (/^\d+$/.test(g.valor) ? Number(g.valor) : NaN);
+  // Tope (COP por gasto) del tipo elegido, o null si el tipo no tiene máximo (viene de /form: GASTOS_OPERATIVOS_TOPES).
+  const topeDe = (g) => {
+    const t = state.form.tipos.find((x) => x.value === g.tipo);
+    return t && t.tope ? t.tope : null;
+  };
+  const excedeTope = (g) => { const tope = topeDe(g), v = valorDe(g); return tope !== null && v > tope; };
   const totalGeneral = () => state.gastos.reduce((s, g) => s + (valorDe(g) || 0), 0);
 
   // Sin respuesta del servidor (sin señal) o el túnel/proxy no llega al bot: se puede reintentar.
@@ -573,6 +583,7 @@
       ...state.form.tipos.map((t) => el("option", { value: t.value, text: t.label }))]);
     const valor = el("input", { id: id("valor"), type: "text", inputmode: "numeric", autocomplete: "off", placeholder: "65000" });
     const valorFmt = el("div", { class: "valor-fmt", text: "$ 0" });
+    const topeHint = el("div", { class: "tope-hint", hidden: "" });
     const obs = el("textarea", { id: id("obs"), maxlength: String(state.form.observacion_max), rows: "2", placeholder: "Opcional" });
 
     const inCamara = el("input", { type: "file", accept: "image/*", capture: "environment", hidden: "" });
@@ -591,13 +602,13 @@
       el("div", { class: "field-wrap", id: id("w-tipo") }, [
         el("label", { class: "field", for: id("tipo") }, ["Tipo de gasto ", el("span", { class: "req", text: "*" })]), tipo]),
       el("div", { class: "field-wrap", id: id("w-valor") }, [
-        el("label", { class: "field", for: id("valor") }, ["Valor total (COP) ", el("span", { class: "req", text: "*" })]), valor, valorFmt]),
+        el("label", { class: "field", for: id("valor") }, ["Valor total (COP) ", el("span", { class: "req", text: "*" })]), valor, valorFmt, topeHint]),
       el("div", { class: "field-wrap", id: id("w-soporte") }, [
         el("label", { class: "field" }, ["Soporte (PDF o foto) ", el("span", { class: "req", text: "*" })]), zona, ok, inCamara, inArchivo]),
       el("div", { class: "field-wrap", id: id("w-obs") }, [
         el("label", { class: "field", for: id("obs"), text: "Observación" }), obs]),
     ]);
-    g.nodos = { card, titulo, zona, ok, valorFmt };
+    g.nodos = { card, titulo, zona, ok, valorFmt, topeHint };
 
     tipo.addEventListener("input", () => { g.tipo = tipo.value; markDirty(); refrescar(); });
     valor.addEventListener("input", () => {
@@ -628,7 +639,13 @@
 
   // Títulos «Gasto #N», total general, límite de tarjetas y pendientes visibles.
   function refrescar() {
-    state.gastos.forEach((g, i) => { g.nodos.titulo.textContent = `Gasto #${i + 1}`; });
+    state.gastos.forEach((g, i) => {
+      g.nodos.titulo.textContent = `Gasto #${i + 1}`;
+      const tope = topeDe(g);
+      g.nodos.topeHint.hidden = tope === null;
+      g.nodos.topeHint.textContent = tope === null ? "" : `Máximo ${pesos(tope)}${excedeTope(g) ? " · el valor lo supera" : ""}`;
+      g.nodos.card.classList.toggle("excede", excedeTope(g));
+    });
     $("total-general").textContent = pesos(totalGeneral());
     const n = state.gastos.length;
     $("total-detalle").textContent = n === 1 ? "1 gasto" : `${n} gastos`;
@@ -651,6 +668,7 @@
       const v = valorDe(g);
       if (!(v > 0)) add(id("w-valor"), `Gasto #${n}: valor (entero mayor que 0)`);
       else if (v > state.form.valor_max) add(id("w-valor"), `Gasto #${n}: valor demasiado alto`);
+      else if (excedeTope(g)) add(id("w-valor"), `Gasto #${n}: supera el máximo de ${pesos(topeDe(g))} para ${g.tipo}`);
       if (!g.soporte) add(id("w-soporte"), `Gasto #${n}: soporte (PDF o foto)`);
     });
     return out;

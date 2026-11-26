@@ -45,6 +45,10 @@ class Database:
         ("proveedores_combustible", "longitud", "FLOAT"),
         ("proveedores_combustible", "ciudad", "VARCHAR(120)"),
         ("proveedores_combustible", "direccion", "VARCHAR(255)"),
+        ("gastos_operativos_lineas", "local_autorizado_id", "INTEGER"),
+        ("gastos_operativos_lineas", "local_nombre", "VARCHAR(255)"),
+        ("gastos_operativos_lineas", "distancia_local_m", "INTEGER"),
+        ("gastos_operativos_lineas", "local_cotejado_at", "TIMESTAMP WITH TIME ZONE"),
     )
 
     def _add_missing_columns(self) -> None:

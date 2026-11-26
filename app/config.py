@@ -80,6 +80,9 @@ class Settings(BaseSettings):
     # product.product en hr.expense y cambia por ambiente (qa2: Meals=1, Travel & Accommodation=2, Others=6).
     # Se valida al arrancar (app/gastos_operativos/catalogo.py).
     gastos_operativos_tipos: str = "Alimentación:1;Hospedaje:2;Peajes:6;Parqueadero:6;Lavado:6;Otros:6"
+    # Máximo por gasto y por tipo, en COP: «Nombre:valor» separados por «;» (p. ej. Alimentación:50000;Hospedaje:150000).
+    # Vacío = sin topes; un tipo ausente no tiene tope. Se valida al arrancar y BLOQUEA el envío si se supera.
+    gastos_operativos_topes: str = ""
 
     # Escritura XML-RPC del preoperacional. Vacíos = mismas credenciales de ODOO_USERNAME/ODOO_PASSWORD.
     odoo_write_username: str = ""

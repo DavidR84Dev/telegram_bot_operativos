@@ -45,6 +45,8 @@
   .kpi span { font-size: 12px; color: var(--hint); }
   .kpi.bad strong { color: var(--bad); }
 
+  h2.sec { font-size: 15px; margin: 18px 4px 0; color: var(--brand); }
+  input[type=date] { min-height: var(--tap); padding: 6px 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface); color: var(--fg); font: inherit; font-size: 16px; }
   input[type=text], input[type=search], input[type=password], select {
     width: 100%; min-height: var(--tap); padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line);
     background: var(--surface); color: var(--fg); font: inherit; font-size: 16px;
@@ -149,17 +151,18 @@
     </div>
   </section>
 
-  <!-- 4. Estaciones de combustible -->
-  <section data-tab="estaciones" hidden>
+  <!-- 4. CSV BD: estaciones de combustible y locales autorizados -->
+  <section data-tab="csvbd" hidden>
+    <h2 class="sec">a) Estaciones de combustible</h2>
     <div class="card">
       <h2>Cargar estaciones autorizadas (CSV)</h2>
       <div class="hint">Columnas: <code>nombre</code> (obligatoria); opcionales <code>nit</code>, <code>odoo_partner_id</code>, <code>latitud</code>, <code>longitud</code>, <code>ciudad</code>, <code>direccion</code>. Separador «;» o «,»; con «;» la latitud y la longitud pueden llevar coma decimal.</div>
       <div class="row">
-        <input type="file" id="csv-file" accept=".csv,text/csv,text/plain">
+        <input type="file" id="estaciones-file" accept=".csv,text/csv,text/plain">
       </div>
-      <label class="chk"><input type="checkbox" id="csv-reemplazar"> Reemplazar: desactivar las estaciones que no vengan en el archivo</label>
-      <div class="row"><button class="btn primary" id="csv-preview" disabled>Vista previa</button></div>
-      <div id="csv-result" hidden></div>
+      <label class="chk"><input type="checkbox" id="estaciones-reemplazar"> Reemplazar: desactivar las estaciones que no vengan en el archivo</label>
+      <div class="row"><button class="btn primary" id="estaciones-preview" disabled>Vista previa</button></div>
+      <div id="estaciones-result" hidden></div>
     </div>
     <div class="card">
       <h2>Estaciones</h2>
@@ -170,6 +173,40 @@
       </div>
       <div class="count" id="count-estaciones"></div>
       <div class="tablewrap"><table id="t-estaciones"></table></div>
+    </div>
+
+    <h2 class="sec">b) Restaurantes y locales autorizados</h2>
+    <div class="card">
+      <h2>Cargar locales autorizados (CSV)</h2>
+      <div class="hint">Columnas: <code>nombre;nit;categoria;latitud;longitud;ciudad;direccion</code>. <code>nombre</code>, <code>latitud</code> y <code>longitud</code> son obligatorias. <code>categoria</code> es un tipo de gasto (p. ej. Alimentación u Hospedaje); vacía = aplica a todos los tipos. Separador «;» o «,»; con «;» las coordenadas pueden llevar coma decimal. Se actualiza por NIT o, sin NIT, por nombre y categoría. Plantilla: <code>docs/locales_autorizados_ejemplo.csv</code>.</div>
+      <div class="row">
+        <input type="file" id="locales-file" accept=".csv,text/csv,text/plain">
+      </div>
+      <label class="chk"><input type="checkbox" id="locales-reemplazar"> Reemplazar: desactivar los locales que no vengan en el archivo</label>
+      <div class="row"><button class="btn primary" id="locales-preview" disabled>Vista previa</button></div>
+      <div id="locales-result" hidden></div>
+    </div>
+    <div class="card">
+      <h2>Locales</h2>
+      <div class="hint" id="kpi-locales"></div>
+      <div class="row">
+        <input type="search" id="q-locales" placeholder="Buscar por nombre, ciudad o categoría…" autocomplete="off">
+        <select id="estado-locales"><option value="">Todos</option><option value="activa">Activos</option><option value="inactiva">Inactivos</option></select>
+      </div>
+      <div class="count" id="count-locales"></div>
+      <div class="tablewrap"><table id="t-locales"></table></div>
+    </div>
+    <div class="card">
+      <h2>Cotejo de gastos con locales (solo lectura)</h2>
+      <div class="hint">Para informes: el local autorizado más cercano de la categoría de cada gasto, calculado al recibir la ubicación. No va a Odoo ni bloquea ningún envío.</div>
+      <div class="row">
+        <label class="hint" for="cot-desde">Desde</label><input type="date" id="cot-desde">
+        <label class="hint" for="cot-hasta">Hasta</label><input type="date" id="cot-hasta">
+        <select id="cot-categoria"><option value="">Todas las categorías</option></select>
+        <button class="btn" id="cot-buscar">Consultar</button>
+      </div>
+      <div class="count" id="count-cotejo"></div>
+      <div class="tablewrap"><table id="t-cotejo"></table></div>
     </div>
   </section>
 
@@ -220,9 +257,9 @@
 
   const TABS = [
     ["reservas", "🚌 Vehículos"], ["empleados", "👥 Empleados"], ["usuarios", "📝 Usuarios"],
-    ["estaciones", "⛽ Estaciones"], ["parametros", "⚙️ Parámetros"], ["auditoria", "📜 Auditoría"],
+    ["csvbd", "🗄️ CSV BD"], ["parametros", "⚙️ Parámetros"], ["auditoria", "📜 Auditoría"],
   ];
-  const state = { tab: null, loaded: {}, csv: null, params: [] };
+  const state = { tab: null, loaded: {}, csv: {}, params: [] };
 
   function setMsg(text, isError = false) {
     $("msg").textContent = text;
@@ -402,7 +439,7 @@
     });
   }
 
-  // ── 4. Estaciones ──────────────────────────────────────────────────────
+  // ── 4. CSV BD: estaciones de combustible y locales autorizados ─────────
   async function leerArchivo(file) {
     const buf = await file.arrayBuffer();
     try { return new TextDecoder("utf-8", { fatal: true }).decode(buf); }
@@ -411,11 +448,32 @@
 
   function resumenNum(label, n) { return el("div", { class: "kpi" }, [el("strong", { text: String(n) }), el("span", { text: label })]); }
 
-  function pintarPreview(p) {
-    const caja = $("csv-result");
+  // Las dos cargas CSV siguen el mismo flujo: vista previa -> confirmar (con «reemplazar» opcional).
+  const ESTACIONES = {
+    p: "estaciones", api: "/api/admin/estaciones", plural: "estaciones", titulo: "Reemplazar estaciones",
+    columnasPrevia: [
+      { t: "Línea", v: (f) => f.linea }, { t: "Nombre", v: (f) => f.nombre }, { t: "NIT", v: (f) => f.nit },
+      { t: "Latitud", v: (f) => f.latitud }, { t: "Longitud", v: (f) => f.longitud },
+      { t: "Ciudad", v: (f) => f.ciudad }, { t: "Dirección", v: (f) => f.direccion },
+    ],
+    recargar: () => cargarEstaciones(),
+  };
+  const LOCALES = {
+    p: "locales", api: "/api/admin/locales", plural: "locales", titulo: "Reemplazar locales",
+    columnasPrevia: [
+      { t: "Línea", v: (f) => f.linea }, { t: "Nombre", v: (f) => f.nombre }, { t: "NIT", v: (f) => f.nit },
+      { t: "Categoría", v: (f) => f.categoria || "(todas)" },
+      { t: "Latitud", v: (f) => f.latitud }, { t: "Longitud", v: (f) => f.longitud },
+      { t: "Ciudad", v: (f) => f.ciudad }, { t: "Dirección", v: (f) => f.direccion },
+    ],
+    recargar: () => cargarLocales(),
+  };
+
+  function pintarPreview(c, p) {
+    const caja = $(`${c.p}-result`);
     const nodos = [];
     nodos.push(el("div", { class: "kpis" }, [resumenNum("Filas válidas", p.validas), resumenNum("Nuevas", p.nuevos), resumenNum("Actualizadas", p.actualizados)]));
-    if (p.reemplazar) nodos.push(el("div", { class: "banner warn", text: `⚠️ Reemplazar: se desactivarán ${p.desactivados} estaciones que no vienen en el archivo.` }));
+    if (p.reemplazar) nodos.push(el("div", { class: "banner warn", text: `⚠️ Reemplazar: se desactivarán ${p.desactivados} ${c.plural} que no vienen en el archivo.` }));
     if (p.errores.length) {
       nodos.push(el("div", { class: "banner bad", text: `${p.errores.length} filas con error (no se cargarán).` }));
       const t = el("table");
@@ -425,23 +483,19 @@
     if (p.bloquea_reemplazo) nodos.push(el("div", { class: "banner bad", text: "Con «Reemplazar» el archivo no puede tener errores: corrígelos y vuelve a subirlo." }));
     if (p.muestra.length) {
       const t = el("table");
-      tabla(t, [
-        { t: "Línea", v: (f) => f.linea }, { t: "Nombre", v: (f) => f.nombre }, { t: "NIT", v: (f) => f.nit },
-        { t: "Latitud", v: (f) => f.latitud }, { t: "Longitud", v: (f) => f.longitud },
-        { t: "Ciudad", v: (f) => f.ciudad }, { t: "Dirección", v: (f) => f.direccion },
-      ], p.muestra);
+      tabla(t, c.columnasPrevia, p.muestra);
       nodos.push(el("div", { class: "hint", text: `Vista previa de las primeras ${p.muestra.length} filas válidas:` }), el("div", { class: "tablewrap" }, [t]));
     }
     const conf = boton("Confirmar carga", p.reemplazar ? "danger primary" : "primary", async () => {
       if (p.reemplazar) {
-        const ok = await confirmar("Reemplazar estaciones", `Se cargarán ${p.validas} filas y se desactivarán ${p.desactivados} estaciones que no vienen en el archivo.`, "Reemplazar");
+        const ok = await confirmar(c.titulo, `Se cargarán ${p.validas} filas y se desactivarán ${p.desactivados} ${c.plural} que no vienen en el archivo.`, "Reemplazar");
         if (!ok) return;
       }
       await seguro(async () => {
-        const r = await api("/api/admin/estaciones/cargar", { method: "POST", body: { csv: state.csv, reemplazar: p.reemplazar } });
-        $("csv-result").replaceChildren(el("div", { class: "banner ok", text: `✔ Carga hecha: ${r.nuevos} nuevas, ${r.actualizados} actualizadas, ${r.desactivados} desactivadas.` }));
-        state.csv = null; $("csv-file").value = ""; $("csv-preview").disabled = true;
-        await cargarEstaciones();
+        const r = await api(`${c.api}/cargar`, { method: "POST", body: { csv: state.csv[c.p], reemplazar: p.reemplazar } });
+        $(`${c.p}-result`).replaceChildren(el("div", { class: "banner ok", text: `✔ Carga hecha: ${r.nuevos} nuevas, ${r.actualizados} actualizadas, ${r.desactivados} desactivadas.` }));
+        state.csv[c.p] = null; $(`${c.p}-file`).value = ""; $(`${c.p}-preview`).disabled = true;
+        await c.recargar();
       });
     });
     conf.disabled = p.validas === 0 || p.bloquea_reemplazo;
@@ -450,13 +504,13 @@
     caja.hidden = false;
   }
 
-  async function previsualizar() {
+  async function previsualizar(c) {
     await seguro(async () => {
-      const file = $("csv-file").files[0];
+      const file = $(`${c.p}-file`).files[0];
       if (!file) return;
-      state.csv = await leerArchivo(file);
-      const p = await api("/api/admin/estaciones/previsualizar", { method: "POST", body: { csv: state.csv, reemplazar: $("csv-reemplazar").checked } });
-      pintarPreview(p);
+      state.csv[c.p] = await leerArchivo(file);
+      const p = await api(`${c.api}/previsualizar`, { method: "POST", body: { csv: state.csv[c.p], reemplazar: $(`${c.p}-reemplazar`).checked } });
+      pintarPreview(c, p);
     });
   }
 
@@ -484,6 +538,59 @@
     });
   }
 
+  async function cargarLocales() {
+    await seguro(async () => {
+      const d = await api(`/api/admin/locales?${qs({ q: $("q-locales").value.trim(), estado: $("estado-locales").value })}`);
+      $("kpi-locales").textContent = `${d.kpis.activos} locales activos.`;
+      $("count-locales").textContent = `${d.items.length} de ${d.total} locales`;
+      const sel = $("cot-categoria");
+      if (sel.options.length === 1) for (const cat of d.categorias) sel.append(el("option", { value: cat, text: cat }));
+      tabla($("t-locales"), [
+        { t: "Nombre", v: (s) => s.nombre },
+        { t: "NIT", v: (s) => s.nit },
+        { t: "Categoría", v: (s) => s.categoria || "(todas)" },
+        { t: "Ciudad", v: (s) => s.ciudad },
+        { t: "Dirección", v: (s) => s.direccion },
+        { t: "Ubicación", v: (s) => `${s.latitud}, ${s.longitud}`, nowrap: true },
+        { t: "Estado", v: (s) => tag(s.activo ? "Activo" : "Inactivo", s.activo ? "ok" : "bad") },
+        { t: "", v: (s) => boton(s.activo ? "Desactivar" : "Activar", s.activo ? "danger" : "", async () => {
+            if (s.activo) {
+              const ok = await confirmar("Desactivar local", `«${s.nombre}» dejará de usarse en el cotejo de los gastos nuevos.`, "Desactivar");
+              if (!ok) return;
+            }
+            await seguro(async () => { await api(`/api/admin/locales/${s.id}/activo`, { method: "POST", body: { activo: !s.activo } }); await cargarLocales(); });
+          }) },
+      ], d.items, "No hay locales");
+    });
+  }
+
+  function fmtDistancia(m) { return m === null || m === undefined ? "—" : m >= 1000 ? `${(m / 1000).toFixed(1)} km` : `${m} m`; }
+
+  async function cargarCotejo() {
+    await seguro(async () => {
+      const params = { desde: $("cot-desde").value, hasta: $("cot-hasta").value, categoria: $("cot-categoria").value };
+      for (const k of Object.keys(params)) if (!params[k]) delete params[k];
+      const d = await api(`/api/admin/gastos-cotejo?${qs(params)}`);
+      $("count-cotejo").textContent = `${d.items.length} de ${d.total} gastos`;
+      tabla($("t-cotejo"), [
+        { t: "Fecha", v: (g) => g.fecha_gasto, nowrap: true },
+        { t: "Gasto", v: (g) => `#${g.gasto_id}-${g.numero}`, nowrap: true },
+        { t: "Conductor", v: (g) => g.conductor },
+        { t: "Tipo", v: (g) => g.tipo },
+        { t: "Valor", v: (g) => g.valor },
+        { t: "Ubicación del gasto", v: (g) => (g.latitud === null ? "—" : `${g.latitud}, ${g.longitud}`), nowrap: true },
+        { t: "Local más cercano", v: (g) => (g.local ? g.local : g.cotejado ? tag("Sin locales", "warn") : tag("Sin cotejar", "bad")) },
+        { t: "Distancia", v: (g) => fmtDistancia(g.distancia_m), nowrap: true },
+      ], d.items, "No hay gastos");
+    });
+  }
+
+  async function cargarCsvBd() {
+    await cargarEstaciones();
+    await cargarLocales();
+    await cargarCotejo();
+  }
+
   // ── 5. Parámetros ──────────────────────────────────────────────────────
   function paramCambios() {
     const cambios = {};
@@ -508,6 +615,32 @@
     }
   }
 
+  // Editor amigable de GASTOS_OPERATIVOS_TOPES: una fila por tipo configurado; se serializa a «Nombre:valor;…».
+  const sinTildes = (t) => t.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/\s+/g, " ").trim();
+  function tiposConfigurados() {
+    const p = state.params.find((x) => x.clave === "GASTOS_OPERATIVOS_TIPOS");
+    return ((p && p.valor) || "").split(";").map((x) => x.slice(0, Math.max(x.lastIndexOf(":"), 0)).trim()).filter(Boolean);
+  }
+  function editorTopes(p) {
+    const oculto = el("input", { type: "hidden", id: `param-${p.clave}` });
+    oculto.value = p.valor ?? "";
+    const actuales = new Map((p.valor || "").split(";").filter((x) => x.includes(":")).map((x) => {
+      const i = x.lastIndexOf(":"); return [sinTildes(x.slice(0, i)), x.slice(i + 1).trim()];
+    }));
+    const filas = tiposConfigurados().map((nombre) => {
+      const num = el("input", { type: "text", inputmode: "numeric", autocomplete: "off", placeholder: "Sin tope" });
+      num.value = actuales.get(sinTildes(nombre)) ?? "";
+      return { nombre, num };
+    });
+    const serializar = () => filas.filter((f) => f.num.value !== "").map((f) => `${f.nombre}:${f.num.value}`).join(";");
+    const nodos = [el("span", { class: "hint", text: "Máximo por gasto en COP, solo dígitos. Vacío = sin tope para ese tipo." }), oculto];
+    for (const f of filas) {
+      f.num.addEventListener("input", () => { f.num.value = f.num.value.replace(/\D/g, ""); oculto.value = serializar(); refrescarParams(); });
+      nodos.push(el("div", { class: "row" }, [el("span", { text: f.nombre }), f.num]));
+    }
+    return nodos;
+  }
+
   async function cargarParametros() {
     await seguro(async () => {
       const d = await api("/api/admin/parametros");
@@ -525,6 +658,8 @@
             inp.value = ""; inp.dataset.vaciar = "1"; inp.placeholder = "Se vaciará al guardar"; refrescarParams();
           });
           fila.append(el("div", { class: "row" }, [inp, vaciar]));
+        } else if (p.clave === "GASTOS_OPERATIVOS_TOPES" && tiposConfigurados().length) {
+          fila.append(...editorTopes(p));
         } else {
           const inp = el("input", { type: "text", id: `param-${p.clave}`, autocomplete: "off", autocapitalize: "off", spellcheck: "false" });
           inp.value = p.valor ?? "";
@@ -570,7 +705,7 @@
   // ── Pestañas ───────────────────────────────────────────────────────────
   const CARGADORES = {
     reservas: cargarReservas, empleados: () => {}, usuarios: cargarUsuarios,
-    estaciones: cargarEstaciones, parametros: cargarParametros, auditoria: cargarAuditoria,
+    csvbd: cargarCsvBd, parametros: cargarParametros, auditoria: cargarAuditoria,
   };
   function irA(tab) {
     state.tab = tab;
@@ -611,9 +746,14 @@
     $("q-usuarios").addEventListener("input", debounce(cargarUsuarios));
     $("q-estaciones").addEventListener("input", debounce(cargarEstaciones));
     $("estado-estaciones").addEventListener("change", cargarEstaciones);
-    $("csv-file").addEventListener("change", () => { $("csv-preview").disabled = !$("csv-file").files.length; $("csv-result").hidden = true; });
-    $("csv-reemplazar").addEventListener("change", () => { if ($("csv-file").files.length && !$("csv-result").hidden) previsualizar(); });
-    $("csv-preview").addEventListener("click", previsualizar);
+    $("q-locales").addEventListener("input", debounce(cargarLocales));
+    $("estado-locales").addEventListener("change", cargarLocales);
+    $("cot-buscar").addEventListener("click", cargarCotejo);
+    for (const c of [ESTACIONES, LOCALES]) {
+      $(`${c.p}-file`).addEventListener("change", () => { $(`${c.p}-preview`).disabled = !$(`${c.p}-file`).files.length; $(`${c.p}-result`).hidden = true; });
+      $(`${c.p}-reemplazar`).addEventListener("change", () => { if ($(`${c.p}-file`).files.length && !$(`${c.p}-result`).hidden) previsualizar(c); });
+      $(`${c.p}-preview`).addEventListener("click", () => previsualizar(c));
+    }
     $("params-save").addEventListener("click", guardarParametros);
     await irA("reservas");
   }

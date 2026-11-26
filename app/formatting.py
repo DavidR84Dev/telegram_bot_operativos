@@ -226,6 +226,12 @@ def gastos_recordatorio_ubicacion(placa: str | None) -> str:
             + "\n\nToca <b>Enviar ubicación</b> para completarlos; mientras tanto no se registran en Odoo.")
 
 
+def gastos_rechazado_por_tope(detalle: str) -> str:
+    return ("🚫 <b>Tus gastos guardados sin señal no fueron aceptados</b>\n\n" + escape(detalle)
+            + "\n\nEl máximo por gasto cambió mientras estabas sin señal. Abre 💰 Gastos Operativos y "
+              "diligéncialos de nuevo.")
+
+
 def gastos_ubicacion_registrada(placa: str | None, pendientes: int) -> str:
     text = "📍 <b>Ubicación registrada para tus gastos operativos</b>" + (f" ({escape(placa)})" if placa else "") + "."
     if pendientes:

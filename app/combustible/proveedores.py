@@ -23,8 +23,6 @@ El Panel Admin (``app/admin``) usa ``analizar_csv``, ``previsualizar`` y ``carga
 from __future__ import annotations
 
 import argparse
-import csv
-import io
 import re
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -33,6 +31,7 @@ from typing import Callable, Iterable
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
+from .. import csv_util
 from ..preop.db import Database
 from ..preop.models import ProveedorCombustible
 from ..prueba_ruta.acuerdos import normalizar_acuerdo as normalizar_nombre
@@ -72,39 +71,19 @@ def normalizar_nit(nit: str | None) -> str | None:
     return digitos or None
 
 
-def _decimal(texto: str, campo: str, limite: float) -> float | None:
-    """Grados decimales con punto o coma (el separador del CSV puede ser ``;``). Vacío -> None."""
-    t = texto.strip().replace(",", ".")
-    if not t:
-        return None
-    if not re.fullmatch(r"-?\d+(\.\d+)?", t):
-        raise ValueError(f"{campo} no es un número válido ({texto!r})")
-    valor = float(t)
-    if not -limite <= valor <= limite:
-        raise ValueError(f"{campo} fuera de rango (-{limite:g} a {limite:g}): {texto!r}")
-    return valor
-
-
 def analizar_csv(texto: str) -> tuple[list[tuple[int, FilaProveedor]], list[ErrorFila]]:
     """Filas válidas (con su número de línea) y errores por fila.
 
     Lanza ValueError si falta la columna ``nombre``.
     """
-    texto = texto.lstrip("﻿")
-    muestra = texto[:2048]
-    delimitador = ";" if muestra.count(";") >= muestra.count(",") else ","
-    lector = csv.DictReader(io.StringIO(texto), delimiter=delimitador)
-    columnas = {(c or "").strip().lower() for c in (lector.fieldnames or [])}
-    if "nombre" not in columnas:
-        raise ValueError("El CSV debe tener la columna 'nombre' (opcionales: 'nit', 'odoo_partner_id', "
-                         "'latitud', 'longitud', 'ciudad', 'direccion')")
     filas: list[tuple[int, FilaProveedor]] = []
     errores: list[ErrorFila] = []
-    for linea, raw in enumerate(lector, start=2):
-        if None in raw:  # columnas de más: típico de una coma decimal sin comillas en un CSV separado por comas
-            errores.append(ErrorFila(linea, "Hay más columnas que encabezados (¿coma decimal sin comillas?)"))
+    for linea, fila in csv_util.leer_filas(
+            texto, "El CSV debe tener la columna 'nombre' (opcionales: 'nit', 'odoo_partner_id', "
+                   "'latitud', 'longitud', 'ciudad', 'direccion')"):
+        if fila is None:
+            errores.append(ErrorFila(linea, csv_util.MSG_MAS_COLUMNAS))
             continue
-        fila = {(k or "").strip().lower(): (v or "").strip() for k, v in raw.items()}
         nombre = " ".join(fila.get("nombre", "").split())
         if not nombre:
             continue
@@ -112,8 +91,8 @@ def analizar_csv(texto: str) -> tuple[list[tuple[int, FilaProveedor]], list[Erro
             partner = fila.get("odoo_partner_id") or ""
             if partner and not partner.isdigit():
                 raise ValueError(f"odoo_partner_id debe ser un número ({partner!r})")
-            lat = _decimal(fila.get("latitud", ""), "latitud", 90)
-            lon = _decimal(fila.get("longitud", ""), "longitud", 180)
+            lat = csv_util.decimal(fila.get("latitud", ""), "latitud", 90)
+            lon = csv_util.decimal(fila.get("longitud", ""), "longitud", 180)
             if (lat is None) != (lon is None):
                 raise ValueError("latitud y longitud deben venir juntas")
         except ValueError as exc:
@@ -121,8 +100,7 @@ def analizar_csv(texto: str) -> tuple[list[tuple[int, FilaProveedor]], list[Erro
             continue
         filas.append((linea, FilaProveedor(
             nombre[:255], normalizar_nit(fila.get("nit")), int(partner) if partner else None, lat, lon,
-            " ".join(fila.get("ciudad", "").split())[:120] or None,
-            " ".join(fila.get("direccion", "").split())[:255] or None)))
+            csv_util.texto_limpio(fila.get("ciudad", ""), 120), csv_util.texto_limpio(fila.get("direccion", ""), 255))))
     return filas, errores
 
 
@@ -259,7 +237,7 @@ def main() -> None:  # pragma: no cover - CLI de operación
     if args.cmd == "desactivar":
         print(f"Desactivados: {desactivar(db, args.ids)}")
         return
-    filas = leer_csv(args.archivo.read_text(encoding="utf-8-sig"))
+    filas = leer_csv(csv_util.decodificar(args.archivo.read_bytes()))
     if args.resolver_odoo:
         filas = resolver_contactos(filas, build_writer(settings).buscar_contacto)
     resumen = cargar(db, filas, reemplazar=args.reemplazar)

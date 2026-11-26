@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -19,6 +20,8 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from ..combustible import proveedores
+from ..gastos_operativos import locales
+from ..gastos_operativos.catalogo import TiposGastoError, parse_tipos
 from ..preop import service as preop_service
 from ..preop.db import Database
 from ..preop.router import _LOGO_URL, _identity, _logo_version
@@ -250,6 +253,114 @@ async def estaciones_activo(estacion_id: int, body: ActivoIn, request: Request,
     if nombre is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "La estación no existe")
     return {"ok": True, "activo": body.activo}
+
+
+# ───────────────────────────────── 4b. Restaurantes y locales autorizados ─────────────────────────────────
+
+def _categorias(svc: AdminServices) -> dict[str, str]:
+    """Tipos de gasto vigentes en el ``.env`` (los de Operativos al reiniciar) para validar la columna categoría."""
+    try:
+        texto = envfile.valores_actuales(svc.env_file).get("GASTOS_OPERATIVOS_TIPOS")
+    except envfile.ParametroError:  # sin .env legible: los tipos por defecto del código
+        texto = None
+    if not texto:
+        return locales.categorias_por_defecto()
+    try:
+        return locales.categorias_de(parse_tipos(texto))
+    except TiposGastoError as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
+
+
+@router.get("/api/admin/locales")
+async def locales_list(request: Request, _identity: AdminIdentity, q: str = "",
+                       estado: str = Query("", pattern="^(|activa|inactiva)$")) -> dict[str, Any]:
+    svc = _services(request)
+    categorias = list((await asyncio.to_thread(_categorias, svc)).values())
+
+    def _load() -> dict[str, Any]:
+        with svc.db.session() as session:
+            return service.listar_locales(session, q, estado)
+
+    return {**await asyncio.to_thread(_load), "categorias": categorias}
+
+
+async def _analizar_locales(body: CsvIn, svc: AdminServices) -> tuple[
+        list[tuple[int, locales.FilaLocal]], list[proveedores.ErrorFila]]:
+    categorias = await asyncio.to_thread(_categorias, svc)
+    try:
+        return locales.analizar_csv(body.csv, categorias)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@router.post("/api/admin/locales/previsualizar")
+async def locales_previsualizar(body: CsvIn, request: Request, _identity: AdminIdentity) -> dict[str, Any]:
+    """Vista previa del CSV: filas válidas, errores por fila, nuevos y actualizados. No escribe nada."""
+    svc = _services(request)
+    validas, errores = await _analizar_locales(body, svc)
+    filas = [f for _, f in validas]
+    resumen = await asyncio.to_thread(locales.previsualizar, svc.db, filas, body.reemplazar)
+    return {
+        "validas": len(filas), "errores": [{"linea": e.linea, "mensaje": e.mensaje} for e in errores],
+        "reemplazar": body.reemplazar, "bloquea_reemplazo": bool(body.reemplazar and errores), **resumen,
+        "muestra": [{"linea": n, "nombre": f.nombre, "nit": f.nit, "categoria": f.categoria, "latitud": f.latitud,
+                     "longitud": f.longitud, "ciudad": f.ciudad, "direccion": f.direccion} for n, f in validas[:50]],
+    }
+
+
+@router.post("/api/admin/locales/cargar")
+async def locales_cargar(body: CsvIn, request: Request, identity: AdminIdentity) -> dict[str, Any]:
+    """Confirma la carga. Con «reemplazar» no se admiten errores: faltarían filas y se desactivarían de más."""
+    svc = _services(request)
+    validas, errores = await _analizar_locales(body, svc)
+    if not validas:
+        raise HTTPException(422, "El archivo no tiene filas válidas")
+    if body.reemplazar and errores:
+        raise HTTPException(422,
+                            "Con «reemplazar» el archivo no puede tener errores: corrígelos y vuelve a subirlo")
+    resumen = await asyncio.to_thread(locales.cargar, svc.db, [f for _, f in validas], body.reemplazar)
+
+    def _audit() -> None:
+        with svc.db.session() as session:
+            audit.registrar(session, identity, "locales.cargar", "locales_autorizados",
+                            f"nuevos={resumen.nuevos}; actualizados={resumen.actualizados}; "
+                            f"desactivados={resumen.desactivados}; filas_con_error={len(errores)}; "
+                            f"reemplazar={body.reemplazar}")
+
+    await asyncio.to_thread(_audit)
+    return {"nuevos": resumen.nuevos, "actualizados": resumen.actualizados, "desactivados": resumen.desactivados,
+            "omitidas_por_error": len(errores)}
+
+
+@router.post("/api/admin/locales/{local_id}/activo")
+async def locales_activo(local_id: int, body: ActivoIn, request: Request, identity: AdminIdentity) -> dict[str, Any]:
+    db = _services(request).db
+
+    def _run() -> str | None:
+        nombre = locales.set_activo(db, local_id, body.activo)
+        if nombre is not None:
+            with db.session() as session:
+                audit.registrar(session, identity, "local.activar" if body.activo else "local.desactivar",
+                                f"local {local_id} · {nombre}")
+        return nombre
+
+    if await asyncio.to_thread(_run) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "El local no existe")
+    return {"ok": True, "activo": body.activo}
+
+
+@router.get("/api/admin/gastos-cotejo")
+async def gastos_cotejo(request: Request, _identity: AdminIdentity, desde: date | None = None,
+                        hasta: date | None = None, categoria: str = "",
+                        limite: int = Query(200, ge=1, le=1000)) -> dict[str, Any]:
+    """Solo lectura, para informes: cada gasto con el local autorizado más cercano de su categoría."""
+    db = _services(request).db
+
+    def _load() -> dict[str, Any]:
+        with db.session() as session:
+            return service.listar_cotejo(session, desde, hasta, categoria, limite)
+
+    return await asyncio.to_thread(_load)
 
 
 # ──────────────────────────────────────────── 5. Parámetros (.env) ─────────────────────────────────────

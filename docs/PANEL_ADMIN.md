@@ -23,7 +23,7 @@ La Mini App tiene seis pestañas:
 | 🚌 **Vehículos** | KPIs (activas, vencidas sin liberar, liberadas hoy) y tabla de `reservas_vehiculo`: conductor, vehículo/placa, IDs de Odoo, ID de Telegram, preoperacional, reservado y vence. Buscador por conductor, placa o ID. **Liberar** reutiliza `app/preop/reservas._liberar` con motivo `manual`: la fila pasa a `reservas_historial`. Pide confirmación. |
 | 👥 **Empleados** | Búsqueda **de solo lectura** en `empleados` (nombre, documento, PIN/Telegram o ID de Odoo) con puesto, contrato, responsable y el vehículo reservado, si lo tiene. Más una búsqueda de solo lectura en `flota`. El documento solo existe para quienes se registraron con 📝 Registro (la copia local de empleados no lo guarda). |
 | 📝 **Usuarios** | Lista y búsqueda de `registros_conductor`. **Eliminar** borra **solo la fila local**: no escribe en Odoo y el PIN no se toca. La UI avisa que, si el PIN sigue en Odoo, la persona conserva el acceso. |
-| ⛽ **Estaciones** | Carga de CSV de estaciones autorizadas con ubicación (vista previa, errores por fila y confirmación), opción «reemplazar» y lista con activar/desactivar. Ver § 5. |
+| 🗄️ **CSV BD** | Dos cargas de CSV con el mismo flujo (vista previa, errores por fila, confirmación, «reemplazar» y lista con activar/desactivar): **a)** estaciones de combustible con ubicación (§ 5) y **b)** restaurantes y locales autorizados de Gastos Operativos, con una consulta de solo lectura del cotejo de los gastos (§ 5b). |
 | ⚙️ **Parámetros** | Edición de parámetros operativos del `.env` (lista blanca en código). Ver § 6. |
 | 📜 **Auditoría** | Últimas acciones de los administradores. |
 
@@ -87,7 +87,7 @@ Notas de operación:
 
 ---
 
-## 5. Estaciones de combustible: formato del CSV
+## 5. CSV BD, sección a): estaciones de combustible
 
 UTF-8 (también se acepta el CSV de Excel en Windows-1252), con encabezado y separado por `;` o `,`:
 
@@ -110,6 +110,44 @@ inactiva no aparece en el formulario de ⛽ Combustible.
 
 El CLI sigue funcionando: `python -m app.combustible.proveedores cargar|listar|desactivar` (ver `docs/COMBUSTIBLE.md`).
 
+Las utilidades de CSV comunes a las dos secciones (decodificación UTF-8/Windows-1252, separador `;` o `,`, coma decimal,
+filas con más columnas que encabezados) están en `app/csv_util.py`.
+
+---
+
+## 5b. CSV BD, sección b): restaurantes y locales autorizados
+
+Lista de locales (restaurantes, hoteles...) de **Gastos Operativos** (`app/gastos_operativos/locales.py`, tabla
+`locales_autorizados`). Su ubicación sirve para cotejar la del gasto con el local autorizado más cercano
+(`docs/GASTOS_OPERATIVOS.md` § 12): el cotejo **solo se almacena**, no va a Odoo, no se muestra en el formulario ni
+bloquea nada.
+
+UTF-8 (también Windows-1252), con encabezado y separado por `;` o `,`:
+
+| Columna | Obligatoria | Descripción |
+|---|---|---|
+| `nombre` | sí | Nombre del local. |
+| `nit` | no | Solo dígitos tras normalizar; llave de actualización. |
+| `categoria` | no | Nombre de un tipo de `GASTOS_OPERATIVOS_TIPOS` (p. ej. Alimentación, Hospedaje), **sin distinguir tildes ni mayúsculas**. Vacía = el local vale para todos los tipos. Una categoría que no sea un tipo configurado es un error de la fila (el mensaje lista los tipos válidos). |
+| `latitud`, `longitud` | **sí** | Grados decimales, rango -90..90 y -180..180; mismas reglas de coma decimal que las estaciones. |
+| `ciudad`, `direccion` | no | Texto libre. |
+
+Plantilla: `docs/locales_autorizados_ejemplo.csv`. Se actualiza **por NIT** o, sin NIT, **por nombre normalizado más
+categoría** (el mismo nombre con otra categoría es otro local). El panel valida las categorías con los tipos que haya
+en el `.env` (`ADMIN_ENV_FILE`) en ese momento; sin la clave usa los tipos por defecto del código.
+
+La UI es la de las estaciones: **Vista previa** (no escribe nada) → **Confirmar carga**; las filas con error no se
+cargan; con **«Reemplazar»** se desactivan los locales activos que no vengan y el archivo **no puede tener errores**.
+La lista busca por nombre, ciudad, categoría o NIT y permite activar/desactivar; un local inactivo deja de usarse en
+el cotejo de los gastos nuevos.
+
+CLI: `python -m app.gastos_operativos.locales cargar ARCHIVO.csv [--reemplazar]`, `listar` y `desactivar ID...`.
+
+**Cotejo de gastos (solo lectura).** Debajo de la lista, una tabla con filtros de fecha del gasto y categoría muestra,
+por cada línea de gasto, la ubicación recibida, el local más cercano de su categoría y la distancia
+(`GET /api/admin/gastos-cotejo`). «Sin locales» = se cotejó pero no había locales aplicables; «Sin cotejar» = el envío
+aún no recibió su ubicación o el cotejo falló (ver el log).
+
 ---
 
 ## 6. Parámetros editables (`.env`)
@@ -120,7 +158,7 @@ La **lista blanca está en código** (`app/admin/envfile.py`, `PARAMETROS`), nun
 |---|---|
 | Operación | `LOG_LEVEL`, `POLL_INTERVAL_SECONDS`, `WATCH_TTL_HOURS`, `EMPLOYEE_CACHE_SECONDS`, `MASTER_SYNC_INTERVAL_SECONDS` |
 | Colas a Odoo | `PREOP_WORKER_INTERVAL_SECONDS`, `PREOP_MAX_ATTEMPTS`, `PREOP_SENDING_LEASE_SECONDS`, `PREOP_AUTH_MAX_AGE_SECONDS` |
-| Negocio | `PRUEBA_RUTA_ACUERDOS`, `COMBUSTIBLE_GASTOS_PRODUCT_ID`, `GASTOS_OPERATIVOS_TIPOS`, `ODOO_API_COMPANY_IDS`, `ODOO_API_PAGE_SIZE` |
+| Negocio | `PRUEBA_RUTA_ACUERDOS`, `COMBUSTIBLE_GASTOS_PRODUCT_ID`, `GASTOS_OPERATIVOS_TIPOS`, `GASTOS_OPERATIVOS_TOPES`, `ODOO_API_COMPANY_IDS`, `ODOO_API_PAGE_SIZE` |
 | GPS | `GPS_FLOTA_URL`, `GPS_FLOTA_TIMEOUT_SECONDS` |
 | Secreto (solo escritura) | `GPS_FLOTA_API_KEY`: nunca se muestra su valor, solo «configurado» o «vacío»; se puede escribir uno nuevo o vaciar. |
 
@@ -129,7 +167,7 @@ credenciales de Odoo y URLs base.
 
 Validación: el tipo sale del campo en `Settings` (enteros > 0, decimales con **punto** > 0, texto). Además,
 `LOG_LEVEL` solo admite sus cinco niveles, las URL deben ser `http(s)://` (o vacías) y `ODOO_API_COMPANY_IDS` es
-una lista de números, y `GASTOS_OPERATIVOS_TIPOS` debe ser `Nombre:product_id` separados por `;` (sin nombres repetidos ni ids no numéricos; el valor se guarda normalizado, p. ej. `Alimentación:1;Otros:6`; ver `docs/GASTOS_OPERATIVOS.md` § 3). Se rechazan comillas, `#`, `$`, `\` y saltos de línea. Todo o nada: si un valor es
+una lista de números, y `GASTOS_OPERATIVOS_TIPOS` debe ser `Nombre:product_id` separados por `;` (sin nombres repetidos ni ids no numéricos; el valor se guarda normalizado, p. ej. `Alimentación:1;Otros:6`; ver `docs/GASTOS_OPERATIVOS.md` § 3). `GASTOS_OPERATIVOS_TOPES` es `Nombre:valor` en COP separados por `;` (enteros > 0, vacío = sin topes): cada nombre debe existir en los tipos (sin distinguir tildes ni mayúsculas) y se guarda con el nombre de los tipos, p. ej. `Alimentación:50000;Hospedaje:150000`; esa validación cruzada se hace al guardar, con los tipos que quedarían en el `.env` (si cambias tipos y topes a la vez se comprueban juntos; no se puede quitar un tipo que aún tiene tope). La pestaña lo muestra como **una fila por tipo configurado con un campo numérico** (vacío = sin tope). Ver `docs/GASTOS_OPERATIVOS.md` § 3b. Se rechazan comillas, `#`, `$`, `\` y saltos de línea. Todo o nada: si un valor es
 inválido no se escribe ninguno.
 
 Al guardar:
@@ -166,7 +204,7 @@ cambio, copia el respaldo de `run/env-backups/` sobre `.env` y reinicia.
   administradores. La auditoría no guarda documento ni correo.
 - **Auditoría:** tabla `admin_auditoria` (`created_at`, `telegram_user_id`, `nombre`, `accion`, `objetivo`,
   `detalle`). Acciones: `reserva.liberar`, `usuario.eliminar`, `estaciones.cargar`, `estacion.activar`,
-  `estacion.desactivar`, `parametro.cambiar`. El detalle nunca lleva valores de secretos ni de parámetros.
+  `estacion.desactivar`, `locales.cargar`, `local.activar`, `local.desactivar`, `parametro.cambiar`. El detalle nunca lleva valores de secretos ni de parámetros.
 
   ```sql
   SELECT created_at, telegram_user_id, accion, objetivo, detalle FROM admin_auditoria ORDER BY id DESC LIMIT 50;
@@ -187,6 +225,10 @@ cambio, copia el respaldo de `run/env-backups/` sobre `.env` y reinicia.
 | `GET /api/admin/estaciones?q=&estado=` | Lista de estaciones |
 | `POST /api/admin/estaciones/previsualizar` · `POST .../cargar` | Vista previa y carga del CSV (`{csv, reemplazar}`) |
 | `POST /api/admin/estaciones/{id}/activo` | Activar o desactivar |
+| `GET /api/admin/locales?q=&estado=` | Lista de locales autorizados y las categorías (tipos de gasto) válidas |
+| `POST /api/admin/locales/previsualizar` · `POST .../cargar` | Vista previa y carga del CSV (`{csv, reemplazar}`) |
+| `POST /api/admin/locales/{id}/activo` | Activar o desactivar |
+| `GET /api/admin/gastos-cotejo?desde=&hasta=&categoria=&limite=` | Solo lectura: cotejo de cada gasto con el local más cercano (fechas `AAAA-MM-DD`) |
 | `GET /api/admin/parametros` · `PUT /api/admin/parametros` | Lectura y escritura (`{cambios: {CLAVE: valor}}`) |
 | `GET /api/admin/auditoria?limite=` | Bitácora |
 
@@ -194,4 +236,5 @@ cambio, copia el respaldo de `run/env-backups/` sobre `.env` y reinicia.
 
 `tests/test_admin.py` (auth 401/403 en todos los endpoints, reservas, usuarios, CSV, parámetros con `.env`
 temporal, auditoría y bot). Más `tests/test_combustible.py` (CSV con ubicación, columnas nuevas y proveedores con
-ubicación en el endpoint de combustible).
+ubicación en el endpoint de combustible) y `tests/test_locales_topes.py` (CSV de locales, endpoints de locales y de cotejo
+con 401/403, cotejo, topes y su parámetro).

@@ -1,7 +1,7 @@
 """Consultas y acciones del Panel Admin sobre las tablas de Operativos (sin tocar Odoo)."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any
 
 from sqlalchemy import and_, func, or_, select
@@ -11,6 +11,9 @@ from ..preop import reservas
 from ..preop.models import (
     Empleado,
     Flota,
+    GastoOperativo,
+    GastoOperativoLinea,
+    LocalAutorizado,
     ProveedorCombustible,
     RegistroConductor,
     ReservaHistorial,
@@ -186,3 +189,51 @@ def listar_estaciones(session: Session, q: str = "", estado: str = "") -> dict[s
                    "activo": p.activo, "latitud": p.latitud, "longitud": p.longitud, "ciudad": p.ciudad,
                    "direccion": p.direccion} for p in filas[:1000]],
     }
+
+
+# ───────────────────────────────────── 4b. Locales autorizados y cotejo ─────────────────────────────────────
+
+def listar_locales(session: Session, q: str = "", estado: str = "") -> dict[str, Any]:
+    stmt = select(LocalAutorizado)
+    q = q.strip()
+    if q:
+        stmt = stmt.where(or_(LocalAutorizado.nombre.icontains(q, autoescape=True),
+                              LocalAutorizado.ciudad.icontains(q, autoescape=True),
+                              LocalAutorizado.categoria.icontains(q, autoescape=True),
+                              LocalAutorizado.nit == q))
+    if estado in ("activa", "inactiva"):
+        stmt = stmt.where(LocalAutorizado.activo.is_(estado == "activa"))
+    filas = session.scalars(stmt.order_by(LocalAutorizado.nombre)).all()
+    activos = session.scalar(select(func.count()).select_from(LocalAutorizado).where(
+        LocalAutorizado.activo.is_(True))) or 0
+    return {
+        "kpis": {"activos": activos},
+        "total": len(filas),
+        "items": [{"id": loc.id, "nombre": loc.nombre, "nit": loc.nit, "categoria": loc.categoria,
+                   "activo": loc.activo, "latitud": loc.latitud, "longitud": loc.longitud, "ciudad": loc.ciudad,
+                   "direccion": loc.direccion} for loc in filas[:1000]],
+    }
+
+
+def listar_cotejo(session: Session, desde: date | None = None, hasta: date | None = None,
+                  categoria: str = "", limite: int = LIMITE) -> dict[str, Any]:
+    """Solo lectura: cotejo de cada gasto con el local autorizado más cercano (fecha del gasto y tipo opcionales)."""
+    stmt = (select(GastoOperativoLinea, GastoOperativo)
+            .join(GastoOperativo, GastoOperativo.id == GastoOperativoLinea.gasto_id))
+    if desde is not None:
+        stmt = stmt.where(GastoOperativo.fecha_gasto >= desde)
+    if hasta is not None:
+        stmt = stmt.where(GastoOperativo.fecha_gasto <= hasta)
+    categoria = categoria.strip()
+    if categoria:
+        stmt = stmt.where(func.lower(GastoOperativoLinea.tipo_nombre) == categoria.lower())
+    total = session.scalar(select(func.count()).select_from(stmt.subquery())) or 0
+    filas = session.execute(stmt.order_by(GastoOperativo.fecha_gasto.desc(), GastoOperativoLinea.id.desc())
+                            .limit(limite)).all()
+    return {"total": total, "items": [{
+        "gasto_id": cab.id, "numero": ln.numero, "fecha_gasto": cab.fecha_gasto.isoformat(),
+        "conductor": cab.firma_nombre, "tipo": ln.tipo_nombre, "valor": float(ln.valor),
+        "latitud": cab.latitud, "longitud": cab.longitud,
+        "cotejado": ln.local_cotejado_at is not None, "local_id": ln.local_autorizado_id,
+        "local": ln.local_nombre, "distancia_m": ln.distancia_local_m,
+    } for ln, cab in filas]}

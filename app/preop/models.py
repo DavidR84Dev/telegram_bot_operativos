@@ -509,6 +509,28 @@ class ProveedorCombustible(TimestampMixin, Base):
     direccion: Mapped[str | None] = mapped_column(String(255))
 
 
+class LocalAutorizado(TimestampMixin, Base):
+    """Restaurante, hotel u otro local autorizado para Gastos Operativos (CSV del Panel Admin).
+
+    ``categoria`` es el nombre de un tipo de ``GASTOS_OPERATIVOS_TIPOS`` (None = aplica a todos los tipos).
+    La ubicación es obligatoria: sirve para cotejar la del gasto con el local más cercano (solo se almacena).
+    """
+
+    __tablename__ = "locales_autorizados"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    nombre: Mapped[str] = mapped_column(String(255), nullable=False)
+    # Nombre normalizado (sin tildes, mayúsculas ni puntuación): llave cuando no hay NIT (junto con la categoría).
+    clave: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    nit: Mapped[str | None] = mapped_column(String(32), unique=True)
+    categoria: Mapped[str | None] = mapped_column(String(80))
+    latitud: Mapped[float] = mapped_column(Float, nullable=False)
+    longitud: Mapped[float] = mapped_column(Float, nullable=False)
+    ciudad: Mapped[str | None] = mapped_column(String(120))
+    direccion: Mapped[str | None] = mapped_column(String(255))
+    activo: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+
 class Combustible(TimestampMixin, Base):
     """Registro de tanqueo (Mini App ⛽ Combustible) hacia el modelo ``fuel`` de Odoo.
 
@@ -711,6 +733,12 @@ class GastoOperativoLinea(TimestampMixin, Base):
     odoo_gasto_id: Mapped[int | None] = mapped_column(Integer)  # hr.expense
     error_log: Mapped[str | None] = mapped_column(Text)
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Cotejo con los locales autorizados (solo se almacena: no va a Odoo ni bloquea). Sin FK a propósito: son
+    # columnas añadidas por ``Database._NEW_COLUMNS`` y el nombre del local se copia para conservar el histórico.
+    local_autorizado_id: Mapped[int | None] = mapped_column(Integer)
+    local_nombre: Mapped[str | None] = mapped_column(String(255))
+    distancia_local_m: Mapped[int | None] = mapped_column(Integer)
+    local_cotejado_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     __table_args__ = (
         UniqueConstraint("gasto_id", "numero", name="uq_gastos_operativos_lineas_numero"),

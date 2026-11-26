@@ -46,6 +46,7 @@ from ..preop.models import (
 from ..preop.odoo_writer import OdooPermanentError, OdooTransientError, OdooWriter
 from ..preop.rest_client import OdooRestClient
 from ..preop.service import EnvioVencidoError, SubmissionError, TelegramIdentity, TiemposDiferido, payload_sha256
+from . import cotejo
 from . import soporte as soporte_mod
 from .catalogo import TipoGasto, form_definition
 from .schemas import GastosOperativosIn
@@ -61,8 +62,8 @@ def _reserva_propia(session: Session, telegram_user_id: int) -> ReservaVehiculo 
 
 # ───────────────────────────── consultas para la Mini App ─────────────────────────────
 
-def form_full(tipos: tuple[TipoGasto, ...]) -> dict[str, Any]:
-    return form_definition(tipos)
+def form_full(tipos: tuple[TipoGasto, ...], topes: dict[str, int] | None = None) -> dict[str, Any]:
+    return form_definition(tipos, topes)
 
 
 def form_context(db: Database, empleado: Empleado, telegram_user_id: int) -> dict[str, Any]:
@@ -94,16 +95,41 @@ class GastoRecibido:
     gastos: int
 
 
+class TopeExcedidoError(SubmissionError):
+    """Un gasto supera el máximo de su tipo (``GASTOS_OPERATIVOS_TOPES``): 422 con un mensaje por gasto."""
+
+
+def _pesos(valor: int) -> str:
+    return "$" + f"{valor:,}".replace(",", ".")
+
+
+def validar_topes(data: GastosOperativosIn, elegidos: list[TipoGasto], topes: dict[str, int] | None) -> None:
+    """Rechaza (422) los gastos que superan el tope de su tipo. Sin topes configurados no hace nada."""
+    if not topes:
+        return
+    excedidos = [
+        f"Gasto #{numero} ({tipo.nombre}): {_pesos(gasto.valor)} supera el máximo de {_pesos(topes[tipo.nombre])} "
+        f"por gasto"
+        for numero, (gasto, tipo) in enumerate(zip(data.gastos, elegidos, strict=True), start=1)
+        if tipo.nombre in topes and gasto.valor > topes[tipo.nombre]
+    ]
+    if excedidos:
+        raise TopeExcedidoError("; ".join(excedidos))
+
+
 def resumen_recibido(cab: GastoOperativo, gastos: int) -> GastoRecibido:
     return GastoRecibido(cab.id, cab.uuid, cab.telegram_user_id, cab.sync_status, float(cab.total), gastos)
 
 
 def submit_diferido(db: Database, identity: TelegramIdentity, data: GastosOperativosIn, tiempos: TiemposDiferido,
-                    tipos: tuple[TipoGasto, ...]) -> tuple[GastoRecibido, bool]:
+                    tipos: tuple[TipoGasto, ...], topes: dict[str, int] | None = None) -> tuple[GastoRecibido, bool]:
     """Recibe un envío guardado en el teléfono por falta de señal (regla de ``app/preop/diferido.py``).
 
     Dentro de la ventana sigue el flujo normal; fuera de ella queda solo como auditoría (con el formulario y los
     soportes) y lanza ``EnvioVencidoError``.
+
+    Los topes que rigen son los **vigentes al recibir** el envío (``submit`` los valida): si cambiaron mientras el
+    teléfono estaba sin señal y un gasto ya los supera, se rechaza con ``TopeExcedidoError`` (422).
     """
     with db.session() as session:
         existing = session.scalar(select(GastoOperativo).where(GastoOperativo.uuid == data.uuid))
@@ -120,7 +146,7 @@ def submit_diferido(db: Database, identity: TelegramIdentity, data: GastosOperat
 
     motivo = motivo_vencido(tiempos.apertura, tiempos.sin_senal_desde, tiempos.recibido)
     if motivo is None:
-        return submit(db, identity, data, tipos, diferido=tiempos)
+        return submit(db, identity, data, tipos, diferido=tiempos, topes=topes)
 
     with db.session() as session:
         session.add(GastoOperativoEnvioDiferido(
@@ -150,7 +176,7 @@ def _convertir_soportes(data: GastosOperativosIn) -> list[tuple[bytes, bool, str
 
 
 def submit(db: Database, identity: TelegramIdentity, data: GastosOperativosIn, tipos: tuple[TipoGasto, ...],
-           diferido: TiemposDiferido | None = None) -> tuple[GastoRecibido, bool]:
+           diferido: TiemposDiferido | None = None, topes: dict[str, int] | None = None) -> tuple[GastoRecibido, bool]:
     """Guarda el envío como ``pendiente`` (retenido hasta la ubicación). Devuelve (envío, era_duplicado).
 
     Idempotente por ``uuid``. ``diferido`` (ya validado dentro de la ventana) deja la trazabilidad sin señal.
@@ -169,6 +195,7 @@ def submit(db: Database, identity: TelegramIdentity, data: GastosOperativosIn, t
         if tipo is None:
             raise SubmissionError(f"Gasto #{numero}: el tipo «{gasto.tipo}» no existe; elige uno de la lista")
         elegidos.append(tipo)
+    validar_topes(data, elegidos, topes)  # también el envío diferido: rige el tope vigente al recibir
     soportes = _convertir_soportes(data)  # CPU: antes de abrir la transacción
 
     with db.session() as session:
@@ -407,7 +434,10 @@ def asignar_ubicacion(db: Database, telegram_user_id: int, latitud: float, longi
                       enviada_at: datetime, now: datetime | None = None) -> UbicacionAsignada | None:
     res = combustible_service.asignar_ubicacion(db, telegram_user_id, latitud, longitud, enviada_at, now,
                                                 model=GastoOperativo)
-    return replace(res, origen="gastos") if res is not None else None
+    if res is None:
+        return None
+    cotejo.cotejar_seguro(db, res.combustible_id)  # solo se almacena; un fallo no frena el envío
+    return replace(res, origen="gastos")
 
 
 def recordatorios_pendientes(db: Database, now: datetime | None = None) -> list[RecordatorioUbicacion]:

@@ -102,6 +102,36 @@ GASTOS_OPERATIVOS_TIPOS=Alimentación:1;Hospedaje:2;Peajes:6;Parqueadero:6;Lavad
 - La Mini App recibe solo los nombres; el servidor resuelve el `product_id` al recibir el envío y lo guarda en cada línea,
   así que cambiar el `.env` después no altera lo ya recibido. Un tipo que ya no existe se rechaza con 422.
 
+## 3b. Tope máximo por gasto y por tipo (bloquea)
+
+Variable `GASTOS_OPERATIVOS_TOPES`: `Nombre:valor` en COP separados por `;`.
+
+```
+GASTOS_OPERATIVOS_TOPES=Alimentación:50000;Hospedaje:150000
+```
+
+- Un tipo **ausente no tiene tope**; el valor vacío (por defecto) significa **sin topes**. El nombre debe existir en
+  `GASTOS_OPERATIVOS_TIPOS` (sin distinguir tildes ni mayúsculas) y el valor es un entero mayor que 0, sin puntos ni
+  símbolos. Nombres repetidos se rechazan.
+- **Validación al arrancar** (`_start_gastos_operativos`), igual que los tipos: un error impide iniciar el bot con
+  `Configuración inválida: GASTOS_OPERATIVOS_TOPES: ...`.
+- **Panel Admin:** parámetro editable (`docs/PANEL_ADMIN.md` § 6) con validación de formato y cruzada con los tipos; se
+  muestra como una fila por tipo con un campo numérico. Cambiarlo requiere `docker compose restart app`.
+- **Formulario:** `GET /api/gastos-operativos/form` devuelve `tope` en cada tipo (`null` si no tiene). La tarjeta muestra
+  «Máximo $ X» bajo el valor; si el valor lo supera, la tarjeta se marca en rojo, el aviso de pendientes lo lista
+  («Gasto #2: supera el máximo de $ 50 000 para Alimentación») y **no deja enviar**.
+- **Servidor:** también lo valida (`service.validar_topes`, dentro de `submit`): responde **422** con un mensaje por gasto,
+  p. ej. `Gasto #1 (Alimentación): $65.000 supera el máximo de $50.000 por gasto; Gasto #3 (Hospedaje): ...`. No se guarda
+  nada del envío. Un valor **igual** al tope pasa.
+- **Envío sin señal (decisión):** se valida con el **tope vigente al recibir** el envío, no con el que había al llenar el
+  formulario. Si el tope bajó mientras el teléfono estaba sin señal y un gasto ya lo supera, el servidor **rechaza todo el
+  envío con 422** (no se guarda ni se pide ubicación), registra un `WARNING` y **avisa al conductor por el chat** («Tus
+  gastos guardados sin señal no fueron aceptados» + el detalle por gasto + que los diligencie de nuevo); además la Mini
+  App lo muestra al reabrirse. El mismo mensaje por chat solo sale para envíos diferidos (en un envío normal el conductor
+  ve el error en pantalla). Un tope que **subió** o se quitó no afecta nada. Si el aviso por Telegram falla, solo queda
+  en el log y la respuesta sigue siendo 422.
+- Los topes son por **gasto** (por tarjeta), no por día ni por envío. No cambian el `hr.expense` ni los estados de Odoo.
+
 ## 4. Soportes
 
 - **PDF:** se valida por su firma real (`%PDF`), no por lo que diga el cliente; pasa tal cual.
@@ -165,9 +195,9 @@ pérdida de señal. El cuerpo acepta `diferido: {init_data_original, sin_senal_d
 | Ruta | Respuesta |
 |---|---|
 | `GET /gastos-operativos` | HTML (sin caché; logo versionado) |
-| `GET /api/gastos-operativos/form` | tipos (solo nombres), límites y rango de fecha |
+| `GET /api/gastos-operativos/form` | tipos (solo nombres, con su `tope` o `null`), límites y rango de fecha |
 | `GET /api/gastos-operativos/context` | conductor, vehículo reservado (o `null`) y `hoy`; 403 sin PIN |
-| `POST /api/gastos-operativos` | **202**; 401 firma, 403 sin empleado, 409 uuid ajeno, 422 validación (tipo, valor, soporte, fecha), **410** reenvío sin señal vencido |
+| `POST /api/gastos-operativos` | **202**; 401 firma, 403 sin empleado, 409 uuid ajeno, 422 validación (tipo, valor, tope, soporte, fecha), **410** reenvío sin señal vencido |
 | `GET /api/gastos-operativos/{uuid}` | estado de un envío propio |
 
 ## 9. Tablas (las crea `create_all`; no se tocan tablas existentes)
@@ -177,7 +207,10 @@ pérdida de señal. El cuerpo acepta `diferido: {init_data_original, sin_senal_d
   `recordatorios_ubicacion`), GPS (`gps_latitud`, `gps_longitud`, `gps_at`, `gps_distancia_m`, `ubicacion_gps_vehiculo`) y
   la auditoría de sincronización común.
 - **`gastos_operativos_lineas`:** una por tarjeta: `numero`, `tipo_nombre`, `product_id`, `valor`, `observacion`, estado,
-  `odoo_gasto_id`, `error_log`, `sent_at`.
+  `odoo_gasto_id`, `error_log`, `sent_at` y el cotejo con los locales (§ 12): `local_autorizado_id`, `local_nombre`,
+  `distancia_local_m` y `local_cotejado_at` (columnas añadidas por `Database._NEW_COLUMNS`).
+- **`locales_autorizados`:** restaurantes y locales del Panel Admin (§ 12): `nombre`, `clave`, `nit`, `categoria`, `latitud`,
+  `longitud`, `ciudad`, `direccion`, `activo`.
 - **`gastos_operativos_soportes`:** el PDF en `BYTEA` (`nombre_archivo`, `tamano`, `sha256`, `convertido` = venía como foto).
 - **`gastos_operativos_envios_diferidos`:** trazabilidad sin señal (`aceptado` / `vencido`).
 
@@ -198,7 +231,10 @@ pérdida de señal. El cuerpo acepta `diferido: {init_data_original, sin_senal_d
 
 | Archivo | Contenido |
 |---|---|
-| `app/gastos_operativos/catalogo.py` | `parse_tipos` (formato y errores), límites y `form_definition`. |
+| `app/gastos_operativos/catalogo.py` | `parse_tipos` y `parse_topes` (formato y errores), límites y `form_definition`. |
+| `app/gastos_operativos/locales.py` | CSV, carga y CLI de los locales autorizados. |
+| `app/gastos_operativos/cotejo.py` | Cotejo de cada línea con el local autorizado más cercano. |
+| `app/csv_util.py` | Utilidades de CSV comunes con las estaciones de combustible. |
 | `app/gastos_operativos/soporte.py` | Validación por firma, foto → PDF (Pillow) y nombre del archivo. |
 | `app/gastos_operativos/schemas.py` | `GastosOperativosIn` / `GastoIn`: valor entero, soporte, fecha y total de soportes. |
 | `app/gastos_operativos/service.py` | Contexto, `submit` / `submit_diferido`, payload, `send_one`, cola, y envoltorios de ubicación/GPS. |
@@ -207,9 +243,33 @@ pérdida de señal. El cuerpo acepta `diferido: {init_data_original, sin_senal_d
 | `app/preop/odoo_writer.py` | `buscar_gasto_operativo` (solo lectura). |
 | `app/combustible/service.py` | Funciones de ubicación y GPS parametrizadas con `model=`; `enviar_gasto(buscar=, etiqueta=)`. |
 | `app/static/gastos_operativos.html` | Mini App. |
-| `tests/test_gastos_operativos.py` | Pruebas del módulo. |
+| `tests/test_gastos_operativos.py` · `tests/test_locales_topes.py` | Pruebas del módulo; locales, cotejo y topes. |
 
-## 12. Pendientes
+## 12. Locales autorizados y cotejo de la ubicación (solo se almacena)
+
+Los administradores cargan una lista de **restaurantes y locales autorizados** en el Panel Admin, pestaña 🗄️ **CSV BD**
+(`docs/PANEL_ADMIN.md` § 5b): nombre, NIT, categoría (un tipo de gasto; vacía = todos), **latitud y longitud
+obligatorias**, ciudad y dirección. CLI: `python -m app.gastos_operativos.locales cargar|listar|desactivar`.
+
+Cuando el conductor comparte su ubicación por el chat y se guarda en el envío (`service.asignar_ubicacion`), se llama a
+`cotejo.cotejar_seguro`: para **cada línea** se busca el local **activo** más cercano (haversine de
+`app/combustible/gps.py`) **de su categoría o de categoría vacía** (comodín), y se guarda en la línea `local_autorizado_id`,
+`local_nombre` (copiado), `distancia_local_m` y `local_cotejado_at`. Sin locales aplicables los tres primeros quedan en
+`NULL` y la línea se marca igualmente como cotejada.
+
+- **No va a Odoo**, no se muestra en el formulario y **no bloquea ni retrasa** nada: el cotejo corre antes de despertar
+  la cola, son unos pocos cálculos en memoria y un fallo se registra con `logger.exception` (`no se pudo cotejar...`) y el
+  envío sigue. Una línea sin `local_cotejado_at` en un envío con ubicación indica que falló.
+- La coincidencia de categoría ignora tildes y mayúsculas. Es por línea: dos tarjetas de tipos distintos del mismo envío
+  pueden cotejar con locales distintos.
+- Consulta para informes: Panel Admin → CSV BD → «Cotejo de gastos con locales» (`GET /api/admin/gastos-cotejo`) o SQL:
+
+```sql
+SELECT g.id, l.numero, l.tipo_nombre, l.valor, l.local_nombre, l.distancia_local_m, l.local_cotejado_at
+FROM gastos_operativos_lineas l JOIN gastos_operativos g ON g.id = l.gasto_id ORDER BY g.id DESC, l.numero LIMIT 50;
+```
+
+## 13. Pendientes
 
 - [ ] Confirmar con Odoo que `/api/gastos/register` acepta el payload **sin** `gallon`, `fuel_type` ni `km_tanking`
       (se omiten por no aplicar) y con `is_fuel_expenses: false`.

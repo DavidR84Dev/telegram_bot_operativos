@@ -21,7 +21,7 @@ from .combustible.gps import build_gps_client
 from .combustible.worker import CombustibleSender, build_rest_client
 from .config import get_settings
 from .gastos_operativos import service as gastos_service
-from .gastos_operativos.catalogo import TiposGastoError, parse_tipos
+from .gastos_operativos.catalogo import TiposGastoError, TopesGastoError, parse_tipos, parse_topes
 from .gastos_operativos.router import GastosOperativosServices
 from .gastos_operativos.router import router as gastos_operativos_router
 from .gastos_operativos.service import GastosOutcome
@@ -232,6 +232,10 @@ def _start_gastos_operativos(app: FastAPI, application, db: Database, writer) ->
         tipos = parse_tipos(settings.gastos_operativos_tipos)  # se valida al arrancar: un error impide iniciar
     except TiposGastoError as exc:
         raise RuntimeError(f"Configuración inválida: {exc}") from exc
+    try:
+        topes = parse_topes(settings.gastos_operativos_topes, tipos)  # idem: nombres que existan, enteros > 0
+    except TopesGastoError as exc:
+        raise RuntimeError(f"Configuración inválida: {exc}") from exc
 
     async def notify(outcome: GastosOutcome) -> None:
         await application.bot.send_message(
@@ -254,6 +258,11 @@ def _start_gastos_operativos(app: FastAPI, application, db: Database, writer) ->
             reply_markup=ubicacion_keyboard(),
         )
 
+    async def on_rejected(telegram_user_id: int, mensaje: str) -> None:
+        """Envío guardado sin señal que ya supera un tope vigente: el conductor debe diligenciarlo de nuevo."""
+        await application.bot.send_message(
+            chat_id=telegram_user_id, text=formatting.gastos_rechazado_por_tope(mensaje), parse_mode="HTML")
+
     sender = GastosOperativosSender(
         db, writer, settings.preop_worker_interval_seconds, settings.preop_max_attempts,
         settings.preop_sending_lease_seconds, notify=notify, rest_client=build_rest_client(settings),
@@ -265,7 +274,7 @@ def _start_gastos_operativos(app: FastAPI, application, db: Database, writer) ->
     app.state.gastos_operativos = GastosOperativosServices(
         db=db, bot_token=settings.telegram_bot_token.get_secret_value(),
         max_age_seconds=settings.preop_auth_max_age_seconds, tipos=tipos,
-        wake_worker=sender.wake, on_accepted=on_accepted,
+        wake_worker=sender.wake, on_accepted=on_accepted, topes=topes, on_rejected=on_rejected,
     )
     return sender
 

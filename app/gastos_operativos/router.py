@@ -46,6 +46,10 @@ class GastosOperativosServices:
     wake_worker: Any = None
     # async (recibido): pide la ubicación en el chat cuando se acepta un envío nuevo.
     on_accepted: Any = None
+    # Topes por tipo en COP (``GASTOS_OPERATIVOS_TOPES``): un gasto que los supera se rechaza con 422.
+    topes: dict[str, int] = field(default_factory=dict)
+    # async (identity, mensaje): avisa al conductor por el chat cuando se rechaza un envío SIN SEÑAL por un tope.
+    on_rejected: Any = None
 
 
 def _services(request: Request) -> GastosOperativosServices:
@@ -79,7 +83,8 @@ def gastos_operativos_page() -> HTMLResponse:
 
 @router.get("/api/gastos-operativos/form")
 async def gastos_operativos_form(request: Request, _identity: Identity) -> dict[str, Any]:
-    return service.form_full(_services(request).tipos)
+    svc = _services(request)
+    return service.form_full(svc.tipos, svc.topes)
 
 
 @router.get("/api/gastos-operativos/context")
@@ -111,14 +116,27 @@ async def gastos_operativos_submit(
     try:
         if body.diferido is None:
             identity = _identity(x_telegram_init_data, svc.bot_token, svc.max_age_seconds)
-            recibido, duplicated = await asyncio.to_thread(service.submit, svc.db, identity, body, svc.tipos)
+            recibido, duplicated = await asyncio.to_thread(
+                service.submit, svc.db, identity, body, svc.tipos, None, svc.topes)
         else:
             identity, tiempos = tiempos_diferido(body.diferido, x_telegram_init_data, svc.bot_token,
                                                  svc.max_age_seconds)
             recibido, duplicated = await asyncio.to_thread(
-                service.submit_diferido, svc.db, identity, body, tiempos, svc.tipos)
+                service.submit_diferido, svc.db, identity, body, tiempos, svc.tipos, svc.topes)
     except preop_service.EnvioVencidoError as exc:
         raise HTTPException(status.HTTP_410_GONE, "Envío vencido: superó 1 hora sin señal") from exc
+    except service.TopeExcedidoError as exc:
+        if body.diferido is not None:
+            # El tope cambió mientras el teléfono estaba sin señal: el formulario ya no está en pantalla, así que
+            # además del 422 (que la Mini App muestra al reabrir) se avisa por el chat.
+            logger.warning("Gastos operativos diferido RECHAZADO por tope uuid=%s usuario=%s: %s",
+                           body.uuid, identity.user_id, exc)
+            if svc.on_rejected is not None:
+                try:
+                    await svc.on_rejected(identity.user_id, str(exc))
+                except Exception:
+                    logger.exception("No se pudo avisar del rechazo por tope al usuario %s", identity.user_id)
+        raise HTTPException(exc.status_code, str(exc)) from exc
     except preop_service.SubmissionError as exc:
         raise HTTPException(exc.status_code, str(exc)) from exc
     if not duplicated and svc.wake_worker is not None:

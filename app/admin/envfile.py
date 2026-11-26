@@ -68,6 +68,38 @@ def _tipos_gastos(valor: str) -> str:
         raise ParametroError(str(exc).removeprefix("GASTOS_OPERATIVOS_TIPOS: ")) from exc
 
 
+def _topes_gastos(valor: str) -> str:
+    """Formato (Nombre:valor, enteros > 0). Que cada nombre exista en los tipos se cruza en ``guardar``."""
+    from ..gastos_operativos.catalogo import TopesGastoError, parse_topes, texto_topes
+
+    try:
+        return texto_topes(parse_topes(valor))
+    except TopesGastoError as exc:
+        raise ParametroError(str(exc).removeprefix("GASTOS_OPERATIVOS_TOPES: ")) from exc
+
+
+def _cruzar_topes_y_tipos(ruta: Path, nuevos: dict[str, str]) -> None:
+    """Los topes solo pueden nombrar tipos que existan: se comprueba con los valores que quedarían en el ``.env``.
+
+    Si se guardan topes, los nombres se escriben tal como están en los tipos (``alimentacion`` -> ``Alimentación``).
+    """
+    if not {"GASTOS_OPERATIVOS_TOPES", "GASTOS_OPERATIVOS_TIPOS"} & set(nuevos):
+        return
+    from ..gastos_operativos.catalogo import TiposGastoError, TopesGastoError, parse_tipos, parse_topes, texto_topes
+
+    actuales = valores_actuales(ruta)
+    tipos_txt = nuevos.get("GASTOS_OPERATIVOS_TIPOS", actuales.get("GASTOS_OPERATIVOS_TIPOS"))
+    if tipos_txt is None:
+        tipos_txt = _por_defecto("GASTOS_OPERATIVOS_TIPOS")
+    topes_txt = nuevos.get("GASTOS_OPERATIVOS_TOPES", actuales.get("GASTOS_OPERATIVOS_TOPES", ""))
+    try:
+        topes = parse_topes(topes_txt, parse_tipos(tipos_txt))
+    except (TiposGastoError, TopesGastoError) as exc:
+        raise ParametroError(str(exc)) from exc
+    if "GASTOS_OPERATIVOS_TOPES" in nuevos:
+        nuevos["GASTOS_OPERATIVOS_TOPES"] = texto_topes(topes)
+
+
 PARAMETROS: dict[str, Parametro] = {p.clave: p for p in (
     Parametro("LOG_LEVEL", "Nivel de log (DEBUG, INFO, WARNING, ERROR, CRITICAL)", validador=_log_level),
     Parametro("POLL_INTERVAL_SECONDS", "Segundos entre consultas de la vigilancia de tickets"),
@@ -84,6 +116,9 @@ PARAMETROS: dict[str, Parametro] = {p.clave: p for p in (
     Parametro("COMBUSTIBLE_GASTOS_PRODUCT_ID", "product_id del gasto de combustible en hr.expense"),
     Parametro("GASTOS_OPERATIVOS_TIPOS", "Tipos de Gastos Operativos: Nombre:product_id separados por «;»",
               validador=_tipos_gastos),
+    Parametro("GASTOS_OPERATIVOS_TOPES",
+              "Tope máximo por gasto y por tipo (COP): Nombre:valor separados por «;»; vacío = sin topes",
+              validador=_topes_gastos),
     Parametro("ODOO_API_COMPANY_IDS", "Compañías de Odoo a sincronizar (ids separados por coma)",
               validador=_lista_enteros),
     Parametro("ODOO_API_PAGE_SIZE", "Registros por página en la sincronización con la API de Odoo"),
@@ -205,6 +240,7 @@ def guardar(ruta: Path, cambios: dict[str, Any]) -> tuple[list[str], Path | None
         original = ruta.read_bytes() if ruta.exists() else None
         if original is None:
             raise ParametroError(f"no se encontró el archivo de entorno ({ruta})")
+        _cruzar_topes_y_tipos(ruta, nuevos)
         texto = original.decode("utf-8")
         salto = "\r\n" if "\r\n" in texto else "\n"
         lineas = texto.split("\n") if "\n" in texto else [texto]
