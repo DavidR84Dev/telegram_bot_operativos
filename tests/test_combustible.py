@@ -761,6 +761,8 @@ def test_api_pide_la_ubicacion_al_aceptar_un_registro_nuevo(seeded):
     pedidos = []
 
     async def on_accepted(registro):
+        # Como en main.py: el registro llega desligado de la sesión; la placa se lee aparte.
+        assert service.placa_de(seeded, registro.id) == "ABC123"
         pedidos.append(registro.id)
 
     app.state.combustible = CombustibleServices(seeded, BOT_TOKEN, 3600, on_accepted=on_accepted)

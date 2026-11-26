@@ -507,6 +507,13 @@ def asignar_ubicacion(db: Database, telegram_user_id: int, latitud: float, longi
         return UbicacionAsignada(elegible.id, placa, len(filas) - 1)
 
 
+def placa_de(db: Database, combustible_id: int) -> str | None:
+    """Placa del vehículo de un tanqueo (en sesión propia: el registro del router ya está desligado)."""
+    with db.session() as session:
+        registro = session.get(Combustible, combustible_id)
+        return reservas.placa(registro.vehiculo) if registro is not None else None
+
+
 def hay_ubicacion_pendiente(db: Database, telegram_user_id: int) -> bool:
     with db.session() as session:
         return session.scalar(select(Combustible.id).where(

@@ -1,6 +1,7 @@
 """Entrypoint FastAPI: validador de QR (solo lectura en Odoo), preoperacional, AST, Prueba de Ruta y Combustible."""
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -14,11 +15,11 @@ from .ast_trabajo.service import AstOutcome
 from .ast_trabajo.worker import AstSender
 from .combustible.router import CombustibleServices
 from .combustible.router import router as combustible_router
+from .combustible import service as combustible_service
 from .combustible.service import CombustibleOutcome, RecordatorioUbicacion
 from .combustible.worker import CombustibleSender, build_rest_client
 from .config import get_settings
 from .odoo_client import OdooClient
-from .preop import reservas
 from .preop.db import Database
 from .preop.etl import run_from_settings
 from .preop.rest_client import OdooRestClient
@@ -188,9 +189,11 @@ def _start_combustible(app: FastAPI, application, db: Database, writer) -> Combu
 
     async def on_accepted(registro) -> None:
         """Registro aceptado (también el reenvío sin señal): se pide la ubicación en el chat."""
+        # El registro llega desligado de la sesión: la placa se lee en una sesión propia.
+        placa = await asyncio.to_thread(combustible_service.placa_de, db, registro.id)
         await application.bot.send_message(
             chat_id=registro.telegram_user_id,
-            text=formatting.combustible_pedir_ubicacion(reservas.placa(registro.vehiculo)), parse_mode="HTML",
+            text=formatting.combustible_pedir_ubicacion(placa), parse_mode="HTML",
             reply_markup=ubicacion_keyboard(),
         )
 
