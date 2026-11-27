@@ -366,6 +366,22 @@ def test_put_parametros_rechaza_fuera_de_lista_y_tipos_invalidos(panel):
     assert _audit(panel.db) == []
 
 
+def test_parametro_dias_maximos_de_correcciones_visible_y_validado(panel):
+    items = {i["clave"]: i for i in panel.client.get("/api/admin/parametros", headers=_h()).json()["items"]}
+    item = items["CORRECCIONES_DIAS_MAXIMOS"]
+    assert item["tipo"] == "int" and item["valor"] == "30" and item["en_archivo"] is False  # default de Settings
+    assert "Correcciones" in item["descripcion"] and "días" in item["descripcion"]
+    antes = panel.env.read_text(encoding="utf-8")
+    for malo in ("0", "-5", "366", "1000", "abc", "30.5", ""):
+        assert _put(panel, {"CORRECCIONES_DIAS_MAXIMOS": malo}).status_code == 400, malo
+    assert panel.env.read_text(encoding="utf-8") == antes
+    for bueno, esperado in (("1", "1"), ("365", "365"), (" 60 ", "60")):
+        r = _put(panel, {"CORRECCIONES_DIAS_MAXIMOS": bueno})
+        assert r.status_code == 200 and r.json()["cambiados"] == ["CORRECCIONES_DIAS_MAXIMOS"]
+        assert f"CORRECCIONES_DIAS_MAXIMOS={esperado}\n" in panel.env.read_text(encoding="utf-8")
+    assert (panel.env.parent / "run" / "env-backups").exists()  # respaldo antes de escribir
+
+
 def test_put_parametros_valores_validos_de_cada_tipo(panel):
     r = _put(panel, {"GPS_FLOTA_TIMEOUT_SECONDS": "7.5", "GPS_FLOTA_URL": "https://gps.example.com/api",
                      "ODOO_API_COMPANY_IDS": "1, 2", "COMBUSTIBLE_GASTOS_PRODUCT_ID": "77",

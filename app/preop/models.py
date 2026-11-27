@@ -791,7 +791,7 @@ class GastoOperativoEnvioDiferido(TimestampMixin, Base):
 
 
 class PosOperacional(TimestampMixin, Base):
-    """Formulario 🧾 Pos-Operacional: cierre de la jornada (km, entrada, salida y planilla) hacia ``pos.operacional``.
+    """Formulario 🧾 Post-operacional: cierre de la jornada (km, entrada, salida y planilla) hacia ``pos.operacional``.
 
     Misma cola que los demás formularios (``sync_status``, reintentos, idempotencia por ``uuid``). No pide ubicación
     ni libera la reserva del vehículo. ``vehiculo_id`` y ``contrato_odoo_id`` son opcionales: salen de la reserva de
@@ -851,7 +851,7 @@ class PosOperacional(TimestampMixin, Base):
 
 
 class PosOperacionalEnvioDiferido(TimestampMixin, Base):
-    """Trazabilidad de los pos-operacionales guardados en el teléfono por falta de señal (``app/preop/diferido.py``).
+    """Trazabilidad de los Post-operacionales guardados en el teléfono por falta de señal (``app/preop/diferido.py``).
 
     Un envío vencido guarda el formulario completo en ``payload`` (con la planilla en base64, para no perderla).
     """
@@ -876,6 +876,90 @@ class PosOperacionalEnvioDiferido(TimestampMixin, Base):
     payload: Mapped[dict[str, Any] | None] = mapped_column(JsonType)
 
     __table_args__ = (Index("ix_pos_operacional_diferidos_estado_fecha", "estado", "recibido_at"),)
+
+
+class Correccion(TimestampMixin, Base):
+    """Corrección enviada desde la Mini App «Correcciones Post y Gastos» (``app/correcciones``).
+
+    ``tipo`` = ``gasto`` (un ``hr.expense`` rechazado: se envía uno NUEVO con ``state_expenses`` ``correction``) o
+    ``pos`` (un ``pos.operacional`` pendiente: se escribe sobre ese mismo registro). ``odoo_id_original`` es el id del
+    registro que se corrige y sirve para no volver a ofrecerlo mientras la corrección está en curso. ``datos`` guarda
+    los valores corregidos de cada tipo (números y fechas ya normalizados). ``descartado`` marca (con ``fallido``) una
+    corrección de Pos que ya no aplicaba al llegar a Odoo (el registro dejó de estar pendiente): no se reencola.
+    """
+
+    __tablename__ = "correcciones"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    uuid: Mapped[str] = mapped_column(String(36), nullable=False, unique=True, default=lambda: str(uuid.uuid4()))
+
+    telegram_user_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    telegram_username: Mapped[str | None] = mapped_column(String(64))
+    firma_nombre: Mapped[str] = mapped_column(String(255), nullable=False)
+    empleado_id: Mapped[int] = mapped_column(ForeignKey("empleados.id", ondelete="RESTRICT"), nullable=False)
+
+    tipo: Mapped[str] = mapped_column(String(8), nullable=False)
+    odoo_id_original: Mapped[int] = mapped_column(Integer, nullable=False)
+    referencia: Mapped[str | None] = mapped_column(String(255))  # nombre del registro original, para los avisos
+    estado_original: Mapped[str | None] = mapped_column(String(16))  # Pos: refused / refused by al recibir
+    fecha: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+    datos: Mapped[dict[str, Any]] = mapped_column(JsonType, nullable=False)
+    explicacion: Mapped[str] = mapped_column(Text, nullable=False)  # description (gasto) / observations (Pos)
+
+    # PDF nuevo: obligatorio en gastos; en Pos es opcional (sin él se conserva la planilla actual).
+    adjunto: Mapped[bytes | None] = mapped_column(LargeBinary)
+    adjunto_nombre: Mapped[str | None] = mapped_column(String(255))
+    adjunto_sha256: Mapped[str | None] = mapped_column(String(64))
+
+    sync_status: Mapped[SyncStatus] = mapped_column(
+        Enum(SyncStatus, name="correccion_sync_status", native_enum=False, length=16,
+             values_callable=lambda e: [m.value for m in e]),
+        nullable=False,
+        default=SyncStatus.PENDIENTE,
+    )
+    descartado: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    odoo_id: Mapped[int | None] = mapped_column(Integer)  # gasto: hr.expense nuevo; Pos: el mismo registro
+    error_log: Mapped[str | None] = mapped_column(Text)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    empleado: Mapped[Empleado] = relationship(lazy="joined")
+
+    __table_args__ = (
+        CheckConstraint("attempts >= 0", name="ck_correcciones_attempts_no_negativo"),
+        Index("ix_correcciones_cola", "sync_status", "next_attempt_at"),
+        Index("ix_correcciones_original", "tipo", "odoo_id_original"),
+    )
+
+
+class CorreccionEnvioDiferido(TimestampMixin, Base):
+    """Trazabilidad de las correcciones guardadas en el teléfono por falta de señal (``app/preop/diferido.py``).
+
+    Un envío vencido guarda el formulario completo en ``payload`` (con el PDF en base64, para no perderlo).
+    """
+
+    __tablename__ = "correcciones_envios_diferidos"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    uuid: Mapped[str] = mapped_column(String(36), nullable=False, unique=True)
+    telegram_user_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    estado: Mapped[EstadoDiferido] = mapped_column(
+        Enum(EstadoDiferido, name="correccion_estado_diferido", native_enum=False, length=16,
+             values_callable=lambda e: [m.value for m in e]),
+        nullable=False,
+    )
+    motivo: Mapped[str | None] = mapped_column(Text)
+    correccion_id: Mapped[int | None] = mapped_column(ForeignKey("correcciones.id", ondelete="SET NULL"))
+    apertura_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    sin_senal_desde: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    recibido_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+    retraso_segundos: Mapped[int] = mapped_column(Integer, nullable=False)
+    payload_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload: Mapped[dict[str, Any] | None] = mapped_column(JsonType)
+
+    __table_args__ = (Index("ix_correcciones_diferidos_estado_fecha", "estado", "recibido_at"),)
 
 
 class Ubicacion(TimestampMixin, Base):

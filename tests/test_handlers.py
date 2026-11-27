@@ -66,10 +66,11 @@ def test_non_qr_text_points_to_scanner_button():
     assert "Escanear QR" in upd.message.reply_text.await_args.args[0]
 
 
-def test_main_keyboard_only_formularios_and_location_collapsible():
+def test_main_keyboard_formularios_ubicacion_y_correcciones_collapsible():
     kb = tga.main_keyboard()
-    # Una sola fila: Formularios y Enviar ubicación lado a lado.
-    assert [[b.text for b in row] for row in kb.keyboard] == [[tga.BTN_FORMULARIOS, tga.BTN_UBICACION]]
+    # Formularios y Enviar ubicación lado a lado; debajo, Correcciones Post y Gastos.
+    assert [[b.text for b in row] for row in kb.keyboard] == [[tga.BTN_FORMULARIOS, tga.BTN_UBICACION],
+                                                              [tga.BTN_CORRECCIONES]]
     # Botones de texto: las Mini Apps se abren con botones inline (initData).
     assert all(b.web_app is None for row in kb.keyboard for b in row)
     assert kb.keyboard[0][1].request_location is True
@@ -104,6 +105,34 @@ def test_formularios_lists_preoperacional_first():
     assert rows[5][0].web_app.url == "https://scan.example.com/pos-operacional"
     assert rows[6][0].web_app.url == "https://scan.example.com/scanner"
     assert rows[7][0].web_app is None and rows[7][0].callback_data == tga.CB_FINALIZAR_PEDIR
+
+
+def test_correcciones_button_in_keyboard_opens_inline_mini_app():
+    # El botón del teclado es de texto (sin initData): al tocarlo el bot responde con el inline web_app.
+    assert tga.BTN_CORRECCIONES == "🛠️ Correcciones Post y Gastos"
+    upd = _update(text=tga.BTN_CORRECCIONES)
+    asyncio.run(tga.on_text(upd, _ctx(_services())))
+    markup = upd.message.reply_text.await_args.kwargs["reply_markup"]
+    button = markup.inline_keyboard[0][0]
+    assert button.text == tga.BTN_CORRECCIONES and button.web_app.url == "https://scan.example.com/correcciones"
+
+
+def test_correcciones_command_opens_mini_app_and_is_listed():
+    upd = _update(text="/correcciones")
+    asyncio.run(tga.cmd_correcciones(upd, _ctx(_services())))
+    button = upd.message.reply_text.await_args.kwargs["reply_markup"].inline_keyboard[0][0]
+    assert button.web_app.url == "https://scan.example.com/correcciones"
+    assert "correcciones" in [c.command for c in tga.BOT_COMMANDS]
+    assert tga.BTN_CORRECCIONES in tga.HELP_TEXT
+    # No es un formulario del panel (no exige reserva): el panel conserva su orden.
+    assert tga.BTN_CORRECCIONES not in [f.label for f in tga.FORMULARIOS]
+
+
+def test_correcciones_requires_authorization():
+    for upd, handler in ((_update(user_id=111, text="/correcciones"), tga.cmd_correcciones),
+                         (_update(user_id=111, text=tga.BTN_CORRECCIONES), tga.on_text)):
+        asyncio.run(handler(upd, _ctx(_services(pin_ok=False))))
+        assert "no autorizado" in upd.message.reply_text.await_args.args[0].lower()
 
 
 def test_combustible_command_opens_mini_app():

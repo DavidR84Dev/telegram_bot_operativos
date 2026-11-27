@@ -1,4 +1,4 @@
-"""Entrypoint FastAPI: validador de QR (solo lectura en Odoo), preoperacional, AST, Prueba de Ruta, Combustible, Gastos Operativos y Pos-Operacional."""
+"""Entrypoint FastAPI: validador de QR (solo lectura en Odoo), preoperacional, AST, Prueba de Ruta, Combustible, Gastos Operativos, Post-operacional y Correcciones."""
 from __future__ import annotations
 
 import asyncio
@@ -20,6 +20,10 @@ from .combustible.service import CombustibleOutcome, RecordatorioUbicacion
 from .combustible.gps import build_gps_client
 from .combustible.worker import CombustibleSender, build_rest_client
 from .config import get_settings
+from .correcciones.router import CorreccionesServices
+from .correcciones.router import router as correcciones_router
+from .correcciones.service import CorreccionOutcome
+from .correcciones.worker import CorreccionesSender
 from .gastos_operativos import service as gastos_service
 from .gastos_operativos.catalogo import TiposGastoError, TopesGastoError, parse_tipos, parse_topes
 from .gastos_operativos.router import GastosOperativosServices
@@ -96,6 +100,7 @@ def _start_preop(app: FastAPI, application) -> list:
     tasks.append(_start_combustible(app, application, db, writer))
     tasks.append(_start_gastos_operativos(app, application, db, writer))
     tasks.append(_start_pos_operacional(app, application, db, writer))
+    tasks.append(_start_correcciones(app, application, db, writer))
     # El handler de 📍 Enviar ubicación guarda en esta misma BD.
     application.bot_data[PREOP_DB_KEY] = db
     app.state.preop = PreopServices(
@@ -285,7 +290,7 @@ def _start_gastos_operativos(app: FastAPI, application, db: Database, writer) ->
 
 
 def _start_pos_operacional(app: FastAPI, application, db: Database, writer) -> PosOperacionalSender:
-    """Arranca el Pos-Operacional: misma BD y usuario de escritura; cola propia hacia ``pos.operacional``."""
+    """Arranca el Post-operacional: misma BD y usuario de escritura; cola propia hacia ``pos.operacional``."""
 
     async def notify(outcome: PosOperacionalOutcome) -> None:
         await application.bot.send_message(
@@ -306,6 +311,33 @@ def _start_pos_operacional(app: FastAPI, application, db: Database, writer) -> P
     sender.start()
     app.state.pos_operacional = PosOperacionalServices(
         db=db, bot_token=settings.telegram_bot_token.get_secret_value(),
+        max_age_seconds=settings.preop_auth_max_age_seconds, wake_worker=sender.wake, on_accepted=on_accepted,
+    )
+    return sender
+
+
+def _start_correcciones(app: FastAPI, application, db: Database, writer) -> CorreccionesSender:
+    """Arranca Correcciones Post y Gastos: misma BD y usuario de escritura; cola propia (REST para gastos, write de Pos)."""
+
+    async def notify(outcome: CorreccionOutcome) -> None:
+        await application.bot.send_message(
+            chat_id=outcome.telegram_user_id, text=formatting.correccion_result(outcome), parse_mode="HTML"
+        )
+
+    async def on_accepted(recibida) -> None:
+        """Corrección aceptada (también el reenvío sin señal): se confirma la recepción en el chat."""
+        await application.bot.send_message(
+            chat_id=recibida.telegram_user_id, text=formatting.correccion_recibida(recibida.tipo, recibida.referencia),
+            parse_mode="HTML",
+        )
+
+    sender = CorreccionesSender(
+        db, writer, settings.preop_worker_interval_seconds, settings.preop_max_attempts,
+        settings.preop_sending_lease_seconds, notify=notify, rest_client=build_rest_client(settings),
+    )
+    sender.start()
+    app.state.correcciones = CorreccionesServices(
+        db=db, writer=writer, bot_token=settings.telegram_bot_token.get_secret_value(),
         max_age_seconds=settings.preop_auth_max_age_seconds, wake_worker=sender.wake, on_accepted=on_accepted,
     )
     return sender
@@ -363,6 +395,7 @@ app.include_router(prueba_ruta_router)
 app.include_router(combustible_router)
 app.include_router(gastos_operativos_router)
 app.include_router(pos_operacional_router)
+app.include_router(correcciones_router)
 
 
 @app.get("/health")

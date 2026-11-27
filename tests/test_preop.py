@@ -503,15 +503,22 @@ def test_odometer_is_read_live_from_odoo_with_local_fallback(seeded):
     assert ext["vehiculo"]["odometer_post"] == 1500.5
 
 
-@pytest.mark.parametrize("post, pos, esperado", [(253600.0, [], 253600.0), (0.0, [{"km_end": 12000.0}], 12000.0),
-                                                 (0.0, [], None)])
-def test_writer_last_odometer_uses_odometer_post_then_last_pos(post, pos, esperado):
+@pytest.mark.parametrize("odo, post, pos, esperado", [
+    (0.0, 253600.0, [], 253600.0),
+    (0.0, 0.0, [{"km_end": 12000.0}], 12000.0),
+    (0.0, 0.0, [], None),
+    # "Last Odometer" del vehículo manda cuando es mayor (caso real: odometer_post en 0 en toda la flota).
+    (125430.0, 0.0, [], 125430.0),
+    (125430.0, 0.0, [{"km_end": 12500.0}], 125430.0),
+    (125430.0, 130000.0, [], 130000.0),
+])
+def test_writer_last_odometer_takes_max_of_vehicle_odometer_and_post(odo, post, pos, esperado):
     writer = OdooWriter("http://odoo.local", "db", "u", "p")
     calls = []
 
     def fake_execute(model, method, args, kwargs=None):
         calls.append(model)
-        return [{"odometer_post": post}] if model == "fleet.vehicle" else pos
+        return [{"odometer": odo, "odometer_post": post}] if model == "fleet.vehicle" else pos
 
     writer._execute = fake_execute  # type: ignore[method-assign]
     assert writer.ultimo_odometro(2051) == esperado

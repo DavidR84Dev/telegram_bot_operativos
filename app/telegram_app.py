@@ -5,7 +5,7 @@ referencia (@viacoturform_bot), el teclado de respuesta es plegable: Telegram lo
 muestra detrás de su botón de teclado (``toggle-reply-markup``) y solo tiene:
 
     📋 Formularios      -> panel inline, en este orden:
-                             • formularios de ``FORMULARIOS`` (✅ Preoperacional, ⚠️ AST, 🗺️ Prueba de Ruta, ⛽ Combustible, 💰 Gastos Operativos, 🧾 Pos-Operacional)
+                             • formularios de ``FORMULARIOS`` (✅ Preoperacional, ⚠️ AST, 🗺️ Prueba de Ruta, ⛽ Combustible, 💰 Gastos Operativos, 🧾 Post-operacional)
                              • 📷 Escanear QR (Mini App del escáner)
                              • 🔴 Finalizar   (fin de jornada: libera el vehículo reservado)
     📍 Enviar ubicación -> comparte la ubicación (se guarda en la BD del bot)
@@ -81,7 +81,8 @@ BTN_AST = "⚠️ AST"
 BTN_PRUEBA_RUTA = "🗺️ Prueba de Ruta"
 BTN_COMBUSTIBLE = "⛽ Combustible"
 BTN_GASTOS = "💰 Gastos Operativos"
-BTN_POS_OPERACIONAL = "🧾 Pos-Operacional"
+BTN_POS_OPERACIONAL = "🧾 Post-operacional"
+BTN_CORRECCIONES = "🛠️ Correcciones Post y Gastos"
 BTN_FINALIZAR = "🔴 Finalizar"
 CB_FINALIZAR_SI = "finalizar:si"
 CB_FINALIZAR_NO = "finalizar:no"
@@ -162,7 +163,8 @@ BOT_COMMANDS = [
     BotCommand("prueba_ruta", "Diligenciar la Prueba de Ruta del vehículo"),
     BotCommand("combustible", "Registrar un tanqueo de combustible"),
     BotCommand("gastos", "Registrar gastos operativos"),
-    BotCommand("pos_operacional", "Registrar el pos-operacional de la jornada"),
+    BotCommand("pos_operacional", "Registrar el Post-operacional de la jornada"),
+    BotCommand("correcciones", "Corregir gastos rechazados y Post-operacionales pendientes"),
     BotCommand("escanear", "Abrir el escáner de QR"),
     BotCommand("finalizar", "Finalizar la jornada y liberar el vehículo reservado"),
     BotCommand("ayuda", "Qué hace cada opción del menú"),
@@ -201,7 +203,12 @@ def gastos_operativos_url(settings: Settings) -> str:
 
 def pos_operacional_url(settings: Settings) -> str:
     base = settings.preop_base_url or settings.scanner_base_url
-    return f"{base.rstrip('/')}/pos-operacional"
+    return f"{base.rstrip('/')}/Post-operacional"
+
+
+def correcciones_url(settings: Settings) -> str:
+    base = settings.preop_base_url or settings.scanner_base_url
+    return f"{base.rstrip('/')}/correcciones"
 
 
 def scanner_inline(base: str) -> InlineKeyboardMarkup:
@@ -258,7 +265,7 @@ FORMULARIOS: tuple[MenuOption, ...] = (
     MenuOption(
         label=BTN_POS_OPERACIONAL,
         open_text=BTN_POS_OPERACIONAL,
-        prompt=("Toca para registrar tu pos-operacional:\n\n"
+        prompt=("Toca para registrar tu Post-operacional:\n\n"
                 "Recuerda que enviarlo no libera tu vehículo: al terminar tu jornada toca 🔴 Finalizar."),
         help=("cierre de la jornada: kilometraje inicial y final, entrada, salida y la planilla de servicios "
               "(PDF o foto). No libera el vehículo: para eso usa 🔴 Finalizar."),
@@ -276,6 +283,17 @@ ESCANER = MenuOption(
     url=lambda settings: scanner_url(settings.scanner_base_url),
 )
 
+# Botón fijo del teclado (no va en el panel de formularios): corrige gastos rechazados y Post-operacionales pendientes.
+CORRECCIONES = MenuOption(
+    label=BTN_CORRECCIONES,
+    open_text=BTN_CORRECCIONES,
+    prompt=("Toca para corregir tus gastos rechazados y tus Post-operacionales pendientes:\n\n"
+            "No necesitas tener un vehículo reservado."),
+    help=("corrige tus gastos operativos rechazados (con un PDF nuevo) y tus Post-operacionales pendientes de "
+          "gastos o nómina. No necesitas vehículo reservado."),
+    url=correcciones_url,
+)
+
 HELP_TEXT = (
     "Bienvenido 👋 Elige una opción:\n\n"
     f"<b>{BTN_FORMULARIOS}</b>:\n"
@@ -283,6 +301,7 @@ HELP_TEXT = (
     + f"   • <b>{BTN_ESCANEAR}</b>: {ESCANER.help}\n"
     f"   • <b>{BTN_FINALIZAR}</b>: termina tu jornada y libera el vehículo que quedó reservado a tu nombre "
     "con el preoperacional, para que otro conductor pueda usarlo.\n\n"
+    f"<b>{BTN_CORRECCIONES}</b>: {CORRECCIONES.help}\n\n"
     f"<b>{BTN_UBICACION}</b>: comparte tu ubicación actual. Si acabas de enviar un preoperacional "
     "(últimos 10 minutos), queda asociada a él.\n\n"
     "El menú se abre y se cierra con el botón de teclado ⌨️ junto al campo de mensaje."
@@ -290,7 +309,7 @@ HELP_TEXT = (
 
 
 def main_keyboard() -> ReplyKeyboardMarkup:
-    """Teclado del menú principal: solo Formularios y Enviar ubicación.
+    """Teclado del menú principal: Formularios y Enviar ubicación, y debajo Correcciones Post y Gastos.
 
     No es persistente (``is_persistent=False``): Telegram lo pliega detrás de su botón de
     teclado (``toggle-reply-markup``), igual que el bot de referencia.
@@ -298,6 +317,7 @@ def main_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         [
          [KeyboardButton(BTN_FORMULARIOS), KeyboardButton(BTN_UBICACION, request_location=True)],
+         [KeyboardButton(BTN_CORRECCIONES)],
         ],
         resize_keyboard=True,
         is_persistent=False,
@@ -395,6 +415,7 @@ def build_application(settings: Settings, odoo: OdooClient, store: WatchStore) -
     application.add_handler(CommandHandler("combustible", cmd_combustible))
     application.add_handler(CommandHandler("gastos", cmd_gastos))
     application.add_handler(CommandHandler("pos_operacional", cmd_pos_operacional))
+    application.add_handler(CommandHandler("correcciones", cmd_correcciones))
     application.add_handler(CommandHandler("escanear", cmd_escanear))
     application.add_handler(CommandHandler("finalizar", cmd_finalizar))
     application.add_handler(CallbackQueryHandler(on_finalizar_confirm, pattern=r"^finalizar:(si|no|pedir)$"))
@@ -582,6 +603,11 @@ async def cmd_pos_operacional(update: Update, context: ContextTypes.DEFAULT_TYPE
     await _open_option(update, context, _FORM_BY_LABEL[BTN_POS_OPERACIONAL])
 
 
+async def cmd_correcciones(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Sin PIN: ``_authorized`` ofrece 📝 Registro, igual que los demás formularios. No exige reserva vigente."""
+    await _open_option(update, context, CORRECCIONES)
+
+
 async def cmd_escanear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await _open_option(update, context, ESCANER)
 
@@ -681,6 +707,9 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = (update.message.text or "").strip()
     if text == BTN_FORMULARIOS:
         await cmd_formularios(update, context)
+        return
+    if text == BTN_CORRECCIONES:
+        await cmd_correcciones(update, context)  # botón fijo: responde con el botón inline que abre la Mini App
         return
     # Escanear QR y Finalizar ya no están en el teclado (van en el panel de formularios), pero
     # se siguen atendiendo para quienes aún tengan el teclado anterior.

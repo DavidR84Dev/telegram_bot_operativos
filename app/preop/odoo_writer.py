@@ -4,7 +4,8 @@ Se mantiene separado de ``app.odoo_client.OdooClient`` (solo lectura, usado por
 el validador de QR) para que el permiso de escritura quede acotado a métodos de
 creación: ``create_preoperacional``, ``create_ast``, ``create_prueba_ruta`` y
 ``create_combustible`` y ``create_pos_operacional``. Todos siguen el mismo flujo; solo cambian el modelo y la
-llave natural (``_Destino``).
+llave natural (``_Destino``). Única excepción: ``escribir_pos_operacional`` (``write``) para las correcciones de
+Post-operacional pendientes (``app/correcciones``), que se corrigen sobre el mismo registro.
 
 Flujo de creación:
 
@@ -32,7 +33,7 @@ import socket
 import threading
 import xmlrpc.client
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta, timezone
 from typing import Any, Iterable
 from urllib.parse import urlparse
 
@@ -70,6 +71,10 @@ PRUEBA_RUTA = _Destino("prueba.ruta", "prueba_ruta", ("user_id", "vehicle_id"))
 COMBUSTIBLE = _Destino("fuel", "combustible", ("employee_id", "vehicle_id", "km_tanking"))
 POS_OPERACIONAL = _Destino("pos.operacional", "pos_operacional", ("employee_id", "check_in", "check_out"))
 ODOO_MODEL = PREOPERACIONAL.model
+# Campos de ``pos.operacional`` que lee la Mini App de correcciones (sin el binario ``attachment``).
+POS_CAMPOS_LECTURA = ["name", "employee_id", "agreement_id", "vehicle_id", "check_in", "check_out", "km_start",
+                      "km_end", "state", "observations", "attachment_filename", "corrections", "corrections_hr",
+                      "create_date"]
 
 # Fallos de Odoo que dependen del momento (concurrencia), no de los datos.
 _TRANSIENT_FAULT_MARKERS = (
@@ -193,19 +198,25 @@ class OdooWriter:
     def ultimo_odometro(self, vehicle_odoo_id: int) -> float | None:
         """Último odómetro del vehículo según Odoo, para sugerirlo y validar el preoperacional.
 
-        Se lee ``fleet.vehicle.odometer_post`` (km_end del último Pos-Operacional). Ese campo
-        es calculado y almacenado sin ``@api.depends``, así que puede quedar en 0 aunque haya
-        Pos-Operacionales; en ese caso se aplica la misma regla que lo define: ``km_end`` del
-        último ``pos.operacional`` del vehículo. None si no hay ninguno o Odoo no responde.
+        Es el mayor entre ``fleet.vehicle.odometer`` ("Last Odometer": el último registro de
+        odómetro del vehículo, el que muestra Odoo) y ``fleet.vehicle.odometer_post`` (km_end
+        del último Post-operacional). ``odometer_post`` es calculado y almacenado sin
+        ``@api.depends``, así que puede quedar en 0 aunque haya Post-operacionales; en ese caso
+        se aplica la misma regla que lo define: ``km_end`` del último ``pos.operacional`` del
+        vehículo. None si no hay ninguno o Odoo no responde.
         """
         try:
             with self._lock:
-                rows = self._execute("fleet.vehicle", "read", [[vehicle_odoo_id]], {"fields": ["odometer_post"]})
-                valor = float(rows[0].get("odometer_post") or 0) if rows else 0.0
-                if valor <= 0:
+                rows = self._execute("fleet.vehicle", "read", [[vehicle_odoo_id]],
+                                     {"fields": ["odometer", "odometer_post"]})
+                row = rows[0] if rows else {}
+                registrado = float(row.get("odometer") or 0)
+                post = float(row.get("odometer_post") or 0)
+                if post <= 0:
                     pos = self._execute("pos.operacional", "search_read", [[["vehicle_id", "=", vehicle_odoo_id]]],
                                         {"fields": ["km_end"], "order": "id desc", "limit": 1})
-                    valor = float(pos[0].get("km_end") or 0) if pos else 0.0
+                    post = float(pos[0].get("km_end") or 0) if pos else 0.0
+                valor = max(registrado, post)
         except OdooWriteError as exc:
             logger.warning("No se pudo leer el odómetro del vehículo %s en Odoo: %s", vehicle_odoo_id, exc)
             return None
@@ -289,7 +300,7 @@ class OdooWriter:
 
     def create_pos_operacional(self, external_ref: str, vals: dict[str, Any], submitted_at: datetime,
                                previous_attempt_uncertain: bool) -> tuple[int, str | None, bool]:
-        """Crea el Pos-Operacional (modelo ``pos.operacional``). Devuelve (odoo_id, name, ya_existía)."""
+        """Crea el Post-operacional (modelo ``pos.operacional``). Devuelve (odoo_id, name, ya_existía)."""
         return self._create(POS_OPERACIONAL, external_ref, vals, submitted_at, previous_attempt_uncertain)
 
     def buscar_pos_operacional(self, vals: dict[str, Any]) -> int | None:
@@ -338,6 +349,83 @@ class OdooWriter:
             ("date", "=", vals["date"]),
             ("total_amount", "=", vals["total_amount"]),
             ("product_id", "=", vals["product_id"]),
+        ]
+        excluir = [int(i) for i in excluir_ids]
+        if excluir:
+            dominio.append(("id", "not in", excluir))
+        with self._lock:
+            ids = self._execute("hr.expense", "search", [dominio], {"limit": 1, "order": "id desc"})
+        return int(ids[0]) if ids else None
+
+    # ── Correcciones Post y Gastos (app/correcciones) ──────────────────────
+    ESTADOS_GASTO_RECHAZADO = ("refused",)
+    ESTADOS_POS_PENDIENTE = ("refused", "refused by")  # PENDIENTE GASTOS / PENDIENTE NÓMINA
+
+    def _leer_lista(self, model: str, dominio: list[Any], campos: list[str], etiqueta: str) -> list[dict[str, Any]] | None:
+        """``search_read`` de solo lectura; None si Odoo no responde (el llamador muestra un mensaje claro)."""
+        try:
+            with self._lock:
+                rows = self._execute(model, "search_read", [dominio],
+                                     {"fields": campos, "order": "id desc", "limit": 200})
+        except OdooWriteError as exc:
+            logger.warning("No se pudo leer %s en Odoo: %s", etiqueta, exc)
+            return None
+        return list(rows or [])
+
+    def gastos_rechazados(self, employee_odoo_id: int, desde: date | None = None) -> list[dict[str, Any]] | None:
+        """``hr.expense`` del empleado en estado Rechazado (``state_expenses`` = ``refused``); None si Odoo falla.
+
+        ``desde``: solo gastos con ``date`` >= esa fecha (ventana de antigüedad de las correcciones).
+        """
+        dominio: list[Any] = [["employee_id", "=", employee_odoo_id],
+                              ["state_expenses", "in", list(self.ESTADOS_GASTO_RECHAZADO)]]
+        if desde is not None:
+            dominio.append(["date", ">=", desde.isoformat()])
+        return self._leer_lista(
+            "hr.expense", dominio,
+            ["name", "product_id", "total_amount", "employee_id", "date", "description", "state_expenses"],
+            f"los gastos rechazados del empleado {employee_odoo_id}")
+
+    def pos_pendientes(self, employee_odoo_id: int, desde: date | None = None) -> list[dict[str, Any]] | None:
+        """``pos.operacional`` del empleado pendientes (``refused`` / ``refused by``); None si Odoo falla.
+
+        No lee la planilla (``attachment``: binario pesado), solo su nombre. ``desde``: solo los de esa fecha
+        (hora de Colombia, 00:00) en adelante, por ``check_in`` o, si está vacío, por ``create_date``.
+        """
+        dominio: list[Any] = [["employee_id", "=", employee_odoo_id], ["state", "in", list(self.ESTADOS_POS_PENDIENTE)]]
+        if desde is not None:
+            inicio = _odoo_datetime(datetime(desde.year, desde.month, desde.day, tzinfo=timezone(timedelta(hours=-5))))
+            dominio += ["|", ["check_in", ">=", inicio], "&", ["check_in", "=", False], ["create_date", ">=", inicio]]
+        return self._leer_lista(
+            "pos.operacional", dominio,
+            POS_CAMPOS_LECTURA, f"los Post-operacionales pendientes del empleado {employee_odoo_id}")
+
+    def leer_registro(self, model: str, record_id: int, campos: list[str]) -> dict[str, Any] | None:
+        """Un registro (solo lectura) o None si no existe. Lanza ``OdooWriteError`` si Odoo falla."""
+        with self._lock:
+            rows = self._execute(model, "read", [[record_id]], {"fields": campos})
+        return dict(rows[0]) if rows else None
+
+    def escribir_pos_operacional(self, pos_id: int, vals: dict[str, Any]) -> None:
+        """``write`` sobre un ``pos.operacional`` existente (corrección). Lanza ``OdooWriteError`` si Odoo falla."""
+        with self._lock:
+            self._execute("pos.operacional", "write", [[pos_id], vals])
+
+    def buscar_gasto_corregido(self, vals: dict[str, Any], excluir_ids: Iterable[int], desde: datetime) -> int | None:
+        """Id de un ``hr.expense`` de CORRECCIÓN ya creado por este envío (solo lectura), o None.
+
+        La llave natural de ``buscar_gasto_operativo`` coincidiría con el gasto rechazado original, así que aquí se
+        exige ``state_expenses`` en (``correction``, ``to_correction``), creado desde ``desde`` (recepción del envío,
+        con 2 min de holgura por el desfase de relojes) y distinto de los ids de ``excluir_ids`` (el original).
+        Lanza ``OdooWriteError`` si la búsqueda falla.
+        """
+        dominio: list[Any] = [
+            ("employee_id", "=", vals["employee_id"]),
+            ("state_expenses", "in", ["correction", "to_correction"]),
+            ("date", "=", vals["date"]),
+            ("total_amount", "=", vals["total_amount"]),
+            ("product_id", "=", vals["product_id"]),
+            ("create_date", ">=", _odoo_datetime(desde - timedelta(minutes=2))),
         ]
         excluir = [int(i) for i in excluir_ids]
         if excluir:

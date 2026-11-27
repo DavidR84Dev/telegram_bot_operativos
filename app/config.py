@@ -102,6 +102,11 @@ class Settings(BaseSettings):
     # Agregar un contrato = sumarlo aquí y reiniciar.
     prueba_ruta_acuerdos: str = "MINERA DE COBRE QUEBRADONA;SERVICIOS HIDROGEOLÓGICOS INTEGRALES S.A.S."
 
+    # ── Correcciones Post y Gastos ──────────────────────────────────────────
+    # Antigüedad máxima (días) de los gastos rechazados / Post-operacionales pendientes que se pueden corregir.
+    # Mínimo 1, máximo 365 (app/correcciones/catalogo.py). Editable desde el Panel Admin.
+    correcciones_dias_maximos: int = 30
+
     # ── Panel Admin (bot aparte, ``python -m app.admin``; ver docs/PANEL_ADMIN.md) ──────
     # Todo opcional: sin ADMIN_BOT_TOKEN el panel no arranca, pero Operativos funciona igual.
     admin_bot_token: SecretStr | None = None
