@@ -609,7 +609,7 @@
       const v = e.vehiculo, placa = v.matricula || v.nombre || "Vehículo", r = v.reserva || {};
       if (reservaDe(e) === "propia") return `${placa}: ya hiciste su preoperacional (reservado a tu nombre).`;
       if (reservaDe(e) === "ocupado") return `${placa}: en uso por ${r.conductor || "otro conductor"}, que no ha finalizado su jornada.`;
-      return `${placa}: ya tienes reservado ${r.placa_propia}.`;
+      return `ya tienes reservado ${r.placa_propia}.`;
     });
     const propio = state.ctx.extractos.some((e) => ["propia", "otro_propio"].includes(reservaDe(e)));
     return [...new Set(lineas)].join("\n") +
