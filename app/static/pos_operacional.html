@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Pos-Operacional</title>
+<title>Post-operacional</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
   :root {
@@ -109,7 +109,7 @@
 <body>
 <header class="brand">
   <img src="/static/viacotur-logo.png" alt="VIACOTUR S.A. — Transporte especial y de carga">
-  <h1>Pos-Operacional</h1>
+  <h1>Post-operacional</h1>
 </header>
 
 <main>
@@ -322,7 +322,7 @@
   const VENTANA_MS = 60 * 60 * 1000;
   const REINTENTO_MS = 15 * 1000;
   const BANDEJA_MAX_MS = 7 * 24 * 60 * 60 * 1000;
-  const IDB_NAME = "pos-operacional-offline", IDB_STORE = "bandeja", LS_PREFIX = "pos-operacional-bandeja:";
+  const IDB_NAME = "Post-operacional-offline", IDB_STORE = "bandeja", LS_PREFIX = "Post-operacional-bandeja:";
 
   function idb() {
     return new Promise((resolve, reject) => {
@@ -382,12 +382,12 @@
     for (const item of propios) {
       if (Date.now() - Date.parse(item.sin_senal_desde) > BANDEJA_MAX_MS) { await bandeja.del(item.uuid); continue; }
       try {
-        aceptado = await api("/api/pos-operacional", { method: "POST", body: cuerpoDiferido(item) });
+        aceptado = await api("/api/Post-operacional", { method: "POST", body: cuerpoDiferido(item) });
         await bandeja.del(item.uuid);
       } catch (err) {
         if (err.network || err.status === 401 || (err.status && err.status >= 500)) break;
         await bandeja.del(item.uuid);
-        if (err.status !== 410) aviso = `Tu pos-operacional guardado sin señal no fue aceptado: ${err.message}\nDiligéncialo de nuevo.`;
+        if (err.status !== 410) aviso = `Tu Post-operacional guardado sin señal no fue aceptado: ${err.message}\nDiligéncialo de nuevo.`;
       }
     }
     return { aceptado, aviso };
@@ -408,7 +408,7 @@
     $("enviar").textContent = "Reintentar ahora";
     $("enviar").disabled = false;
     setMsg(guardado
-      ? "📥 Sin señal. Tu pos-operacional quedó guardado en este teléfono y se enviará solo cuando vuelva la señal (hasta 1 hora).\n" +
+      ? "📥 Sin señal. Tu Post-operacional quedó guardado en este teléfono y se enviará solo cuando vuelva la señal (hasta 1 hora).\n" +
         "Mantén abierto el formulario; si lo cierras, vuelve a abrirlo cuando tengas señal."
       : "📵 Sin señal y no se pudo guardar en el teléfono. No cierres el formulario: se enviará solo cuando vuelva la señal (hasta 1 hora).",
     true);
@@ -426,7 +426,7 @@
     $("pendientes").hidden = true;
     $("actions").hidden = true;
     block("No se pudo enviar a tiempo",
-      "Pasó más de 1 hora sin señal y este envío ya no se puede registrar.\nDiligencia el pos-operacional de nuevo cuando tengas señal.");
+      "Pasó más de 1 hora sin señal y este envío ya no se puede registrar.\nDiligencia el Post-operacional de nuevo cuando tengas señal.");
   }
 
   function confirmAsync(text) {
@@ -661,7 +661,7 @@
       return;
     }
     const recorrido = parseNum($("km-final").value) - parseNum($("km-inicial").value);
-    if (!(await confirmAsync(`¿Confirmas el envío del pos-operacional (${fmtNum(recorrido, 1)} km recorridos)?`))) return;
+    if (!(await confirmAsync(`¿Confirmas el envío del Post-operacional (${fmtNum(recorrido, 1)} km recorridos)?`))) return;
     await submit();
   }
 
@@ -689,7 +689,7 @@
     };
     try {
       const body = state.pendiente ? cuerpoDiferido(state.pendiente) : JSON.stringify(payload);
-      const out = await api("/api/pos-operacional", { method: "POST", body });
+      const out = await api("/api/Post-operacional", { method: "POST", body });
       if (state.pendiente) { detenerReintentos(); await bandeja.del(state.uuid); }
       showDone(out, Boolean(state.pendiente));
     } catch (err) {
@@ -726,8 +726,8 @@
     $("enviar").disabled = false;
     setMsg("");
     $("done").hidden = false;
-    $("done-title").textContent = out.duplicado ? "Este pos-operacional ya había sido recibido"
-      : diferido ? "Pos-operacional recibido al recuperar la señal" : "Pos-operacional recibido";
+    $("done-title").textContent = out.duplicado ? "Este Post-operacional ya había sido recibido"
+      : diferido ? "Post-operacional recibido al recuperar la señal" : "Post-operacional recibido";
     $("done-text").textContent = "Se está registrando en Odoo y recibirás el resultado en el chat.\n" +
       "Enviarlo no libera tu vehículo: cuando termines tu jornada toca 🔴 Finalizar en el chat.";
     if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
@@ -759,7 +759,7 @@
   // ── Arranque ─────────────────────────────────────────────────────────────
   async function init() {
     if (!tg || !tg.initData) {
-      block("Abre el formulario desde Telegram", "Usa el botón «📋 Formularios» del bot y elige «🧾 Pos-Operacional».");
+      block("Abre el formulario desde Telegram", "Usa el botón «📋 Formularios» del bot y elige «🧾 Post-operacional».");
       return;
     }
     tg.ready();
@@ -769,7 +769,7 @@
     $("enviar").addEventListener("click", enviar);
     $("cancelar").addEventListener("click", cancelar);
     try {
-      const [form, ctx] = await Promise.all([api("/api/pos-operacional/form"), api("/api/pos-operacional/context")]);
+      const [form, ctx] = await Promise.all([api("/api/Post-operacional/form"), api("/api/Post-operacional/context")]);
       state.form = form;
       state.ctx = ctx;
       const previo = await vaciarBandeja();
