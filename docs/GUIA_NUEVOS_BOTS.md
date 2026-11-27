@@ -132,7 +132,11 @@ PDF. Las fotos de **evidencia** (testigos del preoperacional, odómetro de Prueb
   su router le añade `?v=<huella>` con `_versionar_escanear_js` (`app/preop/router.py`).
 - `EscanearDocumento.abrir()` muestra la hoja con una **lista de apps de escaneo** según `Telegram.WebApp.platform`
   (el conductor elige la que tenga instalada; desde un WebView no se pueden listar apps ni hay un intent «escanear»).
-  La lista vive en la constante `APPS_ESCANEO` del JS: agregar o quitar una app es editar esa lista.
+  La lista vive en la constante `APPS_ESCANEO` del JS: agregar o quitar una app es editar esa lista **y**, si no es
+  de tienda, `APPS_ESCANEO` de `app/preop/router.py` (clave `<plataforma>-<id>`; una prueba exige que coincidan).
+  **Importante:** el WebView de Telegram ignora `intent://` y los esquemas propios; solo deja salir https con
+  `Telegram.WebApp.openLink`. Por eso la hoja abre la página puente `/abrir-app/<plataforma>-<id>`, que corre en el
+  navegador del teléfono y desde ahí lanza la app (sola o con el botón «Abrir <app>»). Lista cerrada: 404 a otro id.
   Android: Google Drive, Adobe Scan y CamScanner (`intent://` MAIN + LAUNCHER por paquete; si no está instalada, el
   fallback abre su ficha de Play Store). iOS: Archivos (`shareddocuments://`), Notas (`mobilenotes://`), Adobe Scan
   (id1199564834) y CamScanner (id388627783), estas dos con `Telegram.WebApp.openLink` a su página de App Store («Abrir»

@@ -19,8 +19,10 @@ import hashlib
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from html import escape
 from pathlib import Path
 from typing import Annotated, Any, Callable
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from fastapi.responses import FileResponse, HTMLResponse
@@ -110,6 +112,51 @@ def _versionar_escanear_js(html: str) -> str:
 def escanear_js() -> FileResponse:
     # Con ?v=<huella> la URL cambia al cambiar el script; sin ella se revalida siempre.
     return FileResponse(_ESCANEAR_JS, media_type="text/javascript", headers={"Cache-Control": "no-cache"})
+
+
+# ── Puente para abrir la app de escaneo ─────────────────────────────────────
+# El WebView de la Mini App ignora intent:// y los esquemas propios (shareddocuments://, …): Telegram solo deja
+# salir enlaces https con ``Telegram.WebApp.openLink``, que se abren en el navegador del teléfono. Esta página
+# corre ahí (Chrome/Safari sí lanzan apps) e intenta abrir la app sola y, si el navegador exige un toque, con
+# un botón. Lista cerrada de destinos: no acepta URLs arbitrarias (no es una redirección abierta).
+_PLAY = "https://play.google.com/store/apps/details?id="
+
+
+def _intent_android(paquete: str) -> str:
+    # action=MAIN + LAUNCHER: sin ellos Android a menudo no resuelve el intent; si no está instalada -> Play Store.
+    return ("intent://#Intent;action=android.intent.action.MAIN;category=android.intent.category.LAUNCHER;"
+            f"package={paquete};S.browser_fallback_url={quote(_PLAY + paquete, safe='')};end")
+
+
+APPS_ESCANEO: dict[str, tuple[str, str]] = {  # id -> (nombre, destino)
+    "android-drive": ("Google Drive", _intent_android("com.google.android.apps.docs")),
+    "android-adobe": ("Adobe Scan", _intent_android("com.adobe.scan.android")),
+    "android-camscanner": ("CamScanner", _intent_android("com.intsig.camscanner")),
+    "ios-archivos": ("Archivos", "shareddocuments://"),
+    "ios-notas": ("Notas", "mobilenotes://"),
+}
+
+_PUENTE_HTML = """<!doctype html><html lang="es"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Abrir {nombre}</title>
+<style>body{{font-family:system-ui,sans-serif;margin:0;padding:32px 16px;background:#f4f6fb;color:#14172f;text-align:center}}
+a.btn{{display:block;max-width:420px;margin:24px auto 12px;padding:16px;border-radius:12px;background:#1f6fb8;color:#fff;
+font-size:18px;font-weight:600;text-decoration:none}}p{{font-size:15px;line-height:1.45;max-width:420px;margin:8px auto}}</style>
+</head><body><h1 style="font-size:20px">📄 Escanear con {nombre}</h1>
+<a class="btn" id="abrir" href="{destino}">Abrir {nombre}</a>
+<p>Si no se abrió sola, toca el botón.</p>
+<p>Escanea el documento, guárdalo como PDF y vuelve a <b>Telegram</b> para subirlo con «Galería o PDF».</p>
+<script>setTimeout(function(){{location.href=document.getElementById("abrir").href;}},150);</script>
+</body></html>"""
+
+
+@router.get("/abrir-app/{app_id}", response_class=HTMLResponse, include_in_schema=False)
+def abrir_app(app_id: str) -> HTMLResponse:
+    app = APPS_ESCANEO.get(app_id)
+    if app is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "App de escaneo desconocida")
+    nombre, destino = app
+    html = _PUENTE_HTML.format(nombre=escape(nombre), destino=escape(destino, quote=True))
+    return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
 
 
 @router.get("/preoperacional", response_class=HTMLResponse, include_in_schema=False)

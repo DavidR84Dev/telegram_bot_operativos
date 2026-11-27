@@ -16,8 +16,9 @@
   const tg = window.Telegram && window.Telegram.WebApp;
   // Apps de escaneo por plataforma: para agregar o quitar una, basta editar esta constante.
   //   id: clave para recordar la última usada; nombre/icono: lo que se ve en el botón; pasos: línea bajo el botón.
-  //   android: paquete -> intent de lanzador (si no está instalada abre su ficha en Play Store).
-  //   ios: url (esquema nativo, se navega) o tienda (página de App Store, se abre con openLink).
+  //   paquete/url: referencia; el destino real (intent de Android o esquema de iOS) está en la lista cerrada del
+  //   servidor, APPS_ESCANEO de app/preop/router.py, con clave "<plataforma>-<id>" (agregar la app en ambos).
+  //   tienda: página de App Store, se abre directo con openLink (muestra «Abrir» si ya está instalada).
   const APPS_ESCANEO = {
     android: [
       { id: "drive", nombre: "Google Drive", icono: "☁️", paquete: "com.google.android.apps.docs",
@@ -43,10 +44,6 @@
   const ULTIMA_KEY = "escanear-documento:ultima-app";
   const ESPERA_APERTURA_MS = 1500;
 
-  // action=MAIN + LAUNCHER: sin ellos Android a menudo no resuelve el intent y no abre la app.
-  const intentAndroid = (paquete) => "intent://#Intent;action=android.intent.action.MAIN;"
-    + `category=android.intent.category.LAUNCHER;package=${paquete};`
-    + `S.browser_fallback_url=${encodeURIComponent(`https://play.google.com/store/apps/details?id=${paquete}`)};end`;
   const leerUltima = () => { try { return localStorage.getItem(ULTIMA_KEY) || ""; } catch (_) { return ""; } };
   const guardarUltima = (id) => { try { localStorage.setItem(ULTIMA_KEY, id); } catch (_) { /* sin almacenamiento */ } };
   const BORRADOR_MAX_MS = 2 * 60 * 60 * 1000;
@@ -103,9 +100,12 @@
         enSegundoPlano = false;
         document.addEventListener("visibilitychange", alOcultar);
         try {
-          if (app.paquete) window.location.href = intentAndroid(app.paquete);
-          else if (app.tienda) { if (tg && tg.openLink) tg.openLink(app.tienda); else window.open(app.tienda, "_blank"); }
-          else window.location.href = app.url;
+          // El WebView de Telegram ignora intent:// y los esquemas propios: solo deja salir https con openLink
+          // (se abre en el navegador del teléfono). Las apps instaladas se lanzan desde la página puente
+          // /abrir-app/<plataforma>-<id> (lista cerrada en el servidor); las de tienda van directo a la App Store.
+          const destino = app.tienda || `${location.origin}/abrir-app/${plat}-${app.id}`;
+          if (tg && tg.openLink) tg.openLink(destino, { try_instant_view: false });
+          else window.open(destino, "_blank");
         } catch (_) { /* se siguen los pasos a mano */ }
         setTimeout(() => {
           if (!enSegundoPlano) {
