@@ -72,9 +72,10 @@ COMBUSTIBLE = _Destino("fuel", "combustible", ("employee_id", "vehicle_id", "km_
 POS_OPERACIONAL = _Destino("pos.operacional", "pos_operacional", ("employee_id", "check_in", "check_out"))
 ODOO_MODEL = PREOPERACIONAL.model
 # Campos de ``pos.operacional`` que lee la Mini App de correcciones (sin el binario ``attachment``).
-POS_CAMPOS_LECTURA = ["name", "employee_id", "agreement_id", "vehicle_id", "check_in", "check_out", "km_start",
+# pos.operacional no tiene campo "name" (Odoo responde "Invalid field"): se usa display_name.
+POS_CAMPOS_LECTURA = ["display_name", "employee_id", "agreement_id", "vehicle_id", "check_in", "check_out", "km_start",
                       "km_end", "state", "observations", "attachment_filename", "corrections", "corrections_hr",
-                      "create_date"]
+                      "create_date", "write_date"]
 
 # Fallos de Odoo que dependen del momento (concurrencia), no de los datos.
 _TRANSIENT_FAULT_MARKERS = (
@@ -359,7 +360,7 @@ class OdooWriter:
 
     # ── Correcciones Post y Gastos (app/correcciones) ──────────────────────
     ESTADOS_GASTO_RECHAZADO = ("refused",)
-    ESTADOS_POS_PENDIENTE = ("refused", "refused by")  # PENDIENTE GASTOS / PENDIENTE NÓMINA
+    ESTADOS_POS_PENDIENTE = ("refused", "refused by", "correct by")  # PENDIENTE GASTOS / PENDIENTE NÓMINA / CORRECCIÓN NÓMINA
 
     def _leer_lista(self, model: str, dominio: list[Any], campos: list[str], etiqueta: str) -> list[dict[str, Any]] | None:
         """``search_read`` de solo lectura; None si Odoo no responde (el llamador muestra un mensaje claro)."""
@@ -387,7 +388,7 @@ class OdooWriter:
             f"los gastos rechazados del empleado {employee_odoo_id}")
 
     def pos_pendientes(self, employee_odoo_id: int, desde: date | None = None) -> list[dict[str, Any]] | None:
-        """``pos.operacional`` del empleado pendientes (``refused`` / ``refused by``); None si Odoo falla.
+        """``pos.operacional`` del empleado pendientes (``refused`` / ``refused by`` / ``correct by``); None si Odoo falla.
 
         No lee la planilla (``attachment``: binario pesado), solo su nombre. ``desde``: solo los de esa fecha
         (hora de Colombia, 00:00) en adelante, por ``check_in`` o, si está vacío, por ``create_date``.
@@ -399,6 +400,33 @@ class OdooWriter:
         return self._leer_lista(
             "pos.operacional", dominio,
             POS_CAMPOS_LECTURA, f"los Post-operacionales pendientes del empleado {employee_odoo_id}")
+
+    def pos_en_rango(self, employee_odoo_id: int, inicio: datetime, fin: datetime) -> list[dict[str, Any]] | None:
+        """``pos.operacional`` del empleado con ``check_in`` (o ``create_date`` si no lo tiene) en [inicio, fin).
+
+        Una sola consulta para todos los días de la ventana (planillas no enviadas). ``inicio``/``fin`` con zona
+        (se pasan a UTC). Solo ``check_in``, ``create_date`` y ``state``; None si Odoo falla.
+        """
+        a, b = _odoo_datetime(inicio), _odoo_datetime(fin)
+        dominio: list[Any] = [
+            ["employee_id", "=", employee_odoo_id],
+            "|", "&", ["check_in", ">=", a], ["check_in", "<", b],
+            "&", ["check_in", "=", False], "&", ["create_date", ">=", a], ["create_date", "<", b],
+        ]
+        return self._leer_lista("pos.operacional", dominio, ["check_in", "create_date", "state"],
+                                f"los Post-operacionales del empleado {employee_odoo_id} por rango de fechas")
+
+    def buscar_pos_planilla(self, employee_odoo_id: int, check_in: str, desde: datetime) -> int | None:
+        """Id de un ``pos.operacional`` ya creado por este envío (solo lectura), o None.
+
+        ``check_in`` exactamente igual (UTC, texto) del empleado y creado desde ``desde`` - 2 min.
+        Lanza ``OdooWriteError`` si la búsqueda falla.
+        """
+        dominio: list[Any] = [("employee_id", "=", employee_odoo_id), ("check_in", "=", check_in),
+                              ("create_date", ">=", _odoo_datetime(desde - timedelta(minutes=2)))]
+        with self._lock:
+            ids = self._execute("pos.operacional", "search", [dominio], {"limit": 1, "order": "id desc"})
+        return int(ids[0]) if ids else None
 
     def leer_registro(self, model: str, record_id: int, campos: list[str]) -> dict[str, Any] | None:
         """Un registro (solo lectura) o None si no existe. Lanza ``OdooWriteError`` si Odoo falla."""

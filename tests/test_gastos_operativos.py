@@ -883,10 +883,11 @@ def test_pagina_sin_cache_logo_versionado_y_marcas_del_formulario(api):
     assert re.findall(r'src="/static/viacotur-logo\.png\?v=([0-9a-f]{12})"', page.text)
     for marca in ('IDB_NAME = "gastos-operativos-offline"', "vaciarBandeja()", 'addEventListener("online"',
                   "+ Agregar gasto", "Total general", "Cancelar", "Enviar", "Gasto #", "Soporte (PDF o foto)",
-                  "Primero el Preoperacional", "sin_reserva_vigente", "capture", "application/pdf", "%PDF", "soloDigitos",
+                  "Primero el Preoperacional", "sin_reserva_vigente", "Abrir App para escanear", "/static/escanear_documento.js?v=", "application/pdf", "%PDF", "soloDigitos",
                   "/api/gastos-operativos"):
         assert marca in page.text
     assert "innerHTML" not in page.text and "toLocaleString" not in page.text
+    assert "capture" not in page.text and "Tomar foto" not in page.text and "getUserMedia" not in page.text
 
 
 # ─────────────────────────────────────────── menú del bot ───────────────────────────────────────────

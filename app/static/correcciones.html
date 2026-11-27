@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Correcciones Post y Gastos</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script src="/static/escanear_documento.js"></script>
 <style>
   :root {
     color-scheme: light dark;
@@ -124,6 +125,11 @@
       <div class="hint">Toca el Post-operacional que quieres corregir.</div>
       <div id="lista-pos"></div>
     </div>
+    <div class="card">
+      <h2>Planillas no enviadas</h2>
+      <div class="hint">Días en que hiciste el preoperacional y no hay Post-operacional. Toca el día para cargar la planilla.</div>
+      <div id="lista-planillas"></div>
+    </div>
   </section>
 
   <!-- Corrección de un gasto -->
@@ -157,12 +163,11 @@
         <label class="field">Soporte (PDF o foto) <span class="req">*</span></label>
         <div class="sop-zone" id="g-pdf-zona">
           <span class="big">📄</span>
-          <button type="button" class="btn-file" id="g-cam-btn">📷 Tomar foto</button>
+          <button type="button" class="btn-file" id="g-esc-btn">📄 Abrir App para escanear</button>
           <button type="button" class="btn-file" id="g-pdf-btn">🖼️ Galería o PDF</button>
           <span class="hint" id="g-pdf-hint"></span>
         </div>
         <div class="sop-ok" id="g-pdf-ok" hidden></div>
-        <input type="file" id="g-cam-in" accept="image/*" capture="environment" hidden>
         <input type="file" id="g-pdf-in" accept="application/pdf,.pdf,image/*" hidden>
       </div>
     </div>
@@ -212,12 +217,11 @@
         <div class="hint" id="p-pdf-actual"></div>
         <div class="sop-zone" id="p-pdf-zona">
           <span class="big">🧾</span>
-          <button type="button" class="btn-file" id="p-cam-btn">📷 Tomar foto</button>
+          <button type="button" class="btn-file" id="p-esc-btn">📄 Abrir App para escanear</button>
           <button type="button" class="btn-file" id="p-pdf-btn">🖼️ Galería o PDF</button>
           <span class="hint" id="p-pdf-hint"></span>
         </div>
         <div class="sop-ok" id="p-pdf-ok" hidden></div>
-        <input type="file" id="p-cam-in" accept="image/*" capture="environment" hidden>
         <input type="file" id="p-pdf-in" accept="application/pdf,.pdf,image/*" hidden>
       </div>
     </div>
@@ -227,6 +231,47 @@
         <label class="field" for="p-obs">Explica la corrección <span class="req">*</span></label>
         <textarea id="p-obs" rows="3" placeholder="¿Qué corregiste y por qué? Se agrega al final de las observaciones actuales."></textarea>
         <div class="hint" id="p-obs-actual"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Carga de una planilla no enviada (crea un Post-operacional nuevo) -->
+  <section id="f-planilla" hidden>
+    <div class="card">
+      <h2>Planilla no enviada</h2>
+      <label class="field" for="n-fecha">Día de la jornada</label>
+      <input id="n-fecha" type="text" readonly>
+      <label class="field" for="n-vehiculo">Vehículo del preoperacional</label>
+      <input id="n-vehiculo" type="text" readonly placeholder="Sin vehículo">
+      <div class="hint">Se registrará un Post-operacional nuevo para revisión de nómina.</div>
+    </div>
+    <div class="card">
+      <h2>Hora de entrada</h2>
+      <div class="hint">Hora de Colombia, dentro del mismo día y no futura. Se precargó con la hora de tu preoperacional.</div>
+      <div class="field-wrap" id="w-n-entrada">
+        <label class="field" for="n-entrada">Entrada <span class="req">*</span></label>
+        <input id="n-entrada" type="datetime-local">
+      </div>
+    </div>
+    <div class="card">
+      <h2>Planilla de servicios</h2>
+      <div class="field-wrap" id="w-n-pdf">
+        <label class="field">Planilla (PDF o foto) <span class="req">*</span></label>
+        <div class="sop-zone" id="n-pdf-zona">
+          <span class="big">🧾</span>
+          <button type="button" class="btn-file" id="n-esc-btn">📄 Abrir App para escanear</button>
+          <button type="button" class="btn-file" id="n-pdf-btn">🖼️ Galería o PDF</button>
+          <span class="hint" id="n-pdf-hint"></span>
+        </div>
+        <div class="sop-ok" id="n-pdf-ok" hidden></div>
+        <input type="file" id="n-pdf-in" accept="application/pdf,.pdf,image/*" hidden>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Observaciones</h2>
+      <div class="field-wrap" id="w-n-obs">
+        <label class="field" for="n-obs">Observaciones <span class="req">*</span></label>
+        <textarea id="n-obs" rows="3" placeholder="¿Por qué no se envió la planilla ese día?"></textarea>
       </div>
     </div>
   </section>
@@ -269,7 +314,7 @@
 
   const state = {
     form: null, ctx: null,
-    vista: "lista",            // lista | gasto | pos
+    vista: "lista",            // lista | gasto | pos | planilla
     sel: null,                 // registro elegido
     pdf: null,                 // soporte nuevo {nombre, bytes, data}: PDF tal cual o foto reducida a JPG (el servidor la vuelve PDF)
     uuid: null, sending: false, finished: false, dirty: false,
@@ -463,7 +508,7 @@
   }
 
   function ocultarVistas() {
-    for (const id of ["lista", "f-gasto", "f-pos", "pendientes", "actions", "blocked", "done"]) $(id).hidden = true;
+    for (const id of ["lista", "f-gasto", "f-pos", "f-planilla", "pendientes", "actions", "blocked", "done"]) $(id).hidden = true;
   }
 
   function vencer() {
@@ -552,7 +597,7 @@
         blob = file;
       } else if (file.type.startsWith("image/") || /\.(jpe?g|png|heic|heif|webp)$/i.test(nombre)) {
         try { blob = await fotoAJpg(file); } catch (_) {
-          setMsg("No se pudo leer la foto. Toma otra, o usa una imagen JPG o PNG o un PDF.", true);
+          setMsg("No se pudo leer la foto. Elige otra, o usa una imagen JPG o PNG o un PDF.", true);
           return;
         }
         nombre = nombre.replace(/\.[A-Za-z0-9]{1,5}$/, "") + ".jpg";
@@ -570,8 +615,10 @@
     renderPdf();
   }
 
+  const PREF_PDF = { gasto: "g", pos: "p", planilla: "n" };
+
   function renderPdf() {
-    const pref = state.vista === "gasto" ? "g" : "p";
+    const pref = PREF_PDF[state.vista] || "p";
     const p = state.pdf;
     $(`${pref}-pdf-zona`).hidden = Boolean(p);
     $(`${pref}-pdf-ok`).hidden = !p;
@@ -588,7 +635,7 @@
   // ── Lista ────────────────────────────────────────────────────────────────
   function renderLista() {
     const c = state.ctx;
-    const g = $("lista-gastos"), p = $("lista-pos");
+    const g = $("lista-gastos"), p = $("lista-pos"), n = $("lista-planillas");
     g.replaceChildren(...(c.gastos.length ? c.gastos.map((x) => {
       const b = el("button", { type: "button", class: "item" }, [
         el("div", { class: "titulo", text: x.nombre || `Gasto ${x.id}` }),
@@ -609,6 +656,16 @@
       b.addEventListener("click", () => abrirPos(x));
       return b;
     }) : [el("p", { class: "hint vacio", text: "No tienes Post-operacionales pendientes." })]));
+    const planillas = c.planillas || [];
+    n.replaceChildren(...(planillas.length ? planillas.map((x) => {
+      const b = el("button", { type: "button", class: "item" }, [
+        el("div", { class: "titulo", text: "Jornada del " + x.fecha }),
+        el("div", { class: "linea", text: "Preoperacional " + x.entrada.replace("T", " ") + (x.vehiculo ? " · " + x.vehiculo : "") }),
+        el("span", { class: "estado", text: "SIN POST-OPERACIONAL" }),
+      ]);
+      b.addEventListener("click", () => abrirPlanilla(x));
+      return b;
+    }) : [el("p", { class: "hint vacio", text: c.planillas_mensaje || "No tienes planillas pendientes por enviar." })]));
   }
 
   async function mostrarLista() {
@@ -681,6 +738,30 @@
     window.scrollTo(0, 0);
   }
 
+  // Hora actual de Colombia (UTC-5 fijo) como YYYY-MM-DDTHH:MM, comparable con el valor de datetime-local.
+  const ahoraColombia = () => new Date(Date.now() - 5 * 3600 * 1000).toISOString().slice(0, 16);
+
+  function abrirPlanilla(x) {
+    state.vista = "planilla"; state.sel = x; state.pdf = null; state.uuid = newUuid(); state.initDataOriginal = tg.initData;
+    ocultarVistas();
+    $("n-fecha").value = x.fecha;
+    $("n-vehiculo").value = x.vehiculo || "";
+    $("n-entrada").value = x.entrada;
+    $("n-entrada").min = x.fecha + "T00:00";
+    const tope = x.fecha + "T23:59", ahora = ahoraColombia();
+    $("n-entrada").max = tope < ahora ? tope : ahora;  // mismo día y no futura
+    $("n-obs").value = "";
+    $("n-obs").maxLength = state.form.texto_max;
+    $("n-pdf-hint").textContent = `PDF o foto, máximo ${Math.round(state.form.pdf_max_bytes / 1048576)} MB`;
+    setMsg("");
+    renderPdf();
+    $("f-planilla").hidden = false;
+    $("actions").hidden = false;
+    $("enviar").textContent = "Enviar planilla";
+    $("enviar").disabled = false;
+    window.scrollTo(0, 0);
+  }
+
   // ── Resumen en vivo del Pos ──────────────────────────────────────────────
   function refrescar() {
     if (state.vista !== "pos") return;
@@ -728,6 +809,13 @@
         else if (s - e > state.form.rango_max_horas * 3600000) add("w-p-salida", `Salida (máximo ${state.form.rango_max_horas} horas después de la entrada)`);
       }
       if (!$("p-obs").value.trim()) add("w-p-obs", "Explicación de la corrección (observaciones)");
+    } else if (state.vista === "planilla") {
+      const e = $("n-entrada").value, dia = state.sel.fecha;
+      if (!e) add("w-n-entrada", "Entrada (fecha y hora)");
+      else if (e.slice(0, 10) !== dia) add("w-n-entrada", "Entrada (debe estar dentro del día de la jornada)");
+      else if (e > ahoraColombia()) add("w-n-entrada", "Entrada (no puede ser futura)");
+      if (!state.pdf) add("w-n-pdf", "Planilla (PDF o foto)");
+      if (!$("n-obs").value.trim()) add("w-n-obs", "Observaciones");
     }
     return out;
   }
@@ -737,6 +825,7 @@
     const ids = new Set(faltan.map((f) => f.id));
     document.querySelectorAll(".field-wrap").forEach((w) => w.classList.toggle("missing", show && ids.has(w.id)));
     $("g-pdf-zona").classList.toggle("missing", show && ids.has("w-g-pdf"));
+    $("n-pdf-zona").classList.toggle("missing", show && ids.has("w-n-pdf"));
     const box = $("pendientes");
     box.hidden = !show || faltan.length === 0;
     if (box.hidden) return;
@@ -765,6 +854,12 @@
         descripcion: $("g-desc").value.trim(), pdf: state.pdf.data, pdf_nombre: state.pdf.nombre,
       };
     }
+    if (state.vista === "planilla") {
+      return {
+        tipo: "planilla", uuid: state.uuid, fecha: state.sel.fecha, entrada: $("n-entrada").value,
+        observaciones: $("n-obs").value.trim(), planilla: state.pdf.data, planilla_nombre: state.pdf.nombre,
+      };
+    }
     return {
       tipo: "pos", uuid: state.uuid, odoo_id: state.sel.id,
       km_inicial: parseNum($("p-km-inicial").value), km_final: parseNum($("p-km-final").value),
@@ -784,8 +879,10 @@
       if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("error");
       return;
     }
-    const que = state.vista === "gasto" ? "del gasto" : "del Post-operacional";
-    if (!(await confirmAsync(`¿Confirmas el envío de la corrección ${que} «${state.sel.nombre}»?`))) return;
+    const texto = state.vista === "planilla"
+      ? `¿Confirmas el envío de la planilla de la jornada del ${state.sel.fecha}?`
+      : `¿Confirmas el envío de la corrección ${state.vista === "gasto" ? "del gasto" : "del Post-operacional"} «${state.sel.nombre}»?`;
+    if (!(await confirmAsync(texto))) return;
     await submit();
   }
 
@@ -834,6 +931,7 @@
 
   function showDone(out, diferido = false) {
     state.finished = true;
+    if (borrador) borrador.borrar();
     if (tg && tg.disableClosingConfirmation) tg.disableClosingConfirmation();
     ocultarVistas();
     $("actions").hidden = false;
@@ -842,8 +940,9 @@
     $("enviar").disabled = false;
     setMsg("");
     $("done").hidden = false;
-    $("done-title").textContent = out.duplicado ? "Esta corrección ya había sido recibida"
-      : diferido ? "Corrección recibida al recuperar la señal" : "Corrección recibida";
+    const que = out.tipo === "planilla" ? "Planilla" : "Corrección";
+    $("done-title").textContent = out.duplicado ? `Esta ${que.toLowerCase()} ya había sido recibida`
+      : diferido ? `${que} recibida al recuperar la señal` : `${que} recibida`;
     $("done-text").textContent = "Se está enviando a Odoo y recibirás el resultado en el chat.";
     if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
   }
@@ -855,6 +954,58 @@
     $("blocked-title").textContent = title;
     $("blocked-text").textContent = text;
     setMsg("");
+  }
+
+  // ── Escanear documento (app nativa del teléfono) y borrador ───────────────
+  // Al salir a la app de escaneo Android puede destruir el WebView: antes de salir se guarda el registro elegido,
+  // lo diligenciado y el soporte ya cargado, y se restaura al reabrir (2 h como máximo). Ver escanear_documento.js.
+  const escaner = window.EscanearDocumento || null;
+  const borrador = escaner ? escaner.borrador("correcciones", usuarioId()) : null;
+  const CAMPOS_BORRADOR = {
+    gasto: ["g-valor", "g-fecha", "g-desc"],
+    pos: ["p-km-inicial", "p-km-final", "p-entrada", "p-salida", "p-obs"],
+    planilla: ["n-entrada", "n-obs"],
+  };
+  // Identidad del registro elegido: id de Odoo (gasto, Post) o el día de la jornada (planilla).
+  const claveSel = (x) => (x.id === undefined ? x.fecha : x.id);
+
+  async function escanearDocumento() {
+    try {
+      if (borrador && CAMPOS_BORRADOR[state.vista] && state.sel) {
+        const campos = {};
+        for (const id of CAMPOS_BORRADOR[state.vista]) campos[id] = $(id).value;
+        const p = state.pdf;
+        await borrador.guardar({
+          vista: state.vista, odoo_id: claveSel(state.sel), campos,
+          pdf: p ? { nombre: p.nombre, bytes: p.bytes, data: p.data } : null,
+        });
+      }
+    } catch (_) { /* sin almacenamiento: el formulario sigue igual */ }
+    if (escaner) escaner.abrir();
+  }
+
+  // Reabre el registro que se estaba corrigiendo (si sigue en la lista) y vuelve a poner lo diligenciado.
+  async function restaurarBorrador() {
+    try {
+      const d = borrador ? await borrador.leer() : null;
+      if (!d || !state.ctx || !state.ctx.odoo_ok || !CAMPOS_BORRADOR[d.vista] || !d.campos) return false;
+      const lista = { gasto: state.ctx.gastos, pos: state.ctx.pos, planilla: state.ctx.planillas || [] }[d.vista];
+      const x = lista.find((r) => claveSel(r) === d.odoo_id);
+      if (!x) return false;
+      if (d.vista === "gasto") abrirGasto(x); else if (d.vista === "planilla") abrirPlanilla(x); else abrirPos(x);
+      for (const id of CAMPOS_BORRADOR[d.vista]) {
+        if (typeof d.campos[id] === "string" && d.campos[id]) $(id).value = d.campos[id].slice(0, 2000);
+      }
+      if (d.pdf && typeof d.pdf.data === "string") {
+        state.pdf = { nombre: String(d.pdf.nombre || "soporte"), bytes: Number(d.pdf.bytes) || 0, data: d.pdf.data };
+        renderPdf();
+      }
+      refrescar();
+      markDirty();
+      return true;
+    } catch (_) {
+      return false;
+    }
   }
 
   // ── Arranque ─────────────────────────────────────────────────────────────
@@ -883,16 +1034,16 @@
     for (const id of ["g-valor", "p-km-inicial", "p-km-final"]) {
       $(id).addEventListener("input", () => { normalizarDecimal($(id)); markDirty(); refrescar(); if (!$("pendientes").hidden) renderPendientes(); });
     }
-    for (const id of ["g-fecha", "g-desc", "p-entrada", "p-salida", "p-obs"]) {
+    for (const id of ["g-fecha", "g-desc", "p-entrada", "p-salida", "p-obs", "n-entrada", "n-obs"]) {
       $(id).addEventListener("input", () => { markDirty(); refrescar(); if (!$("pendientes").hidden) renderPendientes(); });
     }
-    for (const pref of ["g", "p"]) {
+    for (const pref of ["g", "p", "n"]) {
       $(`${pref}-pdf-btn`).addEventListener("click", () => $(`${pref}-pdf-in`).click());
-      $(`${pref}-cam-btn`).addEventListener("click", () => $(`${pref}-cam-in`).click());
+      $(`${pref}-esc-btn`).addEventListener("click", escanearDocumento);
       $(`${pref}-pdf-in`).addEventListener("change", onPdf);
-      $(`${pref}-cam-in`).addEventListener("change", onPdf);
     }
     await mostrarLista();
+    if (await restaurarBorrador()) setMsg("Recuperamos lo que llevabas.");
   }
 
   init();

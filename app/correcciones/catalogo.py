@@ -8,6 +8,9 @@ from ..pos_operacional.catalogo import KM_MAX, RANGO_MAX_HORAS
 
 TIPO_GASTO = "gasto"
 TIPO_POS = "pos"
+TIPO_PLANILLA = "planilla"  # carga de una planilla no enviada: crea un pos.operacional nuevo (POST /api/posoperacional/register)
+PLANILLA_PATH = "/api/posoperacional/register"
+ENVIADA_HOLGURA_MIN = 2  # una corrección enviada sigue oculta mientras Odoo no cambie el registro después de enviado_at + 2 min
 TEXTO_MAX = 1000          # descripción del gasto / observaciones del Post-operacional
 PDF_MAX_BYTES = SOPORTE_MAX_BYTES  # mismo máximo que Gastos Operativos (3 MB)
 DIAS_POR_DEFECTO = 30      # antigüedad máxima por defecto (CORRECCIONES_DIAS_MAXIMOS)
@@ -31,10 +34,12 @@ POS_PENDIENTE_GASTOS = "refused"
 POS_PENDIENTE_NOMINA = "refused by"
 POS_CORRECCION_GASTOS = "correct"
 POS_CORRECCION_NOMINA = "correct by"
-ESTADOS_POS_PENDIENTES = (POS_PENDIENTE_GASTOS, POS_PENDIENTE_NOMINA)
+ESTADOS_POS_PENDIENTES = (POS_PENDIENTE_GASTOS, POS_PENDIENTE_NOMINA, POS_CORRECCION_NOMINA)
 ESTADOS_POS_CORREGIDOS = (POS_CORRECCION_GASTOS, POS_CORRECCION_NOMINA)
 # Estado al que pasa cada Pos al corregirlo.
-POS_ESTADO_CORREGIDO = {POS_PENDIENTE_GASTOS: POS_CORRECCION_GASTOS, POS_PENDIENTE_NOMINA: POS_CORRECCION_NOMINA}
+# Un Pos en «correct by» (nómina pidió otra corrección) se vuelve a corregir y sigue en «correct by».
+POS_ESTADO_CORREGIDO = {POS_PENDIENTE_GASTOS: POS_CORRECCION_GASTOS, POS_PENDIENTE_NOMINA: POS_CORRECCION_NOMINA,
+                        POS_CORRECCION_NOMINA: POS_CORRECCION_NOMINA}
 POS_ESTADO_TEXTO = {
     POS_PENDIENTE_GASTOS: "PENDIENTE GASTOS", POS_PENDIENTE_NOMINA: "PENDIENTE NÓMINA",
     POS_CORRECCION_GASTOS: "CORRECCIÓN GASTOS", POS_CORRECCION_NOMINA: "CORRECCIÓN NÓMINA",

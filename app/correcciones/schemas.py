@@ -1,7 +1,7 @@
 """Esquemas Pydantic de Correcciones: entrada estricta de la Mini App (un cuerpo por tipo) y respuesta."""
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -24,19 +24,22 @@ def _validar_pdf(value: str) -> str:
     return value
 
 
-class _CorreccionBase(BaseModel):
-    """Campos comunes. La identidad NO viaja aquí (sale de ``initData``)."""
+class _EnvioBase(BaseModel):
+    """Campos comunes a todo envío. La identidad NO viaja aquí (sale de ``initData``)."""
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     uuid: str = Field(pattern=r"^[0-9a-fA-F-]{36}$")
-    odoo_id: int = Field(gt=0)  # id del hr.expense rechazado / del pos.operacional pendiente que se corrige
     diferido: EnvioDiferidoIn | None = None
 
     @model_validator(mode="after")
-    def _normalizar_base(self) -> _CorreccionBase:
+    def _normalizar_base(self) -> _EnvioBase:
         self.uuid = self.uuid.lower()
         return self
+
+
+class _CorreccionBase(_EnvioBase):
+    odoo_id: int = Field(gt=0)  # id del hr.expense rechazado / del pos.operacional pendiente que se corrige
 
 
 class CorreccionGastoIn(_CorreccionBase):
@@ -121,7 +124,41 @@ class CorreccionPosIn(_CorreccionBase):
         return self
 
 
-CorreccionIn = Annotated[CorreccionGastoIn | CorreccionPosIn, Field(discriminator="tipo")]
+class CorreccionPlanillaIn(_EnvioBase):
+    """Carga de una planilla no enviada: crea un Post-operacional nuevo. ``fecha`` es el día (Colombia) de la jornada
+    y ``entrada`` la hora de entrada (Colombia), que debe caer en ese día y no ser futura."""
+
+    tipo: Literal["planilla"]
+    fecha: date
+    entrada: datetime
+    observaciones: str = Field(min_length=1, max_length=TEXTO_MAX)  # obligatorias
+    planilla: str = Field(min_length=16, max_length=_PDF_MAX_B64)   # PDF o foto: obligatoria
+    planilla_nombre: str | None = Field(default=None, max_length=255)
+
+    @field_validator("planilla")
+    @classmethod
+    def _planilla(cls, value: str) -> str:
+        return _validar_pdf(value)
+
+    @model_validator(mode="after")
+    def _normalizar(self) -> CorreccionPlanillaIn:
+        if not self.planilla_nombre:
+            self.planilla_nombre = None
+        self.entrada = _a_utc(self.entrada)
+        hoy = fecha_jornada()
+        if self.fecha > hoy:
+            raise ValueError("La fecha de la jornada no puede ser futura")
+        dias = dias_maximos()
+        if self.fecha < hoy - timedelta(days=dias):
+            raise ValueError(f"La jornada no puede tener más de {dias} días de antigüedad")
+        if fecha_jornada(self.entrada) != self.fecha:
+            raise ValueError("La hora de entrada debe estar dentro del día de la jornada")
+        if self.entrada > datetime.now(UTC):
+            raise ValueError("La hora de entrada no puede ser futura")
+        return self
+
+
+CorreccionIn = Annotated[CorreccionGastoIn | CorreccionPosIn | CorreccionPlanillaIn, Field(discriminator="tipo")]
 
 
 class CorreccionOut(BaseModel):

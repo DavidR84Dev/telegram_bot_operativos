@@ -271,12 +271,13 @@ def pos_operacional_result(outcome: PosOperacionalOutcome) -> str:
 
 
 def _nombre_correccion(tipo: str) -> str:
-    return "gasto" if tipo == "gasto" else "Post-operacional"
+    return {"gasto": "gasto", "planilla": "planilla no enviada"}.get(tipo, "Post-operacional")
 
 
 def correccion_recibida(tipo: str, referencia: str | None) -> str:
     """Confirmación al recibir la corrección (aún no está en Odoo)."""
-    return (f"🛠️ <b>Corrección de {_nombre_correccion(tipo)} recibida</b>"
+    titulo = "Carga de planilla recibida" if tipo == "planilla" else f"Corrección de {_nombre_correccion(tipo)} recibida"
+    return (f"🛠️ <b>{titulo}</b>"
             + (f" ({escape(referencia)})" if referencia else "") + "\n\n"
             "Se está enviando a Odoo; te avisaré el resultado.")
 
@@ -286,6 +287,9 @@ def correccion_result(outcome: CorreccionOutcome) -> str:
     que = _nombre_correccion(outcome.tipo)
     ref = f" ({escape(outcome.referencia)})" if outcome.referencia else ""
     if outcome.status.value == "enviado":
+        if outcome.tipo == "planilla":
+            return (f"🛠️ <b>Planilla enviada a Odoo</b>{ref}\n\n"
+                    "Quedó registrada como un Post-operacional nuevo para revisión.")
         return (f"🛠️ <b>Corrección de {que} enviada a Odoo</b>{ref}\n\n"
                 + ("Quedó como una corrección nueva para revisión." if outcome.tipo == "gasto"
                    else "El Post-operacional quedó corregido y pasó a revisión."))
@@ -293,6 +297,11 @@ def correccion_result(outcome: CorreccionOutcome) -> str:
     if outcome.descartado:
         return (f"⚠️ <b>Tu corrección de {que} no se aplicó</b>{ref}\n\n"
                 f"Motivo: {motivo}\n\nNo necesitas hacer nada más.")
+    if outcome.tipo == "planilla":
+        return (f"❌ <b>Tu planilla no pudo guardarse en Odoo</b>{ref}\n\n"
+                f"Motivo: {motivo}\n\n"
+                f"Referencia local: #{outcome.correccion_id}. El área de sistemas ya tiene el detalle; "
+                "no es necesario diligenciarla de nuevo.")
     return (f"❌ <b>Tu corrección de {que} no pudo guardarse en Odoo</b>{ref}\n\n"
             f"Motivo: {motivo}\n\n"
             f"Referencia local: #{outcome.correccion_id}. El área de sistemas ya tiene el detalle; "

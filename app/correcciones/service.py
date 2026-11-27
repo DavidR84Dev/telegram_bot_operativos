@@ -5,8 +5,10 @@ Dos clases de corrección:
 * **Gasto** (``hr.expense`` rechazado, ``state_expenses`` = ``refused``): se envía un ``hr.expense`` NUEVO por
   ``POST /api/gastos/register`` con ``state_expenses`` = ``correction``. No edita ni enlaza el original, que queda
   rechazado.
-* **Post-operacional** (``pos.operacional`` en ``refused`` / ``refused by``): se escribe (XML-RPC ``write``) sobre ese
-  mismo registro y pasa a ``correct`` / ``correct by``.
+* **Post-operacional** (``pos.operacional`` en ``refused`` / ``refused by`` / ``correct by``): se escribe (XML-RPC
+  ``write``) sobre ese mismo registro y pasa a ``correct`` / ``correct by`` (``correct by`` se mantiene).
+* **Planilla no enviada** (jornada con preoperacional y sin Post-operacional): se CREA un ``pos.operacional`` nuevo por
+  ``POST /api/posoperacional/register`` (``corrections_hr`` verdadero; queda en ``correct by`` para nómina).
 
 Reglas: el id de Telegram es el PIN de un empleado activo (403); el registro a corregir debe ser del empleado y seguir
 pendiente en Odoo (se vuelve a leer al recibir y al enviar). **No exige reserva vigente**: la corrección es posterior
@@ -19,20 +21,30 @@ import hashlib
 import logging
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
-from typing import Any
+from typing import Any, NamedTuple
 
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from ..combustible.service import RestNoConfigurado, enviar_gasto
+from ..combustible.service import RestNoConfigurado, enviar_gasto, extraer_id_gasto
 from ..gastos_operativos import soporte as soporte_mod
 from ..pos_operacional.service import _hora_colombia, nombre_planilla
 from ..preop import reservas
 from ..preop import service as preop_service
 from ..preop.db import Database
 from ..preop.diferido import motivo_vencido
-from ..preop.models import Correccion, CorreccionEnvioDiferido, Empleado, EstadoDiferido, SyncStatus, utc_now
+from ..preop.models import (
+    Correccion,
+    CorreccionEnvioDiferido,
+    Empleado,
+    EstadoDiferido,
+    PosOperacional,
+    Preoperacional,
+    ReservaVehiculo,
+    SyncStatus,
+    utc_now,
+)
 from ..preop.odoo_writer import (
     POS_CAMPOS_LECTURA,
     OdooPermanentError,
@@ -41,12 +53,14 @@ from ..preop.odoo_writer import (
     OdooWriter,
     _odoo_datetime,
 )
-from ..preop.rest_client import OdooRestClient
+from ..preop.rest_client import OdooApiError, OdooRestClient, is_retryable_error
 from ..preop.schemas import related_id, related_name
 from ..preop.service import EnvioVencidoError, SubmissionError, TelegramIdentity, TiemposDiferido, payload_sha256
 from . import catalogo as cat
 from .catalogo import form_definition
-from .schemas import CorreccionGastoIn, CorreccionPosIn
+from .schemas import CorreccionGastoIn, CorreccionPlanillaIn, CorreccionPosIn
+
+Entrada = CorreccionGastoIn | CorreccionPosIn | CorreccionPlanillaIn
 
 logger = logging.getLogger(__name__)
 
@@ -54,8 +68,13 @@ __all__ = ["form_definition"]
 
 # Separador entre las observaciones que ya tiene el Post-operacional y la corrección que se agrega al final.
 SEPARADOR_OBSERVACIONES = "\n\n"
-# Una corrección "en curso" (o ya enviada) oculta el registro original de la lista y bloquea una segunda corrección.
-ESTADOS_ACTIVOS = (SyncStatus.PENDIENTE, SyncStatus.ENVIANDO, SyncStatus.ERROR, SyncStatus.ENVIADO)
+# Una corrección "en curso" oculta el registro original de la lista y bloquea una segunda corrección. Una ya ENVIADA
+# lo oculta solo mientras Odoo no lo haya modificado después (ver ``_vigente``).
+ESTADOS_EN_CURSO = (SyncStatus.PENDIENTE, SyncStatus.ENVIANDO, SyncStatus.ERROR)
+ESTADOS_ACTIVOS = (*ESTADOS_EN_CURSO, SyncStatus.ENVIADO)
+MSG_PLANILLAS_SIN_ODOO = "No se pudieron consultar las planillas no enviadas en Odoo. Intenta de nuevo en unos minutos."
+MSG_JORNADA_NO_PENDIENTE = ("Ese día ya no figura como planilla pendiente: ya tiene Post-operacional o una carga "
+                            "de planilla en proceso")
 MSG_ODOO_NO_RESPONDE = "No se pudo consultar Odoo en este momento. Intenta de nuevo en unos minutos."
 CAMPOS_GASTO = ["name", "product_id", "total_amount", "employee_id", "date", "description", "state_expenses"]
 
@@ -91,9 +110,85 @@ def _fecha_pos(fila: dict[str, Any]) -> date | None:
     return None
 
 
-def _ids_en_curso(session: Session, tipo: str) -> set[int]:
-    return set(session.scalars(select(Correccion.odoo_id_original).where(
-        Correccion.tipo == tipo, Correccion.sync_status.in_(ESTADOS_ACTIVOS), Correccion.descartado.is_(False))))
+def check_in_odoo(entrada: datetime) -> str:
+    """``check_in`` del ``pos.operacional`` creado por ``/api/posoperacional/register``: ``YYYY-MM-DD HH:MM:SS`` en UTC
+    (hora de Colombia + 5 h, convención de almacenamiento de Odoo).
+
+    SUPUESTO A CONFIRMAR con el primer envío real: si el endpoint toma el texto como hora local de Colombia, basta
+    cambiar esta función (es el único lugar que decide la zona del ``check_in`` enviado).
+    """
+    return _odoo_datetime(entrada)
+
+
+def _fecha_odoo(valor: Any) -> datetime | None:
+    """Fecha-hora de Odoo (UTC naive ``YYYY-MM-DD HH:MM:SS``) -> ``datetime`` con zona UTC; None si falta o no se lee."""
+    if not valor:
+        return None
+    try:
+        return datetime.strptime(str(valor)[:19], "%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC)
+    except ValueError:
+        return None
+
+
+class _Local(NamedTuple):
+    """Lo que el bot sabe de las correcciones locales de un registro."""
+
+    en_curso: bool = False
+    enviada_at: datetime | None = None  # envío más reciente ya confirmado en Odoo
+
+
+def _unir(a: _Local | None, b: _Local) -> _Local:
+    if a is None:
+        return b
+    fechas = [f for f in (a.enviada_at, b.enviada_at) if f is not None]
+    return _Local(a.en_curso or b.en_curso, max(fechas) if fechas else None)
+
+
+def _locales(session: Session, tipo: str, *, empleado_id: int | None = None,
+             por_creado: bool = False) -> dict[int, _Local]:
+    """Correcciones locales no descartadas por registro: ``odoo_id_original`` (o ``odoo_id`` creado si ``por_creado``)."""
+    stmt = select(Correccion).where(Correccion.tipo == tipo, Correccion.sync_status.in_(ESTADOS_ACTIVOS),
+                                    Correccion.descartado.is_(False))
+    if empleado_id is not None:
+        stmt = stmt.where(Correccion.empleado_id == empleado_id)
+    out: dict[int, _Local] = {}
+    for c in session.scalars(stmt):
+        clave = c.odoo_id if por_creado else c.odoo_id_original
+        if clave is None:
+            continue
+        enviada = c.sync_status == SyncStatus.ENVIADO
+        enviada_at = reservas._aware(c.sent_at or c.fecha) if enviada else None
+        out[clave] = _unir(out.get(clave), _Local(not enviada, enviada_at))
+    return out
+
+
+def _vigente(local: _Local | None, write_date: datetime | None = None) -> bool:
+    """La corrección local sigue ocultando el registro (y bloquea otra): en curso, o enviada y Odoo no lo modificó
+    después de ``enviado_at`` + 2 min (si ``write_date`` es posterior, p. ej. nómina pidió otra corrección, se libera).
+    Sin ``write_date`` (gastos) una enviada siempre sigue vigente."""
+    if local is None:
+        return False
+    if local.en_curso:
+        return True
+    if local.enviada_at is None:
+        return False
+    if write_date is None:
+        return True
+    return write_date <= local.enviada_at + timedelta(minutes=cat.ENVIADA_HOLGURA_MIN)
+
+
+def _clave_dia(dia: date) -> int:
+    """``odoo_id_original`` de una planilla: el día de la jornada como ``AAAAMMDD`` (la fila es por empleado)."""
+    return dia.year * 10000 + dia.month * 100 + dia.day
+
+
+def _dia_de_clave(clave: int) -> date:
+    return date(clave // 10000, clave // 100 % 100, clave % 100)
+
+
+def _inicio_dia_utc(dia: date) -> datetime:
+    """00:00 de Colombia de ``dia`` como UTC (la BD guarda UTC; SQLite no convierte zonas al comparar)."""
+    return datetime(dia.year, dia.month, dia.day, tzinfo=reservas.ZONA_JORNADA).astimezone(UTC)
 
 
 def _item_gasto(row: dict[str, Any]) -> dict[str, Any]:
@@ -104,10 +199,15 @@ def _item_gasto(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _nombre_pos(row: dict[str, Any]) -> str:
+    """Nombre visible de un pos.operacional (no tiene campo ``name``): display_name o «Post-operacional #id»."""
+    return _texto(row.get("display_name")) or f"Post-operacional #{row.get('id')}"
+
+
 def _item_pos(row: dict[str, Any]) -> dict[str, Any]:
     estado = _texto(row.get("state"))
     return {
-        "id": int(row["id"]), "nombre": _texto(row.get("name")), "estado": estado,
+        "id": int(row["id"]), "nombre": _nombre_pos(row), "estado": estado,
         "estado_texto": cat.POS_ESTADO_TEXTO.get(estado, estado.upper()),
         "entrada": _hora_local_odoo(row.get("check_in")), "salida": _hora_local_odoo(row.get("check_out")),
         "vehiculo": related_name(row.get("vehicle_id")) or "", "contrato": related_name(row.get("agreement_id")) or "",
@@ -118,10 +218,58 @@ def _item_pos(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _jornadas_sin_post(db: Database, writer: OdooWriter, empleado: Empleado) -> list[dict[str, Any]] | None:
+    """Jornadas del conductor dentro de la ventana de días que NO tienen Post-operacional (None si Odoo no responde).
+
+    Una jornada por día de Colombia: el primer preoperacional registrado por el bot ese día. Se descarta el día si:
+    su reserva sigue vigente (el Post de esa jornada va en el formulario normal); existe un Post-operacional local
+    del formulario normal no fallido con ``check_in`` ese día; existe una carga local de planilla de ese día
+    (pendiente, enviando, error o enviada); o Odoo ya tiene un ``pos.operacional`` del empleado con ``check_in``
+    (o ``create_date`` si no tiene) ese día. Odoo se consulta una sola vez, por rango, y solo si queda algún día.
+    """
+    hoy = reservas.fecha_jornada()
+    desde = _fecha_desde()
+    inicio = _inicio_dia_utc(desde)
+    with db.session() as session:
+        jornadas: dict[date, dict[str, Any]] = {}
+        preops = session.scalars(select(Preoperacional).where(
+            Preoperacional.empleado_id == empleado.id, Preoperacional.fecha >= inicio).order_by(
+            Preoperacional.fecha, Preoperacional.id))
+        for p in preops:
+            fecha = reservas._aware(p.fecha)
+            dia = reservas.fecha_jornada(fecha)
+            if dia < desde or dia > hoy or dia in jornadas:
+                continue
+            jornadas[dia] = {"fecha": dia.isoformat(), "entrada": _hora_colombia(fecha),
+                             "vehiculo": (p.vehiculo.matricula or p.vehiculo.nombre) if p.vehiculo else "",
+                             "preoperacional_id": p.id}
+        reserva = session.scalar(select(ReservaVehiculo).where(ReservaVehiculo.empleado_id == empleado.id))
+        if reserva is not None and reservas.vence_at(reserva) > utc_now():
+            for instante in (reserva.reservado_at, reserva.ultimo_preop_at):
+                jornadas.pop(reservas.fecha_jornada(reservas._aware(instante)), None)
+        for check_in in session.scalars(select(PosOperacional.check_in).where(
+                PosOperacional.empleado_id == empleado.id, PosOperacional.sync_status != SyncStatus.FALLIDO,
+                PosOperacional.check_in >= inicio)):
+            jornadas.pop(reservas.fecha_jornada(reservas._aware(check_in)), None)
+        for clave in _locales(session, cat.TIPO_PLANILLA, empleado_id=empleado.id):
+            jornadas.pop(_dia_de_clave(clave), None)
+    if not jornadas:
+        return []
+    filas = writer.pos_en_rango(empleado.odoo_id, inicio, _inicio_dia_utc(hoy + timedelta(days=1)))
+    if filas is None:
+        return None
+    for fila in filas:
+        dia_pos = _fecha_pos(fila)
+        if dia_pos is not None:
+            jornadas.pop(dia_pos, None)
+    return [jornadas[d] for d in sorted(jornadas, reverse=True)]
+
+
 def contexto(db: Database, writer: OdooWriter, empleado: Empleado) -> dict[str, Any]:
-    """Conductor y sus registros corregibles, leídos en vivo de Odoo (sin los que ya tienen una corrección en curso).
+    """Conductor y sus registros corregibles, leídos en vivo de Odoo (sin los que ya tienen una corrección vigente).
 
     Si Odoo no responde devuelve ``odoo_ok`` falso con un mensaje claro (la Mini App lo muestra; no es un error HTTP).
+    ``planillas`` son las jornadas sin Post-operacional; si solo esa consulta falla, ``planillas_mensaje`` lo explica.
     """
     desde = _fecha_desde()
     gastos = writer.gastos_rechazados(empleado.odoo_id, desde)
@@ -131,12 +279,20 @@ def contexto(db: Database, writer: OdooWriter, empleado: Empleado) -> dict[str, 
             "hoy": reservas.fecha_jornada().isoformat(), "dias_maximos": cat.dias_maximos(),
             "desde": desde.isoformat()}
     if gastos is None or pos is None:
-        return {**base, "odoo_ok": False, "mensaje": MSG_ODOO_NO_RESPONDE, "gastos": [], "pos": []}
+        return {**base, "odoo_ok": False, "mensaje": MSG_ODOO_NO_RESPONDE, "gastos": [], "pos": [], "planillas": []}
     with db.session() as session:
-        en_gastos, en_pos = _ids_en_curso(session, cat.TIPO_GASTO), _ids_en_curso(session, cat.TIPO_POS)
+        en_gastos = _locales(session, cat.TIPO_GASTO)
+        en_pos = _locales(session, cat.TIPO_POS)
+        # Los Pos creados por «planilla no enviada» quedan en «correct by»: no se ofrecen hasta que Odoo los modifique.
+        for creado, local in _locales(session, cat.TIPO_PLANILLA, empleado_id=empleado.id, por_creado=True).items():
+            en_pos[creado] = _unir(en_pos.get(creado), local)
+    planillas = _jornadas_sin_post(db, writer, empleado)
     return {**base, "odoo_ok": True, "mensaje": None,
-            "gastos": [_item_gasto(g) for g in gastos if int(g["id"]) not in en_gastos],
-            "pos": [_item_pos(p) for p in pos if int(p["id"]) not in en_pos]}
+            "gastos": [_item_gasto(g) for g in gastos if not _vigente(en_gastos.get(int(g["id"])))],
+            "pos": [_item_pos(p) for p in pos
+                    if not _vigente(en_pos.get(int(p["id"])), _fecha_odoo(p.get("write_date")))],
+            "planillas": planillas or [],
+            "planillas_mensaje": MSG_PLANILLAS_SIN_ODOO if planillas is None else None}
 
 
 # ───────────────────────────────────── recepción ──────────────────────────────────────
@@ -155,7 +311,7 @@ def resumen_recibido(c: Correccion) -> CorreccionRecibida:
     return CorreccionRecibida(c.id, c.uuid, c.telegram_user_id, c.tipo, c.sync_status, c.referencia)
 
 
-def submit_diferido(db: Database, writer: OdooWriter, identity: TelegramIdentity, data: CorreccionGastoIn | CorreccionPosIn,
+def submit_diferido(db: Database, writer: OdooWriter, identity: TelegramIdentity, data: Entrada,
                     tiempos: TiemposDiferido) -> tuple[CorreccionRecibida, bool]:
     """Recibe un envío guardado en el teléfono por falta de señal (regla de ``app/preop/diferido.py``).
 
@@ -251,7 +407,7 @@ def _datos_pos(data: CorreccionPosIn) -> dict[str, Any]:
             "check_in": _odoo_datetime(data.entrada), "check_out": _odoo_datetime(data.salida)}
 
 
-def submit(db: Database, writer: OdooWriter, identity: TelegramIdentity, data: CorreccionGastoIn | CorreccionPosIn,
+def submit(db: Database, writer: OdooWriter, identity: TelegramIdentity, data: Entrada,
            diferido: TiemposDiferido | None = None) -> tuple[CorreccionRecibida, bool]:
     """Guarda la corrección como ``pendiente``. Devuelve (envío, era_duplicado). Idempotente por ``uuid``.
 
@@ -268,28 +424,46 @@ def submit(db: Database, writer: OdooWriter, identity: TelegramIdentity, data: C
     empleado = preop_service.employee_for_telegram(db, identity.user_id)
     if empleado is None:
         raise SubmissionError("Tu usuario de Telegram no está asociado a un empleado activo", 403)
-    with db.session() as session:
-        if data.odoo_id in _ids_en_curso(session, data.tipo):
+    original: dict[str, Any] = {}
+    if isinstance(data, CorreccionPlanillaIn):
+        jornadas = _jornadas_sin_post(db, writer, empleado)  # red fuera de la transacción
+        if jornadas is None:
+            raise SubmissionError(MSG_ODOO_NO_RESPONDE, status_code=503)
+        if data.fecha.isoformat() not in {j["fecha"] for j in jornadas}:
+            raise SubmissionError(MSG_JORNADA_NO_PENDIENTE, status_code=409)
+        odoo_id_original = _clave_dia(data.fecha)
+    else:
+        odoo_id_original = data.odoo_id
+        with db.session() as session:
+            local = _locales(session, data.tipo).get(odoo_id_original)
+        # Una en curso siempre bloquea; una enviada de gasto también (el original sigue rechazado).
+        if local is not None and (local.en_curso or (data.tipo == cat.TIPO_GASTO and _vigente(local))):
             raise SubmissionError("Ya enviaste una corrección para este registro: está en proceso", status_code=409)
-
-    original = _leer_original(writer, data, empleado)  # red fuera de la transacción
+        original = _leer_original(writer, data, empleado)  # red fuera de la transacción
+        if data.tipo == cat.TIPO_POS and _vigente(local, _fecha_odoo(original.get("write_date"))):
+            raise SubmissionError("Ya enviaste una corrección para este registro: está en proceso", status_code=409)
     archivo: bytes | None
     nombre: str | None
     if isinstance(data, CorreccionGastoIn):
         datos, explicacion, estado_original = _datos_gasto(data, original), data.descripcion, None
         archivo, nombre = _a_pdf(data.pdf), nombre_planilla(data.pdf_nombre, "pdf")
         referencia = _texto(original.get("name"))
-    else:
+    elif isinstance(data, CorreccionPosIn):
         datos, explicacion, estado_original = _datos_pos(data), data.observaciones, _texto(original.get("state"))
         archivo = _a_pdf(data.planilla) if data.planilla else None
         nombre = nombre_planilla(data.planilla_nombre, "pdf") if data.planilla else None
-        referencia = _texto(original.get("name"))
+        referencia = _nombre_pos(original)
+    else:
+        datos = {"fecha": data.fecha.isoformat(), "check_in": check_in_odoo(data.entrada)}
+        explicacion, estado_original = data.observaciones, None
+        archivo, nombre = _a_pdf(data.planilla), nombre_planilla(data.planilla_nombre, "pdf")
+        referencia = f"Planilla {data.fecha.isoformat()}"
 
     with db.session() as session:
         fila = Correccion(
             uuid=data.uuid, telegram_user_id=identity.user_id, telegram_username=identity.username,
             firma_nombre=identity.full_name[:255] or empleado.nombre, empleado_id=empleado.id, tipo=data.tipo,
-            odoo_id_original=data.odoo_id, referencia=referencia[:255] or None, estado_original=estado_original,
+            odoo_id_original=odoo_id_original, referencia=referencia[:255] or None, estado_original=estado_original,
             fecha=utc_now(), datos=datos, explicacion=explicacion, adjunto=archivo, adjunto_nombre=nombre,
             adjunto_sha256=hashlib.sha256(archivo).hexdigest() if archivo else None,
             sync_status=SyncStatus.PENDIENTE, next_attempt_at=utc_now(),
@@ -324,6 +498,23 @@ def build_gasto_payload(c: Correccion) -> dict[str, Any]:
         "description": c.explicacion,
         "date": d["date"],
         "state_expenses": cat.GASTO_CORRECCION,
+        "type_file": "pdf",
+        "attachment_filename": c.adjunto_nombre,
+        "attachment": base64.b64encode(c.adjunto).decode("ascii"),
+    }
+
+
+def build_planilla_payload(c: Correccion) -> dict[str, Any]:
+    """Cuerpo EXACTO de ``POST /api/posoperacional/register`` para una planilla no enviada (sin otras claves).
+
+    ``check_in`` sale de ``check_in_odoo`` (UTC); el endpoint crea un ``pos.operacional`` nuevo sin vehículo ni km.
+    """
+    assert c.adjunto is not None
+    return {
+        "corrections_hr": True,
+        "employee_id": c.empleado.odoo_id,
+        "check_in": c.datos["check_in"],
+        "observations": c.explicacion,
         "type_file": "pdf",
         "attachment_filename": c.adjunto_nombre,
         "attachment": base64.b64encode(c.adjunto).decode("ascii"),
@@ -423,7 +614,9 @@ def _send_pos(writer: OdooWriter, original_id: int, vals: dict[str, Any], bloque
         if actual is None:
             return _Resultado(SyncStatus.FALLIDO, error="El Post-operacional ya no existe en Odoo", descartado=True)
         estado = _texto(actual.get("state"))
-        if estado in cat.ESTADOS_POS_CORREGIDOS and _mismos_valores(actual, vals, bloque):
+        # Idempotencia ANTES de decidir: un reintento no duplica el bloque (también si sigue en «correct by»).
+        if (estado in (*cat.ESTADOS_POS_PENDIENTES, *cat.ESTADOS_POS_CORREGIDOS)
+                and _mismos_valores(actual, vals, bloque)):
             logger.info("Corrección de Pos %s ya estaba aplicada en Odoo (%s): no se escribió de nuevo",
                         original_id, estado)
             return _Resultado(SyncStatus.ENVIADO, odoo_id=original_id)
@@ -442,6 +635,48 @@ def _send_pos(writer: OdooWriter, original_id: int, vals: dict[str, Any], bloque
     return _Resultado(SyncStatus.ENVIADO, odoo_id=original_id)
 
 
+def _send_planilla(writer: OdooWriter, rest_client: OdooRestClient | None, c_id: int, payload: dict[str, Any],
+                   recibido: datetime, attempts: int, max_attempts: int) -> _Resultado:
+    """Crea el ``pos.operacional`` por REST sin duplicar (misma regla que ``enviar_gasto``, otro endpoint)."""
+    try:
+        if rest_client is None:
+            raise RestNoConfigurado("ODOO_API_LOGIN/ODOO_API_PASSWORD sin configurar: no se pueden enviar planillas")
+        try:
+            existente = writer.buscar_pos_planilla(payload["employee_id"], payload["check_in"], recibido)
+        except OdooTransientError:
+            raise  # sin saber si ya existe no se postea: reintento de la cola
+        except OdooWriteError as exc:
+            logger.warning("Planilla %s: no se pudo verificar duplicados en pos.operacional (%s); se envía igual",
+                           c_id, exc)
+            existente = None
+        if existente is not None:
+            logger.info("Planilla %s ya existía como pos.operacional id=%s: no se duplicó", c_id, existente)
+            return _Resultado(SyncStatus.ENVIADO, odoo_id=existente)
+        try:
+            respuesta = rest_client.post_json_once(cat.PLANILLA_PATH, payload)
+        except OdooApiError as exc:
+            if is_retryable_error(exc):
+                raise OdooTransientError(str(exc)) from exc
+            raise OdooPermanentError(str(exc)) from exc
+        except Exception as exc:
+            if is_retryable_error(exc):  # httpx.TransportError: red o timeout
+                raise OdooTransientError(f"Sin respuesta de {cat.PLANILLA_PATH}: {type(exc).__name__}") from exc
+            raise
+    except RestNoConfigurado as exc:
+        logger.error("Planilla %s en espera: %s", c_id, exc)
+        return _Resultado(SyncStatus.ERROR, error=str(exc), sin_cliente=True)
+    except OdooPermanentError as exc:
+        return _Resultado(SyncStatus.FALLIDO, error=f"Odoo rechazó la planilla: {exc}")
+    except OdooTransientError as exc:
+        return _Resultado(SyncStatus.FALLIDO if attempts >= max_attempts else SyncStatus.ERROR,
+                          error=f"Intento {attempts}/{max_attempts}: {exc}")
+    odoo_id = extraer_id_gasto(respuesta)
+    if odoo_id is None:
+        logger.warning("Planilla %s: %s no devolvió un id reconocible; respuesta=%.500s",
+                       c_id, cat.PLANILLA_PATH, respuesta)
+    return _Resultado(SyncStatus.ENVIADO, odoo_id=odoo_id)
+
+
 def send_one(db: Database, writer: OdooWriter, correccion_id: int, max_attempts: int,
              rest_client: OdooRestClient | None = None) -> CorreccionOutcome:
     """Envía una corrección ya reclamada (``enviando``) y deja el estado final en la BD.
@@ -455,16 +690,19 @@ def send_one(db: Database, writer: OdooWriter, correccion_id: int, max_attempts:
             raise LookupError(f"corrección {correccion_id} no está en estado enviando")
         tipo, original_id, recibido = c.tipo, c.odoo_id_original, c.fecha
         attempts, user_id, referencia = c.attempts, c.telegram_user_id, c.referencia
-        if tipo == cat.TIPO_GASTO:
-            payload = build_gasto_payload(c) if c.adjunto is not None else None
+        if tipo in (cat.TIPO_GASTO, cat.TIPO_PLANILLA):
+            construir = build_gasto_payload if tipo == cat.TIPO_GASTO else build_planilla_payload
+            payload = construir(c) if c.adjunto is not None else None
             vals: dict[str, Any] = {}
             bloque = ""
         else:
             payload, vals, bloque = None, build_pos_values(c), bloque_observacion(c)
 
-    if tipo == cat.TIPO_GASTO:
+    if tipo in (cat.TIPO_GASTO, cat.TIPO_PLANILLA):
         if payload is None:
             res = _Resultado(SyncStatus.FALLIDO, error="La corrección no tiene el PDF adjunto")
+        elif tipo == cat.TIPO_PLANILLA:
+            res = _send_planilla(writer, rest_client, correccion_id, payload, recibido, attempts, max_attempts)
         else:
             res = _send_gasto(writer, rest_client, correccion_id, payload, original_id, recibido, attempts, max_attempts)
     else:

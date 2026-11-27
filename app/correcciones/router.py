@@ -5,9 +5,10 @@ firma HMAC-SHA256 válida del bot; la identidad sale de ahí.
 
 * ``GET  /correcciones``               página HTML de la Mini App (pública; no tiene datos)
 * ``GET  /api/correcciones/form``      límites del formulario
-* ``GET  /api/correcciones/context``   gastos rechazados y Post-operacionales pendientes del conductor, en vivo desde
-  Odoo (403 sin PIN; con Odoo caído responde 200 con ``odoo_ok`` falso y un mensaje)
-* ``POST /api/correcciones``           recibe una corrección (``tipo`` = ``gasto`` | ``pos``) -> 202 + ``pendiente``
+* ``GET  /api/correcciones/context``   gastos rechazados, Post-operacionales pendientes y planillas no enviadas
+  (jornadas sin Post) del conductor, en vivo desde Odoo (403 sin PIN; con Odoo caído responde 200 con ``odoo_ok`` falso
+  y un mensaje)
+* ``POST /api/correcciones``           recibe una corrección (``tipo`` = ``gasto`` | ``pos`` | ``planilla``) -> 202 + ``pendiente``
   (403 sin empleado o registro ajeno; 404/409 el registro no existe o ya no está pendiente; 422 validación;
   410 reenvío sin señal vencido; 503 Odoo no responde)
 * ``GET  /api/correcciones/{uuid}``    estado de un envío propio
@@ -30,6 +31,7 @@ from ..preop.models import Correccion
 from ..preop.odoo_writer import OdooWriter
 from ..preop.router import (
     _LOGO_URL,
+    _versionar_escanear_js,
     _identity,
     _logo_version,
     firma_previa_diferida,
@@ -83,7 +85,9 @@ def _firma_previa(request: Request, x_telegram_init_data: Annotated[str | None, 
 
 @router.get("/correcciones", response_class=HTMLResponse, include_in_schema=False)
 def correcciones_page() -> HTMLResponse:
-    html = _HTML.read_text(encoding="utf-8").replace(f'"{_LOGO_URL}"', f'"{_LOGO_URL}?v={_logo_version()}"')
+    html = _versionar_escanear_js(
+        _HTML.read_text(encoding="utf-8").replace(f'"{_LOGO_URL}"', f'"{_LOGO_URL}?v={_logo_version()}"')
+    )
     return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
 
 

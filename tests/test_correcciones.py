@@ -25,7 +25,7 @@ from app.correcciones.schemas import CorreccionIn
 from app.correcciones.worker import CorreccionesSender
 from app.config import get_settings
 from app.preop import reservas
-from app.preop.models import Correccion, CorreccionEnvioDiferido, EstadoDiferido, ReservaVehiculo, SyncStatus
+from app.preop.models import Correccion, CorreccionEnvioDiferido, EstadoDiferido, ReservaVehiculo, SyncStatus, utc_now
 from app.preop.odoo_writer import OdooPermanentError, OdooTransientError
 from app.preop.service import SubmissionError
 from app.preop.rest_client import OdooApiError, _RetryableHttpError
@@ -82,8 +82,13 @@ class FakeOdoo:
     """Writer de prueba: lecturas y escrituras de las correcciones, con registro de lo que se pidió."""
 
     def __init__(self, gastos: list | None = None, pos: list | None = None, registros: dict | None = None,
-                 existentes: list[Any] | None = None, write_error: Exception | None = None) -> None:
+                 existentes: list[Any] | None = None, write_error: Exception | None = None,
+                 pos_rango: list | None = ()) -> None:  # type: ignore[assignment]
         self.gastos, self.pos = gastos, pos  # None = Odoo no responde
+        self.pos_rango = pos_rango  # pos.operacional del empleado por rango de fechas (None = Odoo no responde)
+        self.rangos: list[tuple[int, datetime, datetime]] = []
+        self.busquedas_planilla: list[tuple[int, str, datetime]] = []
+        self.existentes_planilla: list[Any] = []
         self.registros = registros if registros is not None else {}
         self.existentes = list(existentes or [])
         self.write_error = write_error
@@ -101,6 +106,19 @@ class FakeOdoo:
         self.consultas.append(("pos", employee_odoo_id))
         self.desdes.append(desde)
         return self.pos
+
+    def pos_en_rango(self, employee_odoo_id, inicio, fin):
+        self.rangos.append((employee_odoo_id, inicio, fin))
+        return None if self.pos_rango is None else list(self.pos_rango)
+
+    def buscar_pos_planilla(self, employee_odoo_id, check_in, desde):
+        self.busquedas_planilla.append((employee_odoo_id, check_in, desde))
+        if not self.existentes_planilla:
+            return None
+        r = self.existentes_planilla.pop(0)
+        if isinstance(r, Exception):
+            raise r
+        return r
 
     def leer_registro(self, model, record_id, campos):
         r = self.registros.get((model, record_id))
@@ -196,7 +214,7 @@ def test_el_writer_lee_solo_rechazados_y_pendientes_del_empleado():
     assert (m1, metodo1) == ("hr.expense", "search_read")
     assert args1[0] == [["employee_id", "=", 100], ["state_expenses", "in", ["refused"]]]
     assert (m2, metodo2) == ("pos.operacional", "search_read")
-    assert args2[0] == [["employee_id", "=", 100], ["state", "in", ["refused", "refused by"]]]
+    assert args2[0] == [["employee_id", "=", 100], ["state", "in", ["refused", "refused by", "correct by"]]]
     assert "attachment" not in kw2["fields"]  # el binario de la planilla no se lee
 
 
@@ -804,3 +822,399 @@ def test_pagina_y_servicios_ausentes():
     html = client.get("/correcciones")
     assert html.status_code == 200 and "Correcciones Post y Gastos" in html.text
     assert "/api/correcciones" in html.text and "indexedDB" in html.text  # bandeja sin señal
+
+
+# ═══════════════════════ Post en «Corrección Nómina» (correct by): listado y nueva corrección ═══════════════════════
+
+def _empleado(database):
+    return _preop.service.employee_for_telegram(database, TG_USER)
+
+
+def test_pos_correct_by_se_lista_y_se_corrige_sobre_el_mismo_registro(seeded):
+    odoo = _odoo(gastos=[], pos=[_original_pos(state="correct by", corrections_hr="Revisar horas")],
+                 registros={("pos.operacional", 800): _original_pos(state="correct by")})
+    ctx = service.contexto(seeded, odoo, _empleado(seeded))
+    assert [p["estado_texto"] for p in ctx["pos"]] == ["CORRECCIÓN NÓMINA"]
+    cid = _recibir(seeded, odoo, _pos_raw())
+    _reclamar(seeded, cid)
+    out = service.send_one(seeded, odoo, cid, 4)  # type: ignore[arg-type]
+    assert out.status == SyncStatus.ENVIADO and out.odoo_id == 800
+    assert [(i, v["state"]) for i, v in odoo.escritos] == [(800, "correct by")]  # sigue en «correct by»
+    bloque = service.bloque_observacion(_fila(seeded, cid))
+    assert odoo.escritos[0][1]["observations"] == f"Sin novedad\n\n{bloque}"
+
+
+def test_pos_correct_by_reintento_no_duplica_el_bloque(seeded):
+    """En «correct by» (pendiente y destino a la vez) la idempotencia se evalúa antes de decidir."""
+    odoo = _odoo(registros={("pos.operacional", 800): _original_pos(state="correct by")})
+    cid = _recibir(seeded, odoo, _pos_raw())
+    _reclamar(seeded, cid)
+    service.send_one(seeded, odoo, cid, 4)  # type: ignore[arg-type]
+    bloque = service.bloque_observacion(_fila(seeded, cid))
+    with seeded.session() as s:
+        s.get(Correccion, cid).sync_status = SyncStatus.ENVIANDO
+    assert service.send_one(seeded, odoo, cid, 4).status == SyncStatus.ENVIADO  # type: ignore[arg-type]
+    assert len(odoo.escritos) == 1
+    assert odoo.registros[("pos.operacional", 800)]["observations"].count(bloque) == 1
+
+
+def test_pos_con_otro_estado_se_descarta_aunque_antes_fuera_correct_by(seeded):
+    odoo = _odoo(registros={("pos.operacional", 800): _original_pos(state="correct by")})
+    cid = _recibir(seeded, odoo, _pos_raw())
+    odoo.registros[("pos.operacional", 800)] = _original_pos(state="done")
+    _reclamar(seeded, cid)
+    assert service.send_one(seeded, odoo, cid, 4).descartado is True  # type: ignore[arg-type]
+
+
+def _marcar_enviada(database, cid: int, hace: timedelta = timedelta(minutes=30)) -> datetime:
+    with database.session() as s:
+        c = s.get(Correccion, cid)
+        c.sync_status, c.sent_at = SyncStatus.ENVIADO, utc_now() - hace
+        return c.sent_at
+
+
+def _odoo_fecha(valor: datetime) -> str:
+    return valor.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def test_pos_enviado_se_oculta_solo_mientras_odoo_no_lo_modifique_despues(seeded):
+    odoo = _odoo(gastos=[], pos=[])
+    cid = _recibir(seeded, odoo, _pos_raw())
+    empleado = _empleado(seeded)
+
+    def ids(**raw: Any) -> list[int]:
+        odoo.pos = [_original_pos(state="correct by", **raw)]
+        return [p["id"] for p in service.contexto(seeded, odoo, empleado)["pos"]]
+
+    assert ids() == []  # en curso (pendiente): oculto, aunque Odoo diga que se modificó después
+    assert ids(write_date=_odoo_fecha(utc_now() + timedelta(hours=1))) == []
+    enviada = _marcar_enviada(seeded, cid)
+    assert ids() == []  # enviada y sin write_date: sigue oculta
+    assert ids(write_date=_odoo_fecha(enviada + timedelta(seconds=30))) == []  # nuestro propio write (< 2 min)
+    assert ids(write_date=_odoo_fecha(enviada + timedelta(minutes=2))) == []   # el límite no cuenta como posterior
+    assert ids(write_date=_odoo_fecha(enviada + timedelta(minutes=5))) == [800]  # nómina pidió otra corrección
+
+
+def test_segunda_correccion_409_en_curso_o_enviada_vigente_y_permitida_si_odoo_cambio(seeded):
+    odoo = _odoo(registros={("pos.operacional", 800): _original_pos(state="correct by")})
+    cid = _recibir(seeded, odoo, _pos_raw())
+    otra = {"uuid": "2a1b2c3d-3c1d-4f7a-9a2b-1c2d3e4f5a6c"}
+    with pytest.raises(SubmissionError) as e:
+        _recibir(seeded, odoo, _pos_raw(**otra))
+    assert e.value.status_code == 409  # en curso
+    enviada = _marcar_enviada(seeded, cid)
+    odoo.registros[("pos.operacional", 800)]["write_date"] = _odoo_fecha(enviada + timedelta(seconds=20))
+    with pytest.raises(SubmissionError) as e:
+        _recibir(seeded, odoo, _pos_raw(**otra))
+    assert e.value.status_code == 409  # enviada y vigente
+    odoo.registros[("pos.operacional", 800)]["write_date"] = _odoo_fecha(enviada + timedelta(minutes=10))
+    assert _recibir(seeded, odoo, _pos_raw(**otra)) != cid  # Odoo lo modificó después: se puede corregir de nuevo
+
+
+def test_un_gasto_enviado_sigue_oculto(seeded):
+    odoo = _odoo(gastos=[_original_gasto()], pos=[])
+    cid = _recibir(seeded, odoo, _gasto_raw())
+    _marcar_enviada(seeded, cid)
+    assert service.contexto(seeded, odoo, _empleado(seeded))["gastos"] == []
+    with pytest.raises(SubmissionError) as e:
+        _recibir(seeded, odoo, _gasto_raw(uuid="2a1b2c3d-3c1d-4f7a-9a2b-1c2d3e4f5a6c"))
+    assert e.value.status_code == 409
+
+
+# ═════════════════════════════ Planillas no enviadas (POST /api/posoperacional/register) ═════════════════════════════
+
+HOY_D = reservas.fecha_jornada()
+DIA_A, DIA_B, DIA_C = (HOY_D - timedelta(days=n) for n in (1, 3, 5))
+UUID_P = "6a1b2c3d-3c1d-4f7a-9a2b-1c2d3e4f5a6c"
+
+
+def _col(dia, hora: str) -> datetime:
+    """Hora de Colombia de ``dia`` como UTC con zona."""
+    h, m = map(int, hora.split(":"))
+    return datetime(dia.year, dia.month, dia.day, h, m, tzinfo=reservas.ZONA_JORNADA).astimezone(UTC)
+
+
+def _sembrar_preop(database, fecha: datetime, **over: Any) -> None:
+    from app.preop.models import Flota, Preoperacional
+
+    with database.session() as s:
+        emp = _empleado(database)
+        veh = s.scalar(select(Flota).where(Flota.odoo_id == 10))
+        s.add(Preoperacional(telegram_user_id=TG_USER, firma_nombre="Ana", empleado_id=emp.id, vehiculo_id=veh.id,
+                             fecha=fecha, kilometraje=1000, **over))
+
+
+def _post_local(database, check_in: datetime, estado: SyncStatus = SyncStatus.ENVIADO) -> None:
+    from app.preop.models import PosOperacional
+
+    with database.session() as s:
+        s.add(PosOperacional(telegram_user_id=TG_USER, firma_nombre="Ana", empleado_id=_empleado(database).id,
+                             km_inicial=1, km_final=2, check_in=check_in, check_out=check_in + timedelta(hours=8),
+                             planilla=PDF, planilla_nombre="p.pdf", planilla_tipo="pdf", planilla_tamano=len(PDF),
+                             planilla_sha256="0" * 64, sync_status=estado))
+
+
+def _planilla_raw(**over: Any) -> dict[str, Any]:
+    data: dict[str, Any] = {"tipo": "planilla", "uuid": UUID_P, "fecha": DIA_A.isoformat(),
+                            "entrada": f"{DIA_A.isoformat()}T08:07", "observaciones": "No alcancé a enviarla",
+                            "planilla": PDF_B64, "planilla_nombre": "planilla.pdf"}
+    data.update(over)
+    return data
+
+
+def _jornadas(database, odoo: FakeOdoo) -> list[str]:
+    return [j["fecha"] for j in service.contexto(database, odoo, _empleado(database))["planillas"]]
+
+
+def test_jornadas_una_por_dia_con_el_primer_preoperacional_y_respetan_la_ventana(seeded):
+    _sembrar_preop(seeded, _col(DIA_A, "09:30"))
+    _sembrar_preop(seeded, _col(DIA_A, "06:45"))  # el primero del día es el que cuenta
+    _sembrar_preop(seeded, _col(HOY_D - timedelta(days=40), "07:00"))  # fuera de la ventana de 30 días
+    odoo = _odoo(gastos=[], pos=[])
+    ctx = service.contexto(seeded, odoo, _empleado(seeded))
+    assert len(ctx["planillas"]) == 1 and ctx["planillas_mensaje"] is None
+    j = ctx["planillas"][0]
+    assert j["fecha"] == DIA_A.isoformat() and j["entrada"] == f"{DIA_A.isoformat()}T06:45" and j["vehiculo"]
+    assert len(odoo.rangos) == 1  # una sola consulta por rango para todos los días
+    emp, inicio, fin = odoo.rangos[0]
+    assert emp == EMPLEADO_ODOO and inicio == _col(HOY_D - timedelta(days=30), "00:00")
+    assert fin == _col(HOY_D + timedelta(days=1), "00:00")
+
+
+def test_jornadas_se_excluyen_por_odoo_post_local_y_carga_local(seeded):
+    for dia in (DIA_A, DIA_B, DIA_C):
+        _sembrar_preop(seeded, _col(dia, "07:00"))
+    assert _jornadas(seeded, _odoo(gastos=[], pos=[])) == [DIA_A.isoformat(), DIA_B.isoformat(), DIA_C.isoformat()]
+    # Odoo: un pos.operacional con check_in ese día de Colombia (o create_date si no tiene check_in).
+    rango = [{"check_in": _odoo_fecha(_col(DIA_A, "20:00")), "create_date": "2020-01-01 00:00:00"},
+             {"check_in": False, "create_date": _odoo_fecha(_col(DIA_B, "21:00"))}]
+    assert _jornadas(seeded, _odoo(gastos=[], pos=[], pos_rango=rango)) == [DIA_C.isoformat()]
+    # Post-operacional local del formulario normal: cuenta si no está fallido.
+    _post_local(seeded, _col(DIA_C, "07:10"), SyncStatus.FALLIDO)
+    assert _jornadas(seeded, _odoo(gastos=[], pos=[])) == [DIA_A.isoformat(), DIA_B.isoformat(), DIA_C.isoformat()]
+    _post_local(seeded, _col(DIA_C, "07:10"), SyncStatus.PENDIENTE)
+    _post_local(seeded, _col(DIA_B, "07:10"))
+    assert _jornadas(seeded, _odoo(gastos=[], pos=[])) == [DIA_A.isoformat()]
+    # Carga local de planilla (pendiente, enviando, error o enviada) de ese día.
+    odoo = _odoo(gastos=[], pos=[])
+    cid = _recibir(seeded, odoo, _planilla_raw())
+    assert _jornadas(seeded, odoo) == []
+    with seeded.session() as s:
+        s.get(Correccion, cid).sync_status = SyncStatus.FALLIDO
+    assert _jornadas(seeded, odoo) == [DIA_A.isoformat()]  # una fallida no oculta la jornada
+
+
+def test_jornada_de_la_reserva_vigente_no_se_ofrece_y_sin_reserva_si(seeded):
+    from app.preop.models import Flota
+
+    ahora = utc_now()
+    _sembrar_preop(seeded, ahora)
+    hoy = reservas.fecha_jornada(ahora).isoformat()
+    assert _jornadas(seeded, _odoo(gastos=[], pos=[])) == [hoy]  # sin reserva (ya finalizó) sí se ofrece
+    with seeded.session() as s:
+        veh = s.scalar(select(Flota.id).where(Flota.odoo_id == 10))
+        s.add(ReservaVehiculo(vehiculo_id=veh, empleado_id=_empleado(seeded).id, telegram_user_id=TG_USER,
+                              fecha_jornada=reservas.fecha_jornada(ahora), reservado_at=ahora, ultimo_preop_at=ahora))
+    assert _jornadas(seeded, _odoo(gastos=[], pos=[])) == []
+
+
+def test_si_odoo_no_responde_las_planillas_dan_mensaje_y_no_bloquean_lo_demas(seeded):
+    _sembrar_preop(seeded, _col(DIA_A, "07:00"))
+    ctx = service.contexto(seeded, _odoo(gastos=[_original_gasto()], pos=[], pos_rango=None), _empleado(seeded))
+    assert ctx["odoo_ok"] is True and ctx["planillas"] == [] and "planillas" in ctx["planillas_mensaje"]
+    assert [g["id"] for g in ctx["gastos"]] == [700]
+
+
+def test_planilla_payload_exacto_con_check_in_en_utc(seeded):
+    _sembrar_preop(seeded, _col(DIA_A, "07:00"))
+    odoo = _odoo(gastos=[], pos=[])
+    cid = _recibir(seeded, odoo, _planilla_raw())
+    c = _fila(seeded, cid)
+    assert c.tipo == "planilla" and c.referencia == f"Planilla {DIA_A.isoformat()}"
+    assert c.datos["fecha"] == DIA_A.isoformat()
+    _reclamar(seeded, cid)
+    rest = FakeRest([{"id": 4779}])
+    out = service.send_one(seeded, odoo, cid, 4, rest)  # type: ignore[arg-type]
+    assert out.status == SyncStatus.ENVIADO and out.odoo_id == 4779 and out.tipo == "planilla"
+    assert rest.posts == [(cat.PLANILLA_PATH, {
+        "corrections_hr": True, "employee_id": EMPLEADO_ODOO,
+        "check_in": f"{DIA_A.isoformat()} 13:07:00",  # 08:07 de Colombia = 13:07 UTC
+        "observations": "No alcancé a enviarla", "type_file": "pdf", "attachment_filename": "planilla.pdf",
+        "attachment": base64.b64encode(PDF).decode(),
+    })]
+    assert cat.PLANILLA_PATH == "/api/posoperacional/register"
+    assert list(rest.posts[0][1]) == ["corrections_hr", "employee_id", "check_in", "observations", "type_file",
+                                      "attachment_filename", "attachment"]
+    assert _fila(seeded, cid).odoo_id == 4779 and odoo.escritos == []  # crea uno nuevo: nunca escribe uno existente
+
+
+def test_planilla_con_foto_llega_como_pdf_y_una_sola_carga_por_dia(seeded):
+    _sembrar_preop(seeded, _col(DIA_A, "07:00"))
+    odoo = _odoo(gastos=[], pos=[])
+    cid = _recibir(seeded, odoo, _planilla_raw(planilla=_foto_b64(), planilla_nombre="IMG_1.jpg"))
+    _reclamar(seeded, cid)
+    rest = FakeRest()
+    service.send_one(seeded, odoo, cid, 4, rest)  # type: ignore[arg-type]
+    body = rest.posts[0][1]
+    assert base64.b64decode(body["attachment"]).startswith(b"%PDF") and body["attachment_filename"] == "IMG_1.pdf"
+    with pytest.raises(SubmissionError) as e:  # el día ya tiene una carga: 409
+        _recibir(seeded, odoo, _planilla_raw(uuid="3a1b2c3d-3c1d-4f7a-9a2b-1c2d3e4f5a6c"))
+    assert e.value.status_code == 409
+
+
+def test_planilla_de_un_dia_sin_jornada_pendiente_es_409_y_con_odoo_caido_503(seeded):
+    odoo = _odoo(gastos=[], pos=[])
+    with pytest.raises(SubmissionError) as e:  # no hay preoperacional ese día
+        _recibir(seeded, odoo, _planilla_raw())
+    assert e.value.status_code == 409
+    _sembrar_preop(seeded, _col(DIA_A, "07:00"))
+    with pytest.raises(SubmissionError) as e:  # Odoo ya tiene un Post ese día
+        _recibir(seeded, _odoo(pos_rango=[{"check_in": _odoo_fecha(_col(DIA_A, "12:00")), "create_date": False}]),
+                 _planilla_raw())
+    assert e.value.status_code == 409
+    with pytest.raises(SubmissionError) as e:
+        _recibir(seeded, _odoo(pos_rango=None), _planilla_raw())
+    assert e.value.status_code == 503
+
+
+def test_planilla_dedupe_busca_por_check_in_exacto_desde_la_recepcion(seeded):
+    _sembrar_preop(seeded, _col(DIA_A, "07:00"))
+    odoo = _odoo(gastos=[], pos=[])
+    cid = _recibir(seeded, odoo, _planilla_raw())
+    odoo.existentes_planilla = [4780]
+    _reclamar(seeded, cid)
+    rest = FakeRest()
+    out = service.send_one(seeded, odoo, cid, 4, rest)  # type: ignore[arg-type]
+    assert out.status == SyncStatus.ENVIADO and out.odoo_id == 4780 and rest.posts == []
+    assert odoo.busquedas_planilla == [(EMPLEADO_ODOO, f"{DIA_A.isoformat()} 13:07:00", _fila(seeded, cid).fecha)]
+
+
+def test_el_writer_busca_la_planilla_creada_y_lee_el_rango():
+    llamadas: list[tuple] = []
+
+    class Objetos(FakeObjects):
+        def execute_kw(self, db, uid, pw, model, method, args, kwargs):
+            llamadas.append((model, method, args, kwargs))
+            return [4321] if method == "search" else [{"id": 1}]
+
+    w = _writer(Objetos())
+    desde = datetime(2026, 11, 27, 15, 0, tzinfo=UTC)
+    assert w.buscar_pos_planilla(100, "2026-11-01 13:07:00", desde) == 4321
+    assert w.pos_en_rango(100, desde, desde + timedelta(days=1)) == [{"id": 1}]
+    (m1, met1, a1, _), (m2, met2, a2, kw2) = llamadas
+    assert (m1, met1) == ("pos.operacional", "search")
+    assert a1[0] == [("employee_id", "=", 100), ("check_in", "=", "2026-11-01 13:07:00"),
+                     ("create_date", ">=", "2026-11-27 14:58:00")]  # recepción menos 2 min
+    assert (m2, met2) == ("pos.operacional", "search_read") and ["employee_id", "=", 100] in a2[0]
+    assert ["check_in", ">=", "2026-11-27 15:00:00"] in a2[0] and ["create_date", "<", "2026-11-28 15:00:00"] in a2[0]
+    assert "attachment" not in kw2["fields"]
+
+
+def test_planilla_4xx_es_fallida_5xx_o_red_reintenta_y_sin_cliente_espera(seeded):
+    _sembrar_preop(seeded, _col(DIA_A, "07:00"))
+    odoo = _odoo(gastos=[], pos=[])
+    cid = _recibir(seeded, odoo, _planilla_raw())
+    _reclamar(seeded, cid)
+    out = service.send_one(seeded, odoo, cid, 4, FakeRest([OdooApiError("/api/posoperacional/register respondió 400")]))  # type: ignore[arg-type]
+    assert out.status == SyncStatus.FALLIDO and "rechazó la planilla" in out.error and out.descartado is False
+    assert service.requeue_failed(seeded) == 1
+    _reclamar(seeded, cid)
+    out = service.send_one(seeded, odoo, cid, 4, FakeRest([_RetryableHttpError("503")]))  # type: ignore[arg-type]
+    assert out.status == SyncStatus.ERROR and "Intento" in out.error and _fila(seeded, cid).next_attempt_at is not None
+    with seeded.session() as s:
+        s.get(Correccion, cid).sync_status = SyncStatus.ENVIANDO
+    antes = _fila(seeded, cid).attempts
+    out = service.send_one(seeded, odoo, cid, 4, None)  # type: ignore[arg-type]
+    assert out.status == SyncStatus.ERROR and "sin configurar" in out.error
+    assert _fila(seeded, cid).attempts == antes - 1  # sin cliente no consume el intento
+
+
+def test_planilla_con_busqueda_transitoria_no_postea(seeded):
+    _sembrar_preop(seeded, _col(DIA_A, "07:00"))
+    odoo = _odoo(gastos=[], pos=[])
+    cid = _recibir(seeded, odoo, _planilla_raw())
+    odoo.existentes_planilla = [OdooTransientError("sin respuesta")]
+    _reclamar(seeded, cid)
+    rest = FakeRest()
+    assert service.send_one(seeded, odoo, cid, 4, rest).status == SyncStatus.ERROR  # type: ignore[arg-type]
+    assert rest.posts == []
+
+
+def test_el_pos_creado_por_la_planilla_no_se_ofrece_hasta_que_odoo_lo_modifique(seeded):
+    _sembrar_preop(seeded, _col(DIA_A, "07:00"))
+    odoo = _odoo(gastos=[], pos=[])
+    cid = _recibir(seeded, odoo, _planilla_raw())
+    _reclamar(seeded, cid)
+    service.send_one(seeded, odoo, cid, 4, FakeRest([{"id": 4779}]))  # type: ignore[arg-type]
+    sent = _fila(seeded, cid).sent_at
+    odoo.pos = [_original_pos(id=4779, state="correct by", write_date=_odoo_fecha(utc_now()))]
+    assert service.contexto(seeded, odoo, _empleado(seeded))["pos"] == []
+    odoo.pos = [_original_pos(id=4779, state="correct by", write_date=_odoo_fecha(sent + timedelta(minutes=9)))]
+    assert [p["id"] for p in service.contexto(seeded, odoo, _empleado(seeded))["pos"]] == [4779]
+
+
+@pytest.mark.parametrize("cambio, error", [
+    ({"planilla": None}, "valid string"),
+    ({"observaciones": "  "}, "at least 1"),
+    ({"entrada": f"{PASADO_MANANA}T08:00", "fecha": PASADO_MANANA}, "futura"),
+    ({"entrada": f"{DIA_B.isoformat()}T08:00"}, "dentro del día"),                      # otro día
+    ({"fecha": (HOY_D - timedelta(days=40)).isoformat(), "entrada": f"{HOY_D - timedelta(days=40)}T08:00"}, "antigüedad"),
+    ({"planilla": "aGVsbG8gd29ybGQgbm8gZXMgcGRm"}, "PDF o una foto"),
+    ({"odoo_id": 5}, "odoo_id"),
+])
+def test_esquema_planilla_rechaza(cambio, error):
+    with pytest.raises(ValidationError, match=error):
+        _in(_planilla_raw(**cambio))
+
+
+def test_esquema_planilla_hora_futura_de_hoy_se_rechaza():
+    futura = (datetime.now(reservas.ZONA_JORNADA) + timedelta(minutes=30)).replace(microsecond=0)
+    if futura.date() != HOY_D:  # cerca de medianoche la hora futura cae mañana: ya lo cubre «fuera del día»
+        pytest.skip("la media hora siguiente cae en otro día")
+    with pytest.raises(ValidationError, match="futura"):
+        _in(_planilla_raw(fecha=HOY_D.isoformat(), entrada=futura.strftime("%Y-%m-%dT%H:%M:%S")))
+
+
+def test_esquema_planilla_entrada_en_utc():
+    assert _in(_planilla_raw()).entrada == _col(DIA_A, "08:07")
+
+
+def test_formatting_de_planilla():
+    from app.correcciones.service import CorreccionOutcome
+
+    assert "Carga de planilla recibida" in formatting.correccion_recibida("planilla", "Planilla 2026-11-01")
+    ok = formatting.correccion_result(CorreccionOutcome(1, TG_USER, "planilla", SyncStatus.ENVIADO, "Planilla X", 4779))
+    assert "Planilla enviada a Odoo" in ok and "Post-operacional nuevo" in ok
+    mal = formatting.correccion_result(
+        CorreccionOutcome(2, TG_USER, "planilla", SyncStatus.FALLIDO, "Planilla X", None, False, "boom"))
+    assert "Tu planilla no pudo guardarse" in mal and "#2" in mal
+
+
+def test_api_planillas_contexto_recepcion_y_errores(api, seeded):
+    _sembrar_preop(seeded, _col(DIA_A, "07:00"))
+    ctx = api.get("/api/correcciones/context", headers=_headers()).json()
+    assert [j["fecha"] for j in ctx["planillas"]] == [DIA_A.isoformat()]
+    assert ctx["planillas"][0]["entrada"] == f"{DIA_A.isoformat()}T07:00"
+    assert api.post("/api/correcciones", json=_planilla_raw(planilla=None), headers=_headers()).status_code == 422
+    assert api.post("/api/correcciones", json=_planilla_raw(observaciones=""), headers=_headers()).status_code == 422
+    sin_dia = api.post("/api/correcciones", json=_planilla_raw(
+        fecha=DIA_B.isoformat(), entrada=f"{DIA_B.isoformat()}T08:00"), headers=_headers())
+    assert sin_dia.status_code == 409
+    ok = api.post("/api/correcciones", json=_planilla_raw(), headers=_headers())
+    assert ok.status_code == 202 and ok.json()["tipo"] == "planilla"
+    assert api.avisos == [(ok.json()["id"], "planilla")]
+    assert api.post("/api/correcciones", json=_planilla_raw(), headers=_headers()).json()["duplicado"] is True
+
+
+def test_api_planilla_sin_senal_en_ventana_flujo_normal_y_vencida_410(api, seeded):
+    _sembrar_preop(seeded, _col(DIA_A, "07:00"))
+    vencida = api.post("/api/correcciones", json=_diferido(
+        _planilla_raw(uuid="5a1b2c3d-3c1d-4f7a-9a2b-1c2d3e4f5a6c"),
+        abierto_hace=timedelta(hours=3), sin_senal_hace=timedelta(hours=2)), headers=_headers())
+    assert vencida.status_code == 410
+    resp = api.post("/api/correcciones", json=_diferido(
+        _planilla_raw(), abierto_hace=timedelta(minutes=20), sin_senal_hace=timedelta(minutes=10)), headers=_headers())
+    assert resp.status_code == 202 and resp.json()["tipo"] == "planilla"
+    with seeded.session() as s:
+        estados = list(s.scalars(select(CorreccionEnvioDiferido.estado)))
+    assert sorted(e.value for e in estados) == sorted([EstadoDiferido.VENCIDO.value, EstadoDiferido.ACEPTADO.value])

@@ -91,11 +91,25 @@ Identity = Annotated[service.TelegramIdentity, Depends(telegram_identity)]
 
 
 _LOGO_URL = "/static/viacotur-logo.png"
+_ESCANEAR_JS = _STATIC / "escanear_documento.js"
+_ESCANEAR_JS_URL = "/static/escanear_documento.js"
 
 
 def _logo_version() -> str:
     """Huella del logo: cambia cuando cambia la imagen, así el celular no usa la anterior en caché."""
     return hashlib.sha256(_LOGO.read_bytes()).hexdigest()[:12]
+
+
+def _versionar_escanear_js(html: str) -> str:
+    """Añade ?v=<huella> al script compartido «Escanear documento» (los formularios con documentos lo cargan)."""
+    huella = hashlib.sha256(_ESCANEAR_JS.read_bytes()).hexdigest()[:12]
+    return html.replace(f'"{_ESCANEAR_JS_URL}"', f'"{_ESCANEAR_JS_URL}?v={huella}"')
+
+
+@router.get(_ESCANEAR_JS_URL, include_in_schema=False)
+def escanear_js() -> FileResponse:
+    # Con ?v=<huella> la URL cambia al cambiar el script; sin ella se revalida siempre.
+    return FileResponse(_ESCANEAR_JS, media_type="text/javascript", headers={"Cache-Control": "no-cache"})
 
 
 @router.get("/preoperacional", response_class=HTMLResponse, include_in_schema=False)

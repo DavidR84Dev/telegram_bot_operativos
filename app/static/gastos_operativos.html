@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Gastos Operativos</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script src="/static/escanear_documento.js"></script>
 <style>
   :root {
     color-scheme: light dark;
@@ -81,16 +82,6 @@
   }
   .sop-zone.missing { border-color: var(--bad); color: var(--bad); }
   .sop-zone .big { font-size: 30px; }
-  .camara { position: fixed; inset: 0; z-index: 50; background: #000; display: flex; flex-direction: column; }
-  .camara[hidden] { display: none; }
-  .camara video { flex: 1; width: 100%; min-height: 0; object-fit: contain; background: #000; }
-  .cam-bar { display: flex; align-items: center; justify-content: space-between; gap: 16px;
-             padding: 16px 16px calc(16px + env(safe-area-inset-bottom)); }
-  .cam-cancel, .cam-spacer { width: 96px; }
-  .cam-cancel { min-height: var(--tap); border: 0; border-radius: 10px; background: rgba(255,255,255,.18); color: #fff; font: inherit; }
-  .cam-shutter { width: 68px; height: 68px; border-radius: 50%; border: 4px solid #fff;
-                 background: color-mix(in srgb, #fff 85%, transparent); padding: 0; }
-  .cam-shutter:active { transform: scale(.94); }
   .sop-botones { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
   .btn-file {
     min-height: var(--tap); border-radius: 10px; border: 1px solid var(--brand-2); background: var(--surface);
@@ -178,15 +169,6 @@
     <p class="hint center" id="done-text"></p>
   </section>
 </main>
-
-<div id="camara" class="camara" hidden>
-  <video id="cam-video" autoplay playsinline muted></video>
-  <div class="cam-bar">
-    <button type="button" class="cam-cancel" id="cam-cerrar">Cancelar</button>
-    <button type="button" class="cam-shutter" id="cam-capturar" aria-label="Capturar foto"></button>
-    <span class="cam-spacer"></span>
-  </div>
-</div>
 
 <footer class="actions" id="actions" hidden>
   <button type="button" class="btn-secondary" id="cancelar">Cancelar</button>
@@ -480,7 +462,7 @@
         blob = file;
       } else if (file.type.startsWith("image/") || /\.(jpe?g|png|heic|heif|webp)$/i.test(nombre)) {
         try { blob = await fotoAJpg(file); } catch (_) {
-          setMsg("No se pudo leer la foto. Toma otra, o usa una imagen JPG o PNG o un PDF.", true);
+          setMsg("No se pudo leer la foto. Elige otra, o usa una imagen JPG o PNG o un PDF.", true);
           return;
         }
         nombre = nombre.replace(/\.[A-Za-z0-9]{1,5}$/, "") + ".jpg";
@@ -503,56 +485,6 @@
     setMsg("");
     renderSoporte(g);
   }
-
-  // Telegram en Android ignora <input capture> y abre la galería: la cámara se abre aquí mismo con
-  // getUserMedia (cámara trasera), igual que en el Preoperacional. Sin permiso o soporte se usa el input.
-  const camara = { stream: null, gasto: null, input: null };
-
-  async function abrirCamara(g, input) {
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { input.click(); return; }
-    try {
-      camara.stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false,
-      });
-    } catch (err) {
-      setMsg(err && err.name === "NotAllowedError"
-        ? "Permite el acceso a la cámara a Telegram para tomar la foto, o adjunta el soporte con 🖼️ Galería o PDF."
-        : "No se pudo abrir la cámara. Adjunta la foto o el PDF con 🖼️ Galería o PDF.", true);
-      return;
-    }
-    camara.gasto = g;
-    const video = document.getElementById("cam-video");
-    video.srcObject = camara.stream;
-    document.getElementById("camara").hidden = false;
-    try { await video.play(); } catch (_) { /* se reproduce al tocar */ }
-  }
-
-  function cerrarCamara() {
-    if (camara.stream) camara.stream.getTracks().forEach((t) => t.stop());
-    camara.stream = null;
-    document.getElementById("cam-video").srcObject = null;
-    document.getElementById("camara").hidden = true;
-  }
-
-  function capturarFoto() {
-    const video = document.getElementById("cam-video");
-    if (!video.videoWidth) return;  // aún no hay imagen
-    const canvas = document.createElement("canvas");
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
-    const g = camara.gasto;
-    cerrarCamara();
-    canvas.toBlob((blob) => {
-      if (!blob || !g) { setMsg("No se pudo tomar la foto. Intenta de nuevo.", true); return; }
-      const file = new File([blob], `foto_${Date.now()}.jpg`, { type: "image/jpeg" });
-      onSoporte(g, { target: { files: [file], value: "" } });
-      if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
-    }, "image/jpeg", 0.9);
-  }
-
-  document.getElementById("cam-cerrar").addEventListener("click", cerrarCamara);
-  document.getElementById("cam-capturar").addEventListener("click", capturarFoto);
 
   function renderSoporte(g) {
     const s = g.soporte;
@@ -588,13 +520,12 @@
     const topeHint = el("div", { class: "tope-hint", hidden: "" });
     const obs = el("textarea", { id: id("obs"), maxlength: String(state.form.observacion_max), rows: "2", placeholder: "Opcional" });
 
-    const inCamara = el("input", { type: "file", accept: "image/*", capture: "environment", hidden: "" });
     const inArchivo = el("input", { type: "file", accept: "application/pdf,.pdf,image/*", hidden: "" });
-    const btnCamara = el("button", { type: "button", class: "btn-file", text: "📷 Tomar foto" });
+    const btnEscanear = el("button", { type: "button", class: "btn-file", text: "📄 Abrir App para escanear" });
     const btnArchivo = el("button", { type: "button", class: "btn-file", text: "🖼️ Galería o PDF" });
     const zona = el("div", { class: "sop-zone" }, [
       el("span", { class: "big", text: "🧾" }),
-      el("div", { class: "sop-botones" }, [btnCamara, btnArchivo]),
+      el("div", { class: "sop-botones" }, [btnEscanear, btnArchivo]),
       el("span", { class: "hint", text: `PDF o foto, máximo ${Math.round(state.form.soporte_max_bytes / 1048576)} MB` }),
     ]);
     const ok = el("div", { class: "sop-ok", hidden: "" });
@@ -606,7 +537,7 @@
       el("div", { class: "field-wrap", id: id("w-valor") }, [
         el("label", { class: "field", for: id("valor") }, ["Valor total (COP) ", el("span", { class: "req", text: "*" })]), valor, valorFmt, topeHint]),
       el("div", { class: "field-wrap", id: id("w-soporte") }, [
-        el("label", { class: "field" }, ["Soporte (PDF o foto) ", el("span", { class: "req", text: "*" })]), zona, ok, inCamara, inArchivo]),
+        el("label", { class: "field" }, ["Soporte (PDF o foto) ", el("span", { class: "req", text: "*" })]), zona, ok, inArchivo]),
       el("div", { class: "field-wrap", id: id("w-obs") }, [
         el("label", { class: "field", for: id("obs"), text: "Observación" }), obs]),
     ]);
@@ -621,9 +552,8 @@
       refrescar();
     });
     obs.addEventListener("input", () => { g.obs = obs.value; markDirty(); });
-    btnCamara.addEventListener("click", () => abrirCamara(g, inCamara));
+    btnEscanear.addEventListener("click", escanearDocumento);
     btnArchivo.addEventListener("click", () => inArchivo.click());
-    inCamara.addEventListener("change", (ev) => onSoporte(g, ev));
     inArchivo.addEventListener("change", (ev) => onSoporte(g, ev));
     eliminar.addEventListener("click", async () => {
       if ((g.tipo || g.valor || g.soporte) && !(await confirmAsync("¿Eliminar este gasto?"))) return;
@@ -769,6 +699,7 @@
 
   function showDone(out, diferido = false) {
     state.finished = true;
+    if (borrador) borrador.borrar();
     if (tg && tg.disableClosingConfirmation) tg.disableClosingConfirmation();
     $("formulario").hidden = true;
     $("pendientes").hidden = true;
@@ -807,6 +738,55 @@
       `${err.message}\nSi ya lo hiciste, revisa que no hayas tocado «🔴 Finalizar».` + (previo.aviso ? `\n\n${previo.aviso}` : ""), true);
     $("blocked-close").hidden = false;
     $("blocked-close").addEventListener("click", () => tg.close());
+  }
+
+  // ── Escanear documento (app nativa del teléfono) y borrador ───────────────
+  // Al salir a la app de escaneo Android puede destruir el WebView: antes de salir se guarda lo diligenciado
+  // (con los soportes ya cargados) y se restaura al reabrir (2 h como máximo). Ver escanear_documento.js.
+  const escaner = window.EscanearDocumento || null;
+  const borrador = escaner ? escaner.borrador("gastos-operativos", usuarioId()) : null;
+
+  async function escanearDocumento() {
+    try {
+      if (borrador) {
+        await borrador.guardar({
+          fecha: $("fecha").value,
+          gastos: state.gastos.map((g) => ({
+            tipo: g.tipo, valor: g.valor, obs: g.obs,
+            soporte: g.soporte ? { nombre: g.soporte.nombre, bytes: g.soporte.bytes, data: g.soporte.data } : null,
+          })),
+        });
+      }
+    } catch (_) { /* sin almacenamiento: el formulario sigue igual */ }
+    if (escaner) escaner.abrir();
+  }
+
+  async function restaurarBorrador() {
+    try {
+      const d = borrador ? await borrador.leer() : null;
+      if (!d || !Array.isArray(d.gastos) || !d.gastos.length) return false;
+      if (d.fecha && d.fecha >= $("fecha").min && d.fecha <= $("fecha").max) $("fecha").value = d.fecha;
+      for (const x of d.gastos.slice(0, state.form.max_gastos)) {
+        const g = agregarGasto();
+        const poner = (campo, valor) => {
+          const n = $(`g${g.uid}-${campo}`);
+          if (!n || !valor) return;
+          n.value = valor;
+          n.dispatchEvent(new Event("input"));
+        };
+        poner("tipo", state.form.tipos.some((t) => t.value === x.tipo) ? x.tipo : "");
+        poner("valor", /^\d+$/.test(String(x.valor)) ? String(x.valor) : "");
+        poner("obs", typeof x.obs === "string" ? x.obs : "");
+        if (x.soporte && typeof x.soporte.data === "string") {
+          g.soporte = { nombre: String(x.soporte.nombre || "soporte"), bytes: Number(x.soporte.bytes) || 0, data: x.soporte.data, vista: null };
+          renderSoporte(g);
+        }
+      }
+      markDirty();
+      return true;
+    } catch (_) {
+      return state.gastos.length > 0;
+    }
   }
 
   // ── Arranque ─────────────────────────────────────────────────────────────
@@ -854,8 +834,10 @@
 
     $("formulario").hidden = false;
     $("actions").hidden = false;
-    agregarGasto();
-    setMsg(state.avisoBandeja, true);
+    const recuperado = await restaurarBorrador();
+    if (!state.gastos.length) agregarGasto();
+    if (state.avisoBandeja) setMsg(state.avisoBandeja, true);
+    else if (recuperado) setMsg("Recuperamos lo que llevabas.");
   }
 
   init();

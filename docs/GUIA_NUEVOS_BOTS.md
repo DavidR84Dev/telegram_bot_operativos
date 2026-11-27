@@ -120,6 +120,35 @@ Todo formulario nuevo que dependa de la jornada del conductor debe cumplirla.
 Pruebas mínimas: sin reserva (contexto y envío), reserva vencida (> 24 h), reserva de ayer aún vigente y diferido
 (`tests/test_reserva_requerida.py`: agrega tu formulario a `FORMS`).
 
+## 5c. Formularios con documentos: «📄 Abrir App para escanear»
+
+Los formularios donde el conductor sube un **documento** (soporte, factura, planilla) NO abren la cámara del
+formulario: el botón «📄 Abrir App para escanear» lo lleva a la app nativa de escaneo del teléfono (mejor encuadre y PDF
+limpio) y luego sube el PDF con «🖼️ Galería o PDF». El servidor sigue aceptando fotos (de la galería) y convirtiéndolas a
+PDF. Las fotos de **evidencia** (testigos del preoperacional, odómetro de Prueba de Ruta) conservan la cámara.
+
+- Lógica compartida en `app/static/escanear_documento.js` (`window.EscanearDocumento`), servida en
+  `/static/escanear_documento.js`; la página la carga con `<script src="/static/escanear_documento.js"></script>` y
+  su router le añade `?v=<huella>` con `_versionar_escanear_js` (`app/preop/router.py`).
+- `EscanearDocumento.abrir()` muestra la hoja con una **lista de apps de escaneo** según `Telegram.WebApp.platform`
+  (el conductor elige la que tenga instalada; desde un WebView no se pueden listar apps ni hay un intent «escanear»).
+  La lista vive en la constante `APPS_ESCANEO` del JS: agregar o quitar una app es editar esa lista.
+  Android: Google Drive, Adobe Scan y CamScanner (`intent://` MAIN + LAUNCHER por paquete; si no está instalada, el
+  fallback abre su ficha de Play Store). iOS: Archivos (`shareddocuments://`), Notas (`mobilenotes://`), Adobe Scan
+  (id1199564834) y CamScanner (id388627783), estas dos con `Telegram.WebApp.openLink` a su página de App Store («Abrir»
+  si ya está instalada). Cada app trae una línea con sus pasos; al final «Otra app» (abre tu app, guarda como PDF y
+  vuelve) y el aviso de subir con «Galería o PDF». La última app elegida se recuerda en `localStorage` y sale primero
+  con «Última usada». Si la página no pasa a segundo plano en 1,5 s, nota suave con los pasos manuales. Escritorio/web:
+  solo texto.
+- **Borrador:** al salir, Android puede destruir el WebView. El formulario debe llamar a
+  `EscanearDocumento.borrador(clave, usuarioId)` y, en el clic de «Abrir App para escanear», `guardar(...)` los campos y los
+  adjuntos ya cargados (IndexedDB, clave usuario + formulario, caduca a las 2 h); al arrancar, `leer()` y restaurar
+  con el aviso «Recuperamos lo que llevabas.»; `borrar()` en el envío exitoso (`showDone`). `leer()` también borra
+  lo leído, y todo va en try/catch: si el almacenamiento falla el formulario funciona igual.
+- Plantilla: ver `gastos_operativos.html`, `pos_operacional.html` y `correcciones.html`. Pruebas en
+  `tests/test_escanear_documento.py` (agrega tu ruta a `CON_ESCANEO`).
+- Solo se comprueba en un teléfono real: apertura de cada app (intents, esquemas iOS, App Store), regreso a Telegram y restauración tras destruir el WebView.
+
 ## 6. Lista de verificación para un bot nuevo
 
 - [ ] Campos decimales con `normalizarDecimal` + `parseNum` + `fmtNum` (punto) y
@@ -130,4 +159,5 @@ Pruebas mínimas: sin reserva (contexto y envío), reserva vencida (> 24 h), res
 - [ ] Usuarios sin PIN reciben el flujo de registro, no un rechazo.
 - [ ] Envío sin señal: bandeja en el teléfono, reenvío automático y ventana de 1 h en el servidor (§ 5).
 - [ ] Si depende de la jornada: exige reserva vigente en contexto y envío, con el bloqueo común de la Mini App (§ 5b).
+- [ ] Si sube un documento: «📄 Abrir App para escanear» + borrador, no cámara (§ 5c).
 - [ ] Pruebas de cada regla (servidor) y `node --check` del JavaScript de la Mini App.

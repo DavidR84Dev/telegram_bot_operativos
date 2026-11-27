@@ -27,6 +27,7 @@ from ..preop.db import Database
 from ..preop.models import GastoOperativo, GastoOperativoLinea
 from ..preop.router import (
     _LOGO_URL,
+    _versionar_escanear_js,
     _identity,
     _logo_version,
     contexto_http,
@@ -85,7 +86,9 @@ def _firma_previa(request: Request, x_telegram_init_data: Annotated[str | None, 
 
 @router.get("/gastos-operativos", response_class=HTMLResponse, include_in_schema=False)
 def gastos_operativos_page() -> HTMLResponse:
-    html = _HTML.read_text(encoding="utf-8").replace(f'"{_LOGO_URL}"', f'"{_LOGO_URL}?v={_logo_version()}"')
+    html = _versionar_escanear_js(
+        _HTML.read_text(encoding="utf-8").replace(f'"{_LOGO_URL}"', f'"{_LOGO_URL}?v={_logo_version()}"')
+    )
     return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
 
 
