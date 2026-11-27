@@ -25,7 +25,7 @@ GastosOperativosSender ──▶ cotejo con el GPS de la flota (una vez) ──�
 1. **Formulario.** Conductor (solo lectura), **fecha del gasto** (hoy en hora de Colombia; no futura y máximo 30 días
    atrás) y el botón **+ Agregar gasto**, que agrega tarjetas «Gasto #N» con botón 🗑 de eliminar (hasta 10 por envío).
    Cada tarjeta lleva: **tipo de gasto** (select, obligatorio), **valor total en COP** (entero mayor que 0, se muestra
-   `$ 65 000` en vivo), **soporte** obligatorio (📷 tomar foto, 🖼️ galería o PDF) y **observación** opcional (máx. 500).
+   `$ 65 000` en vivo), **soporte** obligatorio (📄 escanear documento eligiendo en la hoja la app de escaneo que tenga el conductor (Drive, Adobe Scan, CamScanner; en iOS Archivos, Notas) y luego 🖼️ galería o PDF; ver `docs/GUIA_NUEVOS_BOTS.md` § 5c: guarda un borrador de 2 h y lo restaura al volver) y **observación** opcional (máx. 500).
    Una tarjeta **Total general** suma todos los valores y una barra fija ofrece **Cancelar** y **Enviar**. Si falta algo,
    el aviso de pendientes lista todo y cada elemento lleva a su campo (nunca un botón gris sin explicación).
 2. **Reserva vigente obligatoria (regla 2026-11-26).** **Reserva vigente (regla 2026-11-26).** Exige una reserva vigente de vehículo, es decir, un preoperacional registrado en la jornada: existe en `reservas_vehiculo` para el id de Telegram, no se liberó con 🔴 Finalizar y no venció (`RESERVA_HORAS` = 24 h). **No** exige que la fecha sea hoy (un turno nocturno hace su Pos-Operacional pasada la medianoche). Sin ella el `context` y el `POST` responden **409** con `X-Error-Code: sin_reserva_vigente` y «Para usar este formulario primero debes registrar el ✅ Preoperacional de hoy (vehículo reservado).»; la Mini App muestra la pantalla de bloqueo **Primero el Preoperacional** con «Volver al chat». Helper único: `reservas.reserva_vigente` (y `preop_service.exigir_reserva`). Envío sin señal: se acepta si la reserva estaba vigente **al abrir** el formulario (`apertura`, firmada por Telegram) según `reservas_historial` (`reservas.reserva_al_instante`), aunque ya se haya liberado al llegar; si no, 409. Con reserva se muestra la placa del vehículo
@@ -278,6 +278,6 @@ FROM gastos_operativos_lineas l JOIN gastos_operativos g ON g.id = l.gasto_id OR
 - [ ] Confirmar que `hr.expense` ya tiene `ubicacion_gps_telegram` y `ubicacion_gps_vehiculo` (mismos campos que
       «Combustible para gastos») y que la búsqueda por `product_id` e `is_fuel_expenses` es válida en `hr.expense`.
 - [ ] Confirmar el formato de la respuesta de `/api/gastos/register` (hoy el id se extrae de forma tolerante).
-- [ ] Prueba de punta a punta en qa2 y desde un móvil (crea `hr.expense` reales): foto de cámara y de galería, PDF, varios
+- [ ] Prueba de punta a punta en qa2 y desde un móvil (crea `hr.expense` reales): escaneo con Drive/Archivos y regreso a Telegram, foto de galería, PDF, varios
       gastos, sin señal y sin reserva vigente.
 - [ ] Soporte HEIC en el servidor: hoy solo lo cubre la reconversión a JPG en la Mini App.

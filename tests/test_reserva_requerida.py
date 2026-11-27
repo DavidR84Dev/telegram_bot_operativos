@@ -1,6 +1,10 @@
 """Regla del 2026-11-26: AST, Prueba de Ruta, Combustible, Gastos Operativos y Pos-Operacional exigen una reserva
 vigente (preoperacional de la jornada, sin liberar con 🔴 Finalizar ni vencida). Mismo error en los cinco: 409 con
-``X-Error-Code: sin_reserva_vigente``. El envío sin señal se acepta si la reserva estaba vigente al abrir el formulario."""
+``X-Error-Code: sin_reserva_vigente``. El envío sin señal se acepta si la reserva estaba vigente al abrir el formulario.
+
+Exención explícita: **Correcciones Post y Gastos** (``app/correcciones``) NO exige reserva vigente, porque corrige
+registros de jornadas ya cerradas; por eso no está en ``FORMS``. Su prueba está en ``tests/test_correcciones.py``
+(``test_recibir_guarda_los_datos_fijos_del_original_y_no_exige_reserva``)."""
 from __future__ import annotations
 
 from datetime import timedelta

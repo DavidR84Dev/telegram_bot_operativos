@@ -1,4 +1,4 @@
-"""Cola de envío del Pos-Operacional a Odoo (asyncio, dentro del proceso FastAPI).
+"""Cola de envío del Post-operacional a Odoo (asyncio, dentro del proceso FastAPI).
 
 Mismo ciclo que ``PruebaRutaSender``: reclama los registros pendientes, los crea en ``pos.operacional`` con backoff y
 avisa al conductor del resultado final. No hay ubicación que esperar: sale apenas se recibe.
@@ -33,7 +33,7 @@ PosOperacionalNotifier = Callable[[PosOperacionalOutcome], Awaitable[None]]
 class PosOperacionalSender(_PeriodicTask):
     def __init__(self, db: Database, writer: OdooWriter, interval_seconds: float, max_attempts: int,
                  lease_seconds: int, notify: PosOperacionalNotifier | None = None, batch_size: int = 10) -> None:
-        super().__init__("pos-operacional-sender", interval_seconds)
+        super().__init__("Post-operacional-sender", interval_seconds)
         self._db = db
         self._writer = writer
         self._max_attempts = max_attempts
@@ -71,7 +71,7 @@ def listar(db: Database, limite: int = 30) -> list[str]:
 def main() -> None:  # pragma: no cover - CLI de operación
     from ..config import get_settings
 
-    parser = argparse.ArgumentParser(description="Cola de envío del Pos-Operacional a Odoo")
+    parser = argparse.ArgumentParser(description="Cola de envío del Post-operacional a Odoo")
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--once", action="store_true", help="procesa la cola una vez y sale")
     group.add_argument("--listar", action="store_true", help="muestra los últimos registros y su estado")

@@ -1,0 +1,1053 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Correcciones Post y Gastos</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script src="/static/escanear_documento.js"></script>
+<style>
+  :root {
+    color-scheme: light dark;
+    /* Identidad VIACOTUR (igual que los demás formularios). */
+    --brand: #1b1f5e;
+    --brand-2: #1f6fb8;
+    --brand-soft: color-mix(in srgb, var(--brand-2) 12%, transparent);
+    --bg: var(--tg-theme-secondary-bg-color, #eef2f8);
+    --surface: var(--tg-theme-bg-color, #ffffff);
+    --fg: var(--tg-theme-text-color, #14172f);
+    --hint: var(--tg-theme-hint-color, #6b7085);
+    --line: color-mix(in srgb, var(--hint) 28%, transparent);
+    --ok: #1f9d55; --bad: #d64545; --warn: #c27a12;
+    --radius: 14px;
+    --tap: 44px; /* área táctil mínima */
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg); color: var(--fg);
+    padding-bottom: calc(88px + env(safe-area-inset-bottom));
+    -webkit-text-size-adjust: 100%;
+  }
+  header.brand { background: #fff; padding: 12px 16px 8px; text-align: center; border-bottom: 3px solid var(--brand); }
+  header.brand img { height: 52px; width: auto; display: block; margin: 0 auto 4px; }
+  header.brand h1 { margin: 0; font-size: 17px; color: var(--brand); letter-spacing: .2px; }
+
+  main { padding: 4px 16px 16px; max-width: 640px; margin: 0 auto; }
+  .card { background: var(--surface); border-radius: var(--radius); padding: 14px; margin: 12px 0; box-shadow: 0 1px 2px rgb(0 0 0 / 6%); }
+  .card h2 { font-size: 16px; margin: 0 0 4px; color: var(--brand-2); }
+  .hint { color: var(--hint); font-size: 13px; }
+  label.field { display: block; margin: 12px 0 4px; font-weight: 600; font-size: 14px; }
+  .req { color: var(--bad); }
+  input[type=text], input[type=date], input[type=datetime-local], select, textarea {
+    width: 100%; min-height: var(--tap); padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line);
+    background: var(--surface); color: var(--fg); font: inherit; font-size: 16px;
+  }
+  textarea { resize: vertical; min-height: 72px; }
+  input[readonly] { background: color-mix(in srgb, var(--hint) 10%, var(--surface)); color: var(--fg); opacity: 1; }
+  .missing input, .missing select, .missing textarea, input.missing { border-color: var(--bad); }
+  .field-wrap { scroll-margin-top: 16px; }
+  .field-wrap.flash { animation: flash 1.6s ease-out; border-radius: 10px; }
+  @keyframes flash { 0%, 40% { background: color-mix(in srgb, var(--warn) 22%, transparent); } 100% { background: transparent; } }
+
+  /* Lista de registros corregibles */
+  .item { display: block; width: 100%; text-align: left; font: inherit; color: var(--fg); background: var(--surface);
+          border: 1px solid var(--line); border-radius: var(--radius); padding: 12px; margin: 8px 0; min-height: var(--tap); }
+  .item:active { background: var(--brand-soft); }
+  .item .titulo { font-weight: 700; color: var(--brand); overflow-wrap: anywhere; }
+  .item .linea { font-size: 14px; margin-top: 2px; overflow-wrap: anywhere; }
+  .item .estado { display: inline-block; font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 999px;
+                  background: color-mix(in srgb, var(--warn) 18%, transparent); color: var(--warn); margin-top: 6px; }
+  .vacio { text-align: center; padding: 10px 0; }
+
+  /* Adjunto PDF */
+  .sop-zone {
+    display: grid; place-items: center; gap: 8px; border: 2px dashed color-mix(in srgb, var(--brand-2) 55%, transparent);
+    border-radius: var(--radius); background: var(--brand-soft); color: var(--brand-2); text-align: center; padding: 14px; margin-top: 8px;
+  }
+  .sop-zone.missing { border-color: var(--bad); color: var(--bad); }
+  .sop-zone .big { font-size: 30px; }
+  .btn-file {
+    min-height: var(--tap); border-radius: 10px; border: 1px solid var(--brand-2); background: var(--surface);
+    color: var(--brand-2); font: inherit; font-size: 14px; font-weight: 600; padding: 6px 14px;
+  }
+  .sop-ok { display: flex; align-items: center; gap: 10px; margin-top: 8px; padding: 10px 12px; border-radius: 10px;
+            background: color-mix(in srgb, var(--ok) 12%, transparent); }
+  .sop-ok .nombre { flex: 1; overflow-wrap: anywhere; font-weight: 600; }
+  .btn-link { background: none; border: 0; color: var(--brand-2); font: inherit; font-weight: 600; min-height: var(--tap); padding: 0 6px; }
+
+  .banner { display: flex; gap: 8px; align-items: flex-start; padding: 10px 12px; border-radius: 10px; font-size: 14px; margin-top: 12px; }
+  .banner.ok { background: color-mix(in srgb, var(--ok) 14%, transparent); color: var(--ok); }
+  .banner.warn { background: color-mix(in srgb, var(--warn) 16%, transparent); color: var(--warn); }
+  .banner.bad { background: color-mix(in srgb, var(--bad) 12%, transparent); color: var(--bad); }
+  .banner ul { margin: 4px 0 0; padding-left: 18px; }
+  .banner button.jump { background: none; border: 0; padding: 4px 0; color: inherit; font: inherit; text-decoration: underline; text-align: left; min-height: 28px; }
+
+  footer.actions {
+    position: fixed; left: 0; right: 0; bottom: 0; display: flex; gap: 10px; z-index: 10;
+    padding: 12px 16px calc(12px + env(safe-area-inset-bottom)); background: var(--surface);
+    box-shadow: 0 -2px 10px rgb(0 0 0 / 8%);
+  }
+  footer.actions button { flex: 1; min-height: 50px; padding: 12px; border-radius: 12px; font: inherit; font-size: 16px; font-weight: 600; border: 0; }
+  .btn-primary { background: var(--ok); color: #fff; }
+  .btn-primary:disabled { opacity: .45; }
+  .btn-secondary { background: color-mix(in srgb, var(--hint) 16%, transparent); color: var(--fg); flex: 0 0 34% !important; }
+
+  #msg { white-space: pre-line; margin: 10px 0 0; }
+  #msg.error { color: var(--bad); font-weight: 600; }
+  .center { text-align: center; }
+  .state-icon { font-size: 52px; text-align: center; margin: 8px 0; }
+  #blocked.warn { border: 2px solid var(--warn); }
+  #blocked.warn h2 { color: var(--warn); }
+  #done-text, #blocked-text { white-space: pre-line; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<header class="brand">
+  <img src="/static/viacotur-logo.png" alt="VIACOTUR S.A. — Transporte especial y de carga">
+  <h1>Correcciones Post y Gastos</h1>
+</header>
+
+<main>
+  <p id="msg" class="hint center">Cargando datos…</p>
+
+  <!-- Lista: lo que el conductor puede corregir (en vivo desde Odoo) -->
+  <section id="lista" hidden>
+    <div class="card">
+      <h2>Gastos rechazados</h2>
+      <div class="hint">Toca el gasto que quieres corregir.</div>
+      <div id="lista-gastos"></div>
+    </div>
+    <div class="card">
+      <h2>Post-operacionales pendientes</h2>
+      <div class="hint">Toca el Post-operacional que quieres corregir.</div>
+      <div id="lista-pos"></div>
+    </div>
+    <div class="card">
+      <h2>Planillas no enviadas</h2>
+      <div class="hint">Días en que hiciste el preoperacional y no hay Post-operacional. Toca el día para cargar la planilla.</div>
+      <div id="lista-planillas"></div>
+    </div>
+  </section>
+
+  <!-- Corrección de un gasto -->
+  <section id="f-gasto" hidden>
+    <div class="card">
+      <h2>Gasto rechazado</h2>
+      <label class="field" for="g-nombre">Gasto</label>
+      <input id="g-nombre" type="text" readonly>
+      <label class="field" for="g-tipo">Tipo</label>
+      <input id="g-tipo" type="text" readonly>
+      <div class="hint">Se enviará un gasto nuevo de corrección; el rechazado no se modifica.</div>
+    </div>
+    <div class="card">
+      <h2>Datos corregidos</h2>
+      <div class="field-wrap" id="w-g-valor">
+        <label class="field" for="g-valor">Valor <span class="req">*</span></label>
+        <input id="g-valor" type="text" inputmode="decimal" autocomplete="off" placeholder="0">
+      </div>
+      <div class="field-wrap" id="w-g-fecha">
+        <label class="field" for="g-fecha">Fecha del gasto <span class="req">*</span></label>
+        <input id="g-fecha" type="date">
+      </div>
+      <div class="field-wrap" id="w-g-desc">
+        <label class="field" for="g-desc">Explica la corrección <span class="req">*</span></label>
+        <textarea id="g-desc" rows="3" placeholder="¿Qué corregiste y por qué?"></textarea>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Soporte nuevo</h2>
+      <div class="field-wrap" id="w-g-pdf">
+        <label class="field">Soporte (PDF o foto) <span class="req">*</span></label>
+        <div class="sop-zone" id="g-pdf-zona">
+          <span class="big">📄</span>
+          <button type="button" class="btn-file" id="g-esc-btn">📄 Abrir App para escanear</button>
+          <button type="button" class="btn-file" id="g-pdf-btn">🖼️ Galería o PDF</button>
+          <span class="hint" id="g-pdf-hint"></span>
+        </div>
+        <div class="sop-ok" id="g-pdf-ok" hidden></div>
+        <input type="file" id="g-pdf-in" accept="application/pdf,.pdf,image/*" hidden>
+      </div>
+    </div>
+  </section>
+
+  <!-- Corrección de un Post-operacional -->
+  <section id="f-pos" hidden>
+    <div class="card">
+      <h2>Post-operacional pendiente</h2>
+      <label class="field" for="p-nombre">Registro</label>
+      <input id="p-nombre" type="text" readonly>
+      <label class="field" for="p-vehiculo">Vehículo</label>
+      <input id="p-vehiculo" type="text" readonly>
+      <label class="field" for="p-contrato">Contrato</label>
+      <input id="p-contrato" type="text" readonly placeholder="Sin contrato">
+      <div class="banner warn" id="p-revision" hidden></div>
+    </div>
+    <div class="card">
+      <h2>Kilometraje</h2>
+      <div class="field-wrap" id="w-p-km-inicial">
+        <label class="field" for="p-km-inicial">KM inicial <span class="req">*</span></label>
+        <input id="p-km-inicial" type="text" inputmode="decimal" autocomplete="off" placeholder="0">
+      </div>
+      <div class="field-wrap" id="w-p-km-final">
+        <label class="field" for="p-km-final">KM final <span class="req">*</span></label>
+        <input id="p-km-final" type="text" inputmode="decimal" autocomplete="off" placeholder="0">
+        <div class="hint" id="p-recorrido"></div>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Fechas y horarios</h2>
+      <div class="hint">Hora de Colombia.</div>
+      <div class="field-wrap" id="w-p-entrada">
+        <label class="field" for="p-entrada">Entrada <span class="req">*</span></label>
+        <input id="p-entrada" type="datetime-local">
+      </div>
+      <div class="field-wrap" id="w-p-salida">
+        <label class="field" for="p-salida">Salida <span class="req">*</span></label>
+        <input id="p-salida" type="datetime-local">
+        <div class="hint" id="p-duracion"></div>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Planilla de servicios</h2>
+      <div class="field-wrap" id="w-p-pdf">
+        <label class="field">Planilla nueva (PDF o foto, opcional)</label>
+        <div class="hint" id="p-pdf-actual"></div>
+        <div class="sop-zone" id="p-pdf-zona">
+          <span class="big">🧾</span>
+          <button type="button" class="btn-file" id="p-esc-btn">📄 Abrir App para escanear</button>
+          <button type="button" class="btn-file" id="p-pdf-btn">🖼️ Galería o PDF</button>
+          <span class="hint" id="p-pdf-hint"></span>
+        </div>
+        <div class="sop-ok" id="p-pdf-ok" hidden></div>
+        <input type="file" id="p-pdf-in" accept="application/pdf,.pdf,image/*" hidden>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Observaciones</h2>
+      <div class="field-wrap" id="w-p-obs">
+        <label class="field" for="p-obs">Explica la corrección <span class="req">*</span></label>
+        <textarea id="p-obs" rows="3" placeholder="¿Qué corregiste y por qué? Se agrega al final de las observaciones actuales."></textarea>
+        <div class="hint" id="p-obs-actual"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Carga de una planilla no enviada (crea un Post-operacional nuevo) -->
+  <section id="f-planilla" hidden>
+    <div class="card">
+      <h2>Planilla no enviada</h2>
+      <label class="field" for="n-fecha">Día de la jornada</label>
+      <input id="n-fecha" type="text" readonly>
+      <label class="field" for="n-vehiculo">Vehículo del preoperacional</label>
+      <input id="n-vehiculo" type="text" readonly placeholder="Sin vehículo">
+      <div class="hint">Se registrará un Post-operacional nuevo para revisión de nómina.</div>
+    </div>
+    <div class="card">
+      <h2>Hora de entrada</h2>
+      <div class="hint">Hora de Colombia, dentro del mismo día y no futura. Se precargó con la hora de tu preoperacional.</div>
+      <div class="field-wrap" id="w-n-entrada">
+        <label class="field" for="n-entrada">Entrada <span class="req">*</span></label>
+        <input id="n-entrada" type="datetime-local">
+      </div>
+    </div>
+    <div class="card">
+      <h2>Planilla de servicios</h2>
+      <div class="field-wrap" id="w-n-pdf">
+        <label class="field">Planilla (PDF o foto) <span class="req">*</span></label>
+        <div class="sop-zone" id="n-pdf-zona">
+          <span class="big">🧾</span>
+          <button type="button" class="btn-file" id="n-esc-btn">📄 Abrir App para escanear</button>
+          <button type="button" class="btn-file" id="n-pdf-btn">🖼️ Galería o PDF</button>
+          <span class="hint" id="n-pdf-hint"></span>
+        </div>
+        <div class="sop-ok" id="n-pdf-ok" hidden></div>
+        <input type="file" id="n-pdf-in" accept="application/pdf,.pdf,image/*" hidden>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Observaciones</h2>
+      <div class="field-wrap" id="w-n-obs">
+        <label class="field" for="n-obs">Observaciones <span class="req">*</span></label>
+        <textarea id="n-obs" rows="3" placeholder="¿Por qué no se envió la planilla ese día?"></textarea>
+      </div>
+    </div>
+  </section>
+
+  <div id="pendientes" class="banner bad" hidden></div>
+
+  <section id="blocked" class="card" hidden>
+    <div class="state-icon" id="blocked-icon">🚫</div>
+    <h2 class="center" id="blocked-title"></h2>
+    <p class="hint center" id="blocked-text"></p>
+  </section>
+
+  <section id="done" class="card" hidden>
+    <div class="state-icon">✅</div>
+    <h2 class="center" id="done-title"></h2>
+    <p class="hint center" id="done-text"></p>
+  </section>
+</main>
+
+<footer class="actions" id="actions" hidden>
+  <button type="button" class="btn-secondary" id="cancelar">Volver</button>
+  <button type="button" class="btn-primary" id="enviar">Enviar</button>
+</footer>
+
+<script>
+(() => {
+  "use strict";
+  const tg = window.Telegram && window.Telegram.WebApp;
+  const $ = (id) => document.getElementById(id);
+  const el = (tag, props = {}, children = []) => {
+    const n = document.createElement(tag);
+    for (const [k, v] of Object.entries(props)) {
+      if (k === "text") n.textContent = v;
+      else if (k === "class") n.className = v;
+      else n.setAttribute(k, v);
+    }
+    for (const c of children) n.append(c);
+    return n;
+  };
+
+  const state = {
+    form: null, ctx: null,
+    vista: "lista",            // lista | gasto | pos | planilla
+    sel: null,                 // registro elegido
+    pdf: null,                 // soporte nuevo {nombre, bytes, data}: PDF tal cual o foto reducida a JPG (el servidor la vuelve PDF)
+    uuid: null, sending: false, finished: false, dirty: false,
+    initDataOriginal: "", pendiente: null, pendienteGuardado: false, reintento: null, avisoBandeja: "",
+  };
+
+  function setMsg(text, isError = false) {
+    $("msg").textContent = text;
+    $("msg").className = isError ? "error" : "hint center";
+    $("msg").hidden = !text;
+  }
+
+  function markDirty() {
+    if (!state.dirty && tg && tg.enableClosingConfirmation) tg.enableClosingConfirmation();
+    state.dirty = true;
+  }
+
+  function newUuid() {
+    if (crypto.randomUUID) return crypto.randomUUID();
+    const b = crypto.getRandomValues(new Uint8Array(16));
+    b[6] = (b[6] & 0x0f) | 0x40; b[8] = (b[8] & 0x3f) | 0x80;
+    const h = [...b].map((x) => x.toString(16).padStart(2, "0")).join("");
+    return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+  }
+
+  // ── Números: punto decimal (docs/GUIA_NUEVOS_BOTS.md § 1) ──
+  // El teclado en español escribe coma: se cambia por punto en el mismo campo y queda un solo separador.
+  function normalizarDecimal(input) {
+    const antes = input.value;
+    let v = antes.replace(/,/g, ".").replace(/[^\d.]/g, "");
+    const punto = v.indexOf(".");
+    if (punto !== -1) v = v.slice(0, punto + 1) + v.slice(punto + 1).replace(/\./g, "");
+    if (v === antes) return;
+    const cursor = Math.max(0, (input.selectionStart ?? v.length) - (antes.length - v.length));
+    input.value = v;
+    try { input.setSelectionRange(cursor, cursor); } catch { /* algunos navegadores no lo permiten */ }
+  }
+  function parseNum(texto) {
+    const t = String(texto).replace(/,/g, ".").trim();
+    return t === "" ? NaN : Number(t);
+  }
+  // Miles con espacio y punto decimal (el formato local es-CO usa coma decimal).
+  function fmtNum(n, dec = 0) {
+    if (!Number.isFinite(n)) return "—";
+    const [ent, frac] = n.toFixed(dec).split(".");
+    const miles = ent.replace(/\B(?=(\d{3})+(?!\d))/g, " ");
+    return frac && Number(frac) !== 0 ? `${miles}.${frac}` : miles;
+  }
+  // Valor para mostrar en el campo editable: punto decimal, sin ceros sobrantes.
+  const numATexto = (n) => (Number.isInteger(n) ? String(n) : String(Number(n.toFixed(2))));
+
+  // Fechas de los campos datetime-local: solo se comparan entre sí, así que se leen como UTC.
+  const msDe = (valor) => (valor ? Date.parse(`${valor}:00Z`) : NaN);
+
+  // Sin respuesta del servidor (sin señal) o el túnel/proxy no llega al bot (503 incluye Odoo caído al recibir):
+  // se puede reintentar.
+  const SIN_RED = [502, 503, 504];
+
+  async function api(path, options = {}) {
+    let res;
+    try {
+      res = await fetch(path, {
+        ...options,
+        headers: { "Content-Type": "application/json", "X-Telegram-Init-Data": tg ? tg.initData : "", ...(options.headers || {}) },
+      });
+    } catch (_) {
+      const err = new Error("Sin conexión");
+      err.network = true;
+      throw err;
+    }
+    if (SIN_RED.includes(res.status)) {
+      const err = new Error(`Error ${res.status}`);
+      err.status = res.status;
+      err.network = true;
+      throw err;
+    }
+    let body = null;
+    try { body = await res.json(); } catch (_) { /* sin JSON */ }
+    if (!res.ok) {
+      let detail = body && body.detail;
+      if (Array.isArray(detail)) detail = detail.map((d) => String(d.msg).replace(/^Value error, /, "")).join("\n");
+      const err = new Error(detail || `Error ${res.status}`);
+      err.status = res.status;
+      err.codigo = res.headers.get("X-Error-Code");
+      throw err;
+    }
+    return body;
+  }
+
+  // ── Bandeja de salida (correcciones guardadas sin señal) ────────────────
+  // Regla de todos los formularios (docs/GUIA_NUEVOS_BOTS.md § 5): sin señal, el envío (con su PDF) se
+  // guarda en el teléfono y se reenvía solo al volver la red, como máximo 1 hora después de perderla.
+  // Pasada la hora el servidor lo guarda solo como auditoría (410).
+  const VENTANA_MS = 60 * 60 * 1000;
+  const REINTENTO_MS = 15 * 1000;
+  const BANDEJA_MAX_MS = 7 * 24 * 60 * 60 * 1000;
+  const IDB_NAME = "correcciones-offline", IDB_STORE = "bandeja", LS_PREFIX = "correcciones-bandeja:";
+
+  function idb() {
+    return new Promise((resolve, reject) => {
+      if (!window.indexedDB) { reject(new Error("sin IndexedDB")); return; }
+      const req = indexedDB.open(IDB_NAME, 1);
+      req.onupgradeneeded = () => req.result.createObjectStore(IDB_STORE, { keyPath: "uuid" });
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  }
+
+  async function idbRun(mode, fn) {
+    const db = await idb();
+    try {
+      return await new Promise((resolve, reject) => {
+        const tx = db.transaction(IDB_STORE, mode);
+        const req = fn(tx.objectStore(IDB_STORE));
+        tx.oncomplete = () => resolve(req && req.result);
+        tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error);
+      });
+    } finally { db.close(); }
+  }
+
+  const bandeja = {
+    async put(item) {
+      try { await idbRun("readwrite", (s) => s.put(item)); return true; } catch (_) { /* respaldo */ }
+      try { localStorage.setItem(LS_PREFIX + item.uuid, JSON.stringify(item)); return true; } catch (_) { return false; }
+    },
+    async all() {
+      let items = [];
+      try { items = (await idbRun("readonly", (s) => s.getAll())) || []; } catch (_) { /* respaldo */ }
+      try {
+        for (let i = 0; i < localStorage.length; i++) {
+          const k = localStorage.key(i);
+          if (k && k.startsWith(LS_PREFIX) && !items.some((x) => LS_PREFIX + x.uuid === k)) items.push(JSON.parse(localStorage.getItem(k)));
+        }
+      } catch (_) { /* sin almacenamiento */ }
+      return items;
+    },
+    async del(uuid) {
+      try { await idbRun("readwrite", (s) => s.delete(uuid)); } catch (_) { /* respaldo */ }
+      try { localStorage.removeItem(LS_PREFIX + uuid); } catch (_) { /* sin almacenamiento */ }
+    },
+  };
+
+  const usuarioId = () => (tg && tg.initDataUnsafe && tg.initDataUnsafe.user ? tg.initDataUnsafe.user.id : null);
+  const vencidoLocal = (item) => Date.now() - Date.parse(item.sin_senal_desde) > VENTANA_MS;
+  const cuerpoDiferido = (item) => JSON.stringify({
+    ...item.payload, diferido: { init_data_original: item.init_data_original, sin_senal_desde: item.sin_senal_desde },
+  });
+
+  async function vaciarBandeja() {
+    const propios = (await bandeja.all()).filter((i) => i && i.user_id === usuarioId())
+      .sort((a, b) => Date.parse(a.sin_senal_desde) - Date.parse(b.sin_senal_desde));
+    let aceptado = null, aviso = "";
+    for (const item of propios) {
+      if (Date.now() - Date.parse(item.sin_senal_desde) > BANDEJA_MAX_MS) { await bandeja.del(item.uuid); continue; }
+      try {
+        aceptado = await api("/api/correcciones", { method: "POST", body: cuerpoDiferido(item) });
+        await bandeja.del(item.uuid);
+      } catch (err) {
+        if (err.network || err.status === 401 || (err.status && err.status >= 500)) break;
+        await bandeja.del(item.uuid);
+        if (err.status !== 410) aviso = `Una corrección guardada sin señal no fue aceptada: ${err.message}\nHazla de nuevo.`;
+      }
+    }
+    return { aceptado, aviso };
+  }
+
+  function detenerReintentos() {
+    if (state.reintento) { clearInterval(state.reintento); state.reintento = null; }
+    window.removeEventListener("online", reintentarSiPendiente);
+  }
+
+  function reintentarSiPendiente() {
+    if (!state.pendiente || state.sending || state.finished) return;
+    if (vencidoLocal(state.pendiente)) { vencer(); return; }
+    submit();
+  }
+
+  function modoSinSenal(guardado) {
+    $("enviar").textContent = "Reintentar ahora";
+    $("enviar").disabled = false;
+    setMsg(guardado
+      ? "📥 Sin señal. Tu corrección quedó guardada en este teléfono y se enviará sola cuando vuelva la señal (hasta 1 hora).\n" +
+        "Mantén abierto el formulario; si lo cierras, vuelve a abrirlo cuando tengas señal."
+      : "📵 Sin señal y no se pudo guardar en el teléfono. No cierres el formulario: se enviará sola cuando vuelva la señal (hasta 1 hora).",
+    true);
+    if (!state.reintento) {
+      state.reintento = setInterval(reintentarSiPendiente, REINTENTO_MS);
+      window.addEventListener("online", reintentarSiPendiente);
+    }
+  }
+
+  function ocultarVistas() {
+    for (const id of ["lista", "f-gasto", "f-pos", "f-planilla", "pendientes", "actions", "blocked", "done"]) $(id).hidden = true;
+  }
+
+  function vencer() {
+    detenerReintentos();
+    state.finished = true;
+    if (tg && tg.disableClosingConfirmation) tg.disableClosingConfirmation();
+    ocultarVistas();
+    block("No se pudo enviar a tiempo",
+      "Pasó más de 1 hora sin señal y este envío ya no se puede registrar.\nHaz la corrección de nuevo cuando tengas señal.");
+  }
+
+  function confirmAsync(text) {
+    return new Promise((resolve) => {
+      if (tg && tg.showConfirm) tg.showConfirm(text, (ok) => resolve(Boolean(ok)));
+      else resolve(window.confirm(text));
+    });
+  }
+
+  // ── Soporte nuevo: PDF (por su firma) o foto JPG/PNG, dentro del tamaño máximo ────────
+  // Mismo criterio que el formulario Post-operacional: la foto se reduce y se re-codifica a JPG en el teléfono;
+  // el servidor la convierte a PDF (a Odoo siempre llega un PDF).
+  const FOTO_LADO_MAX = 1800;   // px del lado mayor al reducir una foto
+
+  function leerDataUrl(blob) {
+    return new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(r.result);
+      r.onerror = () => reject(new Error("No se pudo leer el archivo."));
+      r.readAsDataURL(blob);
+    });
+  }
+
+  async function esPdf(file) {
+    const cabecera = new Uint8Array(await file.slice(0, 4).arrayBuffer());
+    return String.fromCharCode(...cabecera) === "%PDF";
+  }
+
+  async function decodificarImagen(file) {
+    if (window.createImageBitmap) {
+      try { return await createImageBitmap(file); } catch (_) { /* se prueba con <img> */ }
+    }
+    const url = URL.createObjectURL(file);
+    try {
+      return await new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = () => reject(new Error("imagen no legible"));
+        img.src = url;
+      });
+    } finally { URL.revokeObjectURL(url); }
+  }
+
+  function aBlobJpg(canvas, calidad) {
+    return new Promise((resolve) => canvas.toBlob((b) => resolve(b), "image/jpeg", calidad));
+  }
+
+  async function fotoAJpg(file) {
+    const img = await decodificarImagen(file);
+    const ancho = img.naturalWidth || img.width, alto = img.naturalHeight || img.height;
+    let escala = Math.min(1, FOTO_LADO_MAX / Math.max(ancho, alto));
+    for (let intento = 0; intento < 4; intento++) {
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(ancho * escala));
+      canvas.height = Math.max(1, Math.round(alto * escala));
+      const ctx = canvas.getContext("2d");
+      ctx.fillStyle = "#ffffff";  // PNG con transparencia: fondo blanco
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      const blob = await aBlobJpg(canvas, 0.8);
+      if (!blob) throw new Error("no se pudo procesar la foto");
+      if (blob.size <= state.form.pdf_max_bytes) return blob;
+      escala *= 0.7;
+    }
+    throw new Error("la foto sigue siendo demasiado pesada");
+  }
+
+  async function onPdf(ev) {
+    const file = ev.target.files && ev.target.files[0];
+    ev.target.value = "";
+    if (!file) return;
+    const maxMb = Math.round(state.form.pdf_max_bytes / 1048576);
+    try {
+      let blob, nombre = file.name || "soporte";
+      if (await esPdf(file)) {
+        if (file.size > state.form.pdf_max_bytes) { setMsg(`El PDF pesa ${fmtNum(file.size / 1048576, 1)} MB; el máximo es ${maxMb} MB.`, true); return; }
+        blob = file;
+      } else if (file.type.startsWith("image/") || /\.(jpe?g|png|heic|heif|webp)$/i.test(nombre)) {
+        try { blob = await fotoAJpg(file); } catch (_) {
+          setMsg("No se pudo leer la foto. Elige otra, o usa una imagen JPG o PNG o un PDF.", true);
+          return;
+        }
+        nombre = nombre.replace(/\.[A-Za-z0-9]{1,5}$/, "") + ".jpg";
+      } else {
+        setMsg("El soporte debe ser un PDF o una foto (JPG o PNG).", true);
+        return;
+      }
+      state.pdf = { nombre, bytes: blob.size, data: await leerDataUrl(blob) };
+    } catch (err) {
+      setMsg(err.message, true);
+      return;
+    }
+    markDirty();
+    setMsg("");
+    renderPdf();
+  }
+
+  const PREF_PDF = { gasto: "g", pos: "p", planilla: "n" };
+
+  function renderPdf() {
+    const pref = PREF_PDF[state.vista] || "p";
+    const p = state.pdf;
+    $(`${pref}-pdf-zona`).hidden = Boolean(p);
+    $(`${pref}-pdf-ok`).hidden = !p;
+    if (p) {
+      $(`${pref}-pdf-ok`).replaceChildren(el("span", { text: /\.pdf$/i.test(p.nombre) ? "📄" : "🖼️" }),
+        el("span", { class: "nombre", text: `${p.nombre} (${fmtNum(p.bytes / 1024, 0)} KB)` }));
+      const quitar = el("button", { type: "button", class: "btn-link", text: "Quitar" });
+      quitar.addEventListener("click", () => { state.pdf = null; markDirty(); renderPdf(); });
+      $(`${pref}-pdf-ok`).append(quitar);
+    }
+    if (!$("pendientes").hidden) renderPendientes();
+  }
+
+  // ── Lista ────────────────────────────────────────────────────────────────
+  function renderLista() {
+    const c = state.ctx;
+    const g = $("lista-gastos"), p = $("lista-pos"), n = $("lista-planillas");
+    g.replaceChildren(...(c.gastos.length ? c.gastos.map((x) => {
+      const b = el("button", { type: "button", class: "item" }, [
+        el("div", { class: "titulo", text: x.nombre || `Gasto ${x.id}` }),
+        el("div", { class: "linea", text: `${x.tipo || "Sin tipo"} · $${fmtNum(x.valor, 2)} · ${x.fecha}` }),
+      ]);
+      if (x.descripcion) b.append(el("div", { class: "linea hint", text: x.descripcion }));
+      b.addEventListener("click", () => abrirGasto(x));
+      return b;
+    }) : [el("p", { class: "hint vacio", text: "No tienes gastos rechazados." })]));
+    p.replaceChildren(...(c.pos.length ? c.pos.map((x) => {
+      const b = el("button", { type: "button", class: "item" }, [
+        el("div", { class: "titulo", text: x.nombre || `Post-operacional ${x.id}` }),
+        el("div", { class: "linea", text: `${x.entrada.replace("T", " ")} → ${x.salida.replace("T", " ")}` }),
+        el("div", { class: "linea", text: [x.vehiculo, x.contrato].filter(Boolean).join(" · ") || "Sin vehículo ni contrato" }),
+        el("div", { class: "linea", text: `KM ${fmtNum(x.km_inicial, 1)} → ${fmtNum(x.km_final, 1)}` }),
+        el("span", { class: "estado", text: x.estado_texto }),
+      ]);
+      b.addEventListener("click", () => abrirPos(x));
+      return b;
+    }) : [el("p", { class: "hint vacio", text: "No tienes Post-operacionales pendientes." })]));
+    const planillas = c.planillas || [];
+    n.replaceChildren(...(planillas.length ? planillas.map((x) => {
+      const b = el("button", { type: "button", class: "item" }, [
+        el("div", { class: "titulo", text: "Jornada del " + x.fecha }),
+        el("div", { class: "linea", text: "Preoperacional " + x.entrada.replace("T", " ") + (x.vehiculo ? " · " + x.vehiculo : "") }),
+        el("span", { class: "estado", text: "SIN POST-OPERACIONAL" }),
+      ]);
+      b.addEventListener("click", () => abrirPlanilla(x));
+      return b;
+    }) : [el("p", { class: "hint vacio", text: c.planillas_mensaje || "No tienes planillas pendientes por enviar." })]));
+  }
+
+  async function mostrarLista() {
+    state.vista = "lista"; state.sel = null; state.pdf = null; state.dirty = false;
+    if (tg && tg.disableClosingConfirmation) tg.disableClosingConfirmation();
+    ocultarVistas();
+    setMsg("Cargando datos…");
+    try {
+      state.ctx = await api("/api/correcciones/context");
+    } catch (err) {
+      if (err.status === 403) block("Usuario no registrado", `${err.message}.\nPide a Recursos Humanos que lo registre.`);
+      else block("No se pudo cargar", `${err.message}\nVerifica tu señal y vuelve a abrirlo.`);
+      return;
+    }
+    if (!state.ctx.odoo_ok) { block("Odoo no responde", state.ctx.mensaje || "Intenta de nuevo en unos minutos.", true); return; }
+    setMsg(state.avisoBandeja, Boolean(state.avisoBandeja));
+    state.avisoBandeja = "";
+    renderLista();
+    $("lista").hidden = false;
+  }
+
+  function abrirGasto(x) {
+    state.vista = "gasto"; state.sel = x; state.pdf = null; state.uuid = newUuid(); state.initDataOriginal = tg.initData;
+    ocultarVistas();
+    $("g-nombre").value = x.nombre;
+    $("g-tipo").value = x.tipo;
+    $("g-valor").value = numATexto(x.valor);
+    $("g-fecha").value = x.fecha;
+    $("g-fecha").max = state.ctx.hoy;
+    $("g-fecha").min = state.ctx.desde;  // ventana de antigüedad (CORRECCIONES_DIAS_MAXIMOS)
+    $("g-desc").value = "";
+    $("g-desc").maxLength = state.form.texto_max;
+    $("g-pdf-hint").textContent = `PDF o foto, máximo ${Math.round(state.form.pdf_max_bytes / 1048576)} MB`;
+    setMsg("");
+    renderPdf();
+    $("f-gasto").hidden = false;
+    $("actions").hidden = false;
+    $("enviar").textContent = "Enviar corrección";
+    $("enviar").disabled = false;
+    window.scrollTo(0, 0);
+  }
+
+  function abrirPos(x) {
+    state.vista = "pos"; state.sel = x; state.pdf = null; state.uuid = newUuid(); state.initDataOriginal = tg.initData;
+    ocultarVistas();
+    $("p-nombre").value = x.nombre;
+    $("p-vehiculo").value = x.vehiculo;
+    $("p-contrato").value = x.contrato;
+    $("p-revision").hidden = !x.revision;
+    $("p-revision").textContent = x.revision ? `Motivo de la devolución: ${x.revision}` : "";
+    $("p-km-inicial").value = numATexto(x.km_inicial);
+    $("p-km-final").value = numATexto(x.km_final);
+    $("p-entrada").value = x.entrada;
+    $("p-salida").value = x.salida;
+    $("p-obs").value = "";
+    $("p-obs").maxLength = state.form.texto_max;
+    $("p-obs-actual").textContent = x.observaciones
+      ? `Observaciones actuales (referencia): ${x.observaciones}. Tu explicación se agregará al final, con la fecha y hora.`
+      : "Tu explicación se agregará a las observaciones, con la fecha y hora.";
+    $("p-pdf-actual").textContent = x.planilla_nombre
+      ? `Si no adjuntas una nueva se conserva la actual (${x.planilla_nombre}).` : "Si no adjuntas una nueva se conserva la actual.";
+    $("p-pdf-hint").textContent = `PDF o foto, máximo ${Math.round(state.form.pdf_max_bytes / 1048576)} MB`;
+    setMsg("");
+    renderPdf();
+    refrescar();
+    $("f-pos").hidden = false;
+    $("actions").hidden = false;
+    $("enviar").textContent = "Enviar corrección";
+    $("enviar").disabled = false;
+    window.scrollTo(0, 0);
+  }
+
+  // Hora actual de Colombia (UTC-5 fijo) como YYYY-MM-DDTHH:MM, comparable con el valor de datetime-local.
+  const ahoraColombia = () => new Date(Date.now() - 5 * 3600 * 1000).toISOString().slice(0, 16);
+
+  function abrirPlanilla(x) {
+    state.vista = "planilla"; state.sel = x; state.pdf = null; state.uuid = newUuid(); state.initDataOriginal = tg.initData;
+    ocultarVistas();
+    $("n-fecha").value = x.fecha;
+    $("n-vehiculo").value = x.vehiculo || "";
+    $("n-entrada").value = x.entrada;
+    $("n-entrada").min = x.fecha + "T00:00";
+    const tope = x.fecha + "T23:59", ahora = ahoraColombia();
+    $("n-entrada").max = tope < ahora ? tope : ahora;  // mismo día y no futura
+    $("n-obs").value = "";
+    $("n-obs").maxLength = state.form.texto_max;
+    $("n-pdf-hint").textContent = `PDF o foto, máximo ${Math.round(state.form.pdf_max_bytes / 1048576)} MB`;
+    setMsg("");
+    renderPdf();
+    $("f-planilla").hidden = false;
+    $("actions").hidden = false;
+    $("enviar").textContent = "Enviar planilla";
+    $("enviar").disabled = false;
+    window.scrollTo(0, 0);
+  }
+
+  // ── Resumen en vivo del Pos ──────────────────────────────────────────────
+  function refrescar() {
+    if (state.vista !== "pos") return;
+    const ini = parseNum($("p-km-inicial").value), fin = parseNum($("p-km-final").value);
+    $("p-recorrido").textContent = Number.isFinite(ini) && Number.isFinite(fin) && fin >= ini
+      ? `Recorrido: ${fmtNum(fin - ini, 1)} km` : "";
+    const e = msDe($("p-entrada").value), s = msDe($("p-salida").value);
+    if (Number.isFinite(e) && Number.isFinite(s) && s > e) {
+      const min = Math.round((s - e) / 60000);
+      $("p-duracion").textContent = `Duración: ${Math.floor(min / 60)} h ${String(min % 60).padStart(2, "0")} min`;
+    } else {
+      $("p-duracion").textContent = "";
+    }
+    if (!$("pendientes").hidden) renderPendientes();
+  }
+
+  // ── Pendientes (cada uno lleva a su campo) ───────────────────────────────
+  function pendientes() {
+    const out = [];
+    const add = (id, text) => out.push({ id, text });
+    if (state.vista === "gasto") {
+      const v = parseNum($("g-valor").value);
+      if (!Number.isFinite(v) || v <= 0) add("w-g-valor", "Valor");
+      else if (v > state.form.valor_max) add("w-g-valor", "Valor (fuera de rango)");
+      else if (Math.round(v * 100) / 100 !== v) add("w-g-valor", "Valor (máximo 2 decimales)");
+      const f = $("g-fecha").value;
+      if (!f) add("w-g-fecha", "Fecha del gasto");
+      else if (f > state.ctx.hoy) add("w-g-fecha", "Fecha del gasto (no puede ser futura)");
+      else if (state.ctx.desde && f < state.ctx.desde) add("w-g-fecha", `Fecha del gasto (no puede tener más de ${state.ctx.dias_maximos} días)`);
+      if (!$("g-desc").value.trim()) add("w-g-desc", "Explicación de la corrección");
+      if (!state.pdf) add("w-g-pdf", "Soporte nuevo (PDF o foto)");
+    } else if (state.vista === "pos") {
+      const ini = parseNum($("p-km-inicial").value), fin = parseNum($("p-km-final").value);
+      const max = state.form.km_max;
+      if (!Number.isFinite(ini)) add("w-p-km-inicial", "KM inicial");
+      else if (ini < 0 || ini > max) add("w-p-km-inicial", "KM inicial (fuera de rango)");
+      if (!Number.isFinite(fin)) add("w-p-km-final", "KM final");
+      else if (fin < 0 || fin > max) add("w-p-km-final", "KM final (fuera de rango)");
+      else if (Number.isFinite(ini) && fin < ini) add("w-p-km-final", "KM final (no puede ser menor que el KM inicial)");
+      const e = msDe($("p-entrada").value), s = msDe($("p-salida").value);
+      if (!Number.isFinite(e)) add("w-p-entrada", "Entrada (fecha y hora)");
+      if (!Number.isFinite(s)) add("w-p-salida", "Salida (fecha y hora)");
+      if (Number.isFinite(e) && Number.isFinite(s)) {
+        if (s <= e) add("w-p-salida", "Salida (debe ser posterior a la entrada)");
+        else if (s - e > state.form.rango_max_horas * 3600000) add("w-p-salida", `Salida (máximo ${state.form.rango_max_horas} horas después de la entrada)`);
+      }
+      if (!$("p-obs").value.trim()) add("w-p-obs", "Explicación de la corrección (observaciones)");
+    } else if (state.vista === "planilla") {
+      const e = $("n-entrada").value, dia = state.sel.fecha;
+      if (!e) add("w-n-entrada", "Entrada (fecha y hora)");
+      else if (e.slice(0, 10) !== dia) add("w-n-entrada", "Entrada (debe estar dentro del día de la jornada)");
+      else if (e > ahoraColombia()) add("w-n-entrada", "Entrada (no puede ser futura)");
+      if (!state.pdf) add("w-n-pdf", "Planilla (PDF o foto)");
+      if (!$("n-obs").value.trim()) add("w-n-obs", "Observaciones");
+    }
+    return out;
+  }
+
+  function renderPendientes(show = true) {
+    const faltan = pendientes();
+    const ids = new Set(faltan.map((f) => f.id));
+    document.querySelectorAll(".field-wrap").forEach((w) => w.classList.toggle("missing", show && ids.has(w.id)));
+    $("g-pdf-zona").classList.toggle("missing", show && ids.has("w-g-pdf"));
+    $("n-pdf-zona").classList.toggle("missing", show && ids.has("w-n-pdf"));
+    const box = $("pendientes");
+    box.hidden = !show || faltan.length === 0;
+    if (box.hidden) return;
+    box.replaceChildren(el("div", {}, [
+      el("strong", { text: `Falta completar (${faltan.length}):` }),
+      el("ul", {}, faltan.map((f) => {
+        const b = el("button", { type: "button", class: "jump", text: f.text });
+        b.addEventListener("click", () => jump(f.id));
+        return el("li", {}, [b]);
+      })),
+    ]));
+  }
+
+  function jump(id) {
+    const w = $(id);
+    w.scrollIntoView({ behavior: "smooth", block: "center" });
+    w.classList.remove("flash"); void w.offsetWidth; w.classList.add("flash");
+  }
+
+  // ── Envío ────────────────────────────────────────────────────────────────
+  function armarPayload() {
+    if (state.vista === "gasto") {
+      return {
+        tipo: "gasto", uuid: state.uuid, odoo_id: state.sel.id,
+        total: parseNum($("g-valor").value), fecha: $("g-fecha").value,
+        descripcion: $("g-desc").value.trim(), pdf: state.pdf.data, pdf_nombre: state.pdf.nombre,
+      };
+    }
+    if (state.vista === "planilla") {
+      return {
+        tipo: "planilla", uuid: state.uuid, fecha: state.sel.fecha, entrada: $("n-entrada").value,
+        observaciones: $("n-obs").value.trim(), planilla: state.pdf.data, planilla_nombre: state.pdf.nombre,
+      };
+    }
+    return {
+      tipo: "pos", uuid: state.uuid, odoo_id: state.sel.id,
+      km_inicial: parseNum($("p-km-inicial").value), km_final: parseNum($("p-km-final").value),
+      entrada: $("p-entrada").value, salida: $("p-salida").value,
+      observaciones: $("p-obs").value.trim(),
+      planilla: state.pdf ? state.pdf.data : null, planilla_nombre: state.pdf ? state.pdf.nombre : null,
+    };
+  }
+
+  async function enviar() {
+    if (state.finished) { tg.close(); return; }
+    if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+    if (state.pendiente) { submit(); return; }
+    if (pendientes().length) {
+      renderPendientes(true);
+      $("pendientes").scrollIntoView({ behavior: "smooth", block: "center" });
+      if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("error");
+      return;
+    }
+    const texto = state.vista === "planilla"
+      ? `¿Confirmas el envío de la planilla de la jornada del ${state.sel.fecha}?`
+      : `¿Confirmas el envío de la corrección ${state.vista === "gasto" ? "del gasto" : "del Post-operacional"} «${state.sel.nombre}»?`;
+    if (!(await confirmAsync(texto))) return;
+    await submit();
+  }
+
+  // «Volver»: de un formulario a la lista; sin nada que volver, cierra.
+  async function volver() {
+    if (state.finished) { tg.close(); return; }
+    if (state.dirty && !(await confirmAsync("¿Volver y descartar lo que llenaste?"))) return;
+    detenerReintentos();
+    state.pendiente = null;
+    await mostrarLista();
+  }
+
+  async function submit() {
+    if (state.sending) return;
+    state.sending = true;
+    $("enviar").disabled = true;
+    $("enviar").textContent = "Enviando…";
+    const payload = state.pendiente ? state.pendiente.payload : armarPayload();
+    try {
+      const body = state.pendiente ? cuerpoDiferido(state.pendiente) : JSON.stringify(payload);
+      const out = await api("/api/correcciones", { method: "POST", body });
+      if (state.pendiente) { detenerReintentos(); await bandeja.del(state.uuid); }
+      showDone(out, Boolean(state.pendiente));
+    } catch (err) {
+      state.sending = false;
+      if (err.network) {
+        if (!state.pendiente) {
+          state.pendiente = {
+            uuid: state.uuid, user_id: usuarioId(), payload,
+            init_data_original: state.initDataOriginal, sin_senal_desde: new Date().toISOString(),
+          };
+          state.pendienteGuardado = await bandeja.put(state.pendiente);
+        }
+        if (vencidoLocal(state.pendiente)) vencer(); else modoSinSenal(state.pendienteGuardado);
+        return;
+      }
+      if (err.status === 410) { await bandeja.del(state.uuid); vencer(); return; }
+      detenerReintentos();
+      const sesion = err.status === 401 ? "\nCierra y vuelve a abrir el formulario: lo que guardaste se enviará al abrirlo." : "";
+      setMsg(`No se pudo enviar: ${err.message}${sesion}\nPuedes corregir y reintentar: no se duplicará.`, true);
+      $("enviar").textContent = "Reintentar envío";
+      $("enviar").disabled = false;
+      if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("error");
+    }
+  }
+
+  function showDone(out, diferido = false) {
+    state.finished = true;
+    if (borrador) borrador.borrar();
+    if (tg && tg.disableClosingConfirmation) tg.disableClosingConfirmation();
+    ocultarVistas();
+    $("actions").hidden = false;
+    $("cancelar").hidden = true;
+    $("enviar").textContent = "Cerrar";
+    $("enviar").disabled = false;
+    setMsg("");
+    $("done").hidden = false;
+    const que = out.tipo === "planilla" ? "Planilla" : "Corrección";
+    $("done-title").textContent = out.duplicado ? `Esta ${que.toLowerCase()} ya había sido recibida`
+      : diferido ? `${que} recibida al recuperar la señal` : `${que} recibida`;
+    $("done-text").textContent = "Se está enviando a Odoo y recibirás el resultado en el chat.";
+    if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+  }
+
+  function block(title, text, aviso = false) {
+    $("blocked").hidden = false;
+    $("blocked").classList.toggle("warn", aviso);
+    $("blocked-icon").textContent = aviso ? "⚠️" : "🚫";
+    $("blocked-title").textContent = title;
+    $("blocked-text").textContent = text;
+    setMsg("");
+  }
+
+  // ── Escanear documento (app nativa del teléfono) y borrador ───────────────
+  // Al salir a la app de escaneo Android puede destruir el WebView: antes de salir se guarda el registro elegido,
+  // lo diligenciado y el soporte ya cargado, y se restaura al reabrir (2 h como máximo). Ver escanear_documento.js.
+  const escaner = window.EscanearDocumento || null;
+  const borrador = escaner ? escaner.borrador("correcciones", usuarioId()) : null;
+  const CAMPOS_BORRADOR = {
+    gasto: ["g-valor", "g-fecha", "g-desc"],
+    pos: ["p-km-inicial", "p-km-final", "p-entrada", "p-salida", "p-obs"],
+    planilla: ["n-entrada", "n-obs"],
+  };
+  // Identidad del registro elegido: id de Odoo (gasto, Post) o el día de la jornada (planilla).
+  const claveSel = (x) => (x.id === undefined ? x.fecha : x.id);
+
+  async function escanearDocumento() {
+    try {
+      if (borrador && CAMPOS_BORRADOR[state.vista] && state.sel) {
+        const campos = {};
+        for (const id of CAMPOS_BORRADOR[state.vista]) campos[id] = $(id).value;
+        const p = state.pdf;
+        await borrador.guardar({
+          vista: state.vista, odoo_id: claveSel(state.sel), campos,
+          pdf: p ? { nombre: p.nombre, bytes: p.bytes, data: p.data } : null,
+        });
+      }
+    } catch (_) { /* sin almacenamiento: el formulario sigue igual */ }
+    if (escaner) escaner.abrir();
+  }
+
+  // Reabre el registro que se estaba corrigiendo (si sigue en la lista) y vuelve a poner lo diligenciado.
+  async function restaurarBorrador() {
+    try {
+      const d = borrador ? await borrador.leer() : null;
+      if (!d || !state.ctx || !state.ctx.odoo_ok || !CAMPOS_BORRADOR[d.vista] || !d.campos) return false;
+      const lista = { gasto: state.ctx.gastos, pos: state.ctx.pos, planilla: state.ctx.planillas || [] }[d.vista];
+      const x = lista.find((r) => claveSel(r) === d.odoo_id);
+      if (!x) return false;
+      if (d.vista === "gasto") abrirGasto(x); else if (d.vista === "planilla") abrirPlanilla(x); else abrirPos(x);
+      for (const id of CAMPOS_BORRADOR[d.vista]) {
+        if (typeof d.campos[id] === "string" && d.campos[id]) $(id).value = d.campos[id].slice(0, 2000);
+      }
+      if (d.pdf && typeof d.pdf.data === "string") {
+        state.pdf = { nombre: String(d.pdf.nombre || "soporte"), bytes: Number(d.pdf.bytes) || 0, data: d.pdf.data };
+        renderPdf();
+      }
+      refrescar();
+      markDirty();
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  // ── Arranque ─────────────────────────────────────────────────────────────
+  async function init() {
+    if (!tg || !tg.initData) {
+      block("Abre el formulario desde Telegram", "Usa el botón «🛠️ Correcciones Post y Gastos» del bot.");
+      return;
+    }
+    tg.ready();
+    tg.expand();
+    if (tg.setHeaderColor) { try { tg.setHeaderColor("#ffffff"); } catch (_) { /* versión antigua */ } }
+    // Antes de vaciar la bandeja: si se acepta un envío guardado, el botón "Cerrar" debe funcionar.
+    $("enviar").addEventListener("click", enviar);
+    $("cancelar").addEventListener("click", volver);
+    try {
+      state.form = await api("/api/correcciones/form");
+      const previo = await vaciarBandeja();
+      if (previo.aceptado) { showDone(previo.aceptado, true); return; }
+      state.avisoBandeja = previo.aviso;
+    } catch (err) {
+      if (err.status === 403) block("Usuario no registrado", `${err.message}.\nPide a Recursos Humanos que lo registre.`);
+      else block("No se pudo cargar el formulario", `${err.message}\nVerifica tu señal y vuelve a abrirlo.`);
+      return;
+    }
+
+    for (const id of ["g-valor", "p-km-inicial", "p-km-final"]) {
+      $(id).addEventListener("input", () => { normalizarDecimal($(id)); markDirty(); refrescar(); if (!$("pendientes").hidden) renderPendientes(); });
+    }
+    for (const id of ["g-fecha", "g-desc", "p-entrada", "p-salida", "p-obs", "n-entrada", "n-obs"]) {
+      $(id).addEventListener("input", () => { markDirty(); refrescar(); if (!$("pendientes").hidden) renderPendientes(); });
+    }
+    for (const pref of ["g", "p", "n"]) {
+      $(`${pref}-pdf-btn`).addEventListener("click", () => $(`${pref}-pdf-in`).click());
+      $(`${pref}-esc-btn`).addEventListener("click", escanearDocumento);
+      $(`${pref}-pdf-in`).addEventListener("change", onPdf);
+    }
+    await mostrarLista();
+    if (await restaurarBorrador()) setMsg("Recuperamos lo que llevabas.");
+  }
+
+  init();
+})();
+</script>
+</body>
+</html>

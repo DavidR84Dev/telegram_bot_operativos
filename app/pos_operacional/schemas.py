@@ -1,4 +1,4 @@
-"""Esquemas Pydantic del Pos-Operacional: entrada estricta de la Mini App y respuesta."""
+"""Esquemas Pydantic del Post-operacional: entrada estricta de la Mini App y respuesta."""
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta

@@ -1,11 +1,11 @@
-"""Lógica del Pos-Operacional: contexto, recepción (incluido el envío sin señal) y envío a Odoo (``pos.operacional``).
+"""Lógica del Post-operacional: contexto, recepción (incluido el envío sin señal) y envío a Odoo (``pos.operacional``).
 
 Reglas:
 
 1. El id de Telegram es el PIN de un empleado activo (si no, 403).
 2. El vehículo, el contrato y el KM inicial sugerido salen de la **reserva de la jornada** (la del preoperacional).
    Exige una **reserva vigente** (``reservas.reserva_vigente``): sin ella ``SinReservaVigenteError`` (409). No tiene
-   que ser de hoy: un turno nocturno hace su pos-operacional pasada la medianoche.
+   que ser de hoy: un turno nocturno hace su Post-operacional pasada la medianoche.
 3. La planilla (PDF, JPG o PNG, validada por su firma) se envía a Odoo **siempre en PDF** (``type_file="pdf"``):
    una foto se convierte a PDF en el servidor.
 4. No pide ubicación y **no libera** la reserva: eso lo hace 🔴 Finalizar.
@@ -174,7 +174,7 @@ def submit_diferido(db: Database, identity: TelegramIdentity, data: PosOperacion
             session.flush()
         except IntegrityError as exc:  # el mismo uuid llegó dos veces en paralelo
             raise EnvioVencidoError(motivo) from exc
-    logger.warning("Pos-operacional diferido VENCIDO uuid=%s usuario=%s: %s", data.uuid, identity.user_id, motivo)
+    logger.warning("Post-operacional diferido VENCIDO uuid=%s usuario=%s: %s", data.uuid, identity.user_id, motivo)
     raise EnvioVencidoError(motivo)
 
 
@@ -290,12 +290,12 @@ def _buscar_previo(writer: OdooWriter, vals: dict[str, Any], pos_id: int) -> int
     try:
         return writer.buscar_pos_operacional(vals)
     except OdooPermanentError as exc:
-        logger.warning("Pos-operacional %s: no se pudo buscar un duplicado en Odoo (%s); se crea igual", pos_id, exc)
+        logger.warning("Post-operacional %s: no se pudo buscar un duplicado en Odoo (%s); se crea igual", pos_id, exc)
         return None
 
 
 def send_one(db: Database, writer: OdooWriter, pos_id: int, max_attempts: int) -> PosOperacionalOutcome:
-    """Envía un pos-operacional ya reclamado (``enviando``) y deja el estado final en la BD.
+    """Envía un Post-operacional ya reclamado (``enviando``) y deja el estado final en la BD.
 
     Antes de crear busca uno igual en Odoo (empleado + entrada + salida): un reintento tras un timeout no duplica.
     Un rechazo de Odoo (Fault de validación) deja el registro ``fallido`` sin reintento; un error de red o de
@@ -304,7 +304,7 @@ def send_one(db: Database, writer: OdooWriter, pos_id: int, max_attempts: int) -
     with db.session() as session:
         pos = session.get(PosOperacional, pos_id)
         if pos is None or pos.sync_status != SyncStatus.ENVIANDO:
-            raise LookupError(f"pos-operacional {pos_id} no está en estado enviando")
+            raise LookupError(f"Post-operacional {pos_id} no está en estado enviando")
         vals = build_odoo_values(pos)
         ref, submitted_at, attempts, user_id = pos.uuid, pos.fecha, pos.attempts, pos.telegram_user_id
         placa = reservas.placa(pos.vehiculo) if pos.vehiculo is not None else None
@@ -316,7 +316,7 @@ def send_one(db: Database, writer: OdooWriter, pos_id: int, max_attempts: int) -
     try:
         odoo_id = _buscar_previo(writer, vals, pos_id)
         if odoo_id is not None:
-            logger.info("Pos-operacional %s ya existía en Odoo (id=%s): no se duplicó", pos_id, odoo_id)
+            logger.info("Post-operacional %s ya existía en Odoo (id=%s): no se duplicó", pos_id, odoo_id)
         else:
             odoo_id, odoo_name, _ = writer.create_pos_operacional(ref, vals, submitted_at, attempts > 1)
         status = SyncStatus.ENVIADO
@@ -340,7 +340,7 @@ def send_one(db: Database, writer: OdooWriter, pos_id: int, max_attempts: int) -
         else:
             pos.next_attempt_at = None
     log = logger.info if status == SyncStatus.ENVIADO else logger.warning
-    log("Pos-operacional %s -> %s%s", pos_id, status.value, f" ({error})" if error else f" odoo_id={odoo_id}")
+    log("Post-operacional %s -> %s%s", pos_id, status.value, f" ({error})" if error else f" odoo_id={odoo_id}")
     return PosOperacionalOutcome(pos_id, user_id, status, odoo_id, odoo_name, placa, error)
 
 

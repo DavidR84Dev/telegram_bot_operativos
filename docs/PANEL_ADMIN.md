@@ -158,6 +158,7 @@ La **lista blanca está en código** (`app/admin/envfile.py`, `PARAMETROS`), nun
 |---|---|
 | Operación | `LOG_LEVEL`, `POLL_INTERVAL_SECONDS`, `WATCH_TTL_HOURS`, `EMPLOYEE_CACHE_SECONDS`, `MASTER_SYNC_INTERVAL_SECONDS` |
 | Colas a Odoo | `PREOP_WORKER_INTERVAL_SECONDS`, `PREOP_MAX_ATTEMPTS`, `PREOP_SENDING_LEASE_SECONDS`, `PREOP_AUTH_MAX_AGE_SECONDS` |
+| Correcciones | `CORRECCIONES_DIAS_MAXIMOS` (antigüedad máxima, en días, de los gastos rechazados y Post-operacionales pendientes que se pueden corregir; entero de 1 a 365, por defecto 30) |
 | Negocio | `PRUEBA_RUTA_ACUERDOS`, `COMBUSTIBLE_GASTOS_PRODUCT_ID`, `GASTOS_OPERATIVOS_TIPOS`, `GASTOS_OPERATIVOS_TOPES`, `ODOO_API_COMPANY_IDS`, `ODOO_API_PAGE_SIZE` |
 | GPS | `GPS_FLOTA_URL`, `GPS_FLOTA_TIMEOUT_SECONDS` |
 | Secreto (solo escritura) | `GPS_FLOTA_API_KEY`: nunca se muestra su valor, solo «configurado» o «vacío»; se puede escribir uno nuevo o vaciar. |
@@ -166,7 +167,7 @@ La **lista blanca está en código** (`app/admin/envfile.py`, `PARAMETROS`), nun
 credenciales de Odoo y URLs base.
 
 Validación: el tipo sale del campo en `Settings` (enteros > 0, decimales con **punto** > 0, texto). Además,
-`LOG_LEVEL` solo admite sus cinco niveles, las URL deben ser `http(s)://` (o vacías) y `ODOO_API_COMPANY_IDS` es
+`LOG_LEVEL` solo admite sus cinco niveles, `CORRECCIONES_DIAS_MAXIMOS` debe estar entre 1 y 365 (ver `docs/CORRECCIONES.md` § 2; el bot principal toma el valor al recrear el contenedor, como los demás parámetros), las URL deben ser `http(s)://` (o vacías) y `ODOO_API_COMPANY_IDS` es
 una lista de números, y `GASTOS_OPERATIVOS_TIPOS` debe ser `Nombre:product_id` separados por `;` (sin nombres repetidos ni ids no numéricos; el valor se guarda normalizado, p. ej. `Alimentación:1;Otros:6`; ver `docs/GASTOS_OPERATIVOS.md` § 3). `GASTOS_OPERATIVOS_TOPES` es `Nombre:valor` en COP separados por `;` (enteros > 0, vacío = sin topes): cada nombre debe existir en los tipos (sin distinguir tildes ni mayúsculas) y se guarda con el nombre de los tipos, p. ej. `Alimentación:50000;Hospedaje:150000`; esa validación cruzada se hace al guardar, con los tipos que quedarían en el `.env` (si cambias tipos y topes a la vez se comprueban juntos; no se puede quitar un tipo que aún tiene tope). La pestaña lo muestra como **una fila por tipo configurado con un campo numérico** (vacío = sin tope). Ver `docs/GASTOS_OPERATIVOS.md` § 3b. Se rechazan comillas, `#`, `$`, `\` y saltos de línea. Todo o nada: si un valor es
 inválido no se escribe ninguno.
 

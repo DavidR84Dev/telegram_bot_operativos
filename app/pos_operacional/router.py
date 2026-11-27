@@ -1,15 +1,15 @@
-"""Endpoints de la Mini App del Pos-Operacional.
+"""Endpoints de la Mini App del Post-operacional.
 
-Seguridad igual que los demás formularios: las rutas ``/api/pos-operacional/*`` exigen
+Seguridad igual que los demás formularios: las rutas ``/api/Post-operacional/*`` exigen
 ``X-Telegram-Init-Data`` con firma HMAC-SHA256 válida del bot; la identidad sale de ahí.
 
-* ``GET  /pos-operacional``              página HTML de la Mini App (pública; no tiene datos)
-* ``GET  /api/pos-operacional/form``     límites del formulario
-* ``GET  /api/pos-operacional/context``  conductor, contrato, vehículo reservado, KM inicial y horas por defecto
+* ``GET  /Post-operacional``              página HTML de la Mini App (pública; no tiene datos)
+* ``GET  /api/Post-operacional/form``     límites del formulario
+* ``GET  /api/Post-operacional/context``  conductor, contrato, vehículo reservado, KM inicial y horas por defecto
   (403 sin PIN)
-* ``POST /api/pos-operacional``          recibe el formulario -> 202 + ``pendiente``
+* ``POST /api/Post-operacional``          recibe el formulario -> 202 + ``pendiente``
   (403 sin empleado; 409 uuid ajeno; 422 validación; 410 reenvío sin señal vencido)
-* ``GET  /api/pos-operacional/{uuid}``   estado de un envío propio
+* ``GET  /api/Post-operacional/{uuid}``   estado de un envío propio
 """
 from __future__ import annotations
 
@@ -28,6 +28,7 @@ from ..preop.db import Database
 from ..preop.models import PosOperacional
 from ..preop.router import (
     _LOGO_URL,
+    _versionar_escanear_js,
     _identity,
     _logo_version,
     contexto_http,
@@ -59,7 +60,7 @@ class PosOperacionalServices:
 def _services(request: Request) -> PosOperacionalServices:
     svc = getattr(request.app.state, "pos_operacional", None)
     if svc is None:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Pos-Operacional no disponible")
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Post-operacional no disponible")
     return svc
 
 
@@ -79,18 +80,20 @@ def _firma_previa(request: Request, x_telegram_init_data: Annotated[str | None, 
     firma_previa_diferida(x_telegram_init_data, svc.bot_token, svc.max_age_seconds)
 
 
-@router.get("/pos-operacional", response_class=HTMLResponse, include_in_schema=False)
+@router.get("/Post-operacional", response_class=HTMLResponse, include_in_schema=False)
 def pos_operacional_page() -> HTMLResponse:
-    html = _HTML.read_text(encoding="utf-8").replace(f'"{_LOGO_URL}"', f'"{_LOGO_URL}?v={_logo_version()}"')
+    html = _versionar_escanear_js(
+        _HTML.read_text(encoding="utf-8").replace(f'"{_LOGO_URL}"', f'"{_LOGO_URL}?v={_logo_version()}"')
+    )
     return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
 
 
-@router.get("/api/pos-operacional/form")
+@router.get("/api/Post-operacional/form")
 def pos_operacional_form(_identity: Identity) -> dict[str, Any]:
     return form_definition()
 
 
-@router.get("/api/pos-operacional/context")
+@router.get("/api/Post-operacional/context")
 async def pos_operacional_context(request: Request, identity: Identity) -> dict[str, Any]:
     svc = _services(request)
     empleado = await asyncio.to_thread(preop_service.employee_for_telegram, svc.db, identity.user_id)
@@ -107,7 +110,7 @@ def _out(recibido: service.PosRecibido, duplicated: bool = False) -> PosOperacio
                              odoo_id=recibido.odoo_id, duplicado=duplicated)
 
 
-@router.post("/api/pos-operacional", status_code=status.HTTP_202_ACCEPTED, response_model=PosOperacionalOut,
+@router.post("/api/Post-operacional", status_code=status.HTTP_202_ACCEPTED, response_model=PosOperacionalOut,
              dependencies=[Depends(_firma_previa)])
 async def pos_operacional_submit(
     body: PosOperacionalIn,
@@ -134,13 +137,13 @@ async def pos_operacional_submit(
         try:
             await svc.on_accepted(recibido)
         except Exception:  # ya está guardado: el aviso fallido no debe devolver error al conductor
-            logger.exception("No se pudo avisar la recepción del pos-operacional %s", recibido.id)
-    logger.info("Pos-operacional recibido id=%s uuid=%s usuario=%s duplicado=%s diferido=%s",
+            logger.exception("No se pudo avisar la recepción del Post-operacional %s", recibido.id)
+    logger.info("Post-operacional recibido id=%s uuid=%s usuario=%s duplicado=%s diferido=%s",
                 recibido.id, recibido.uuid, identity.user_id, duplicated, body.diferido is not None)
     return _out(recibido, duplicated)
 
 
-@router.get("/api/pos-operacional/{pos_uuid}", response_model=PosOperacionalOut)
+@router.get("/api/Post-operacional/{pos_uuid}", response_model=PosOperacionalOut)
 async def pos_operacional_status(pos_uuid: str, request: Request, identity: Identity) -> PosOperacionalOut:
     svc = _services(request)
 

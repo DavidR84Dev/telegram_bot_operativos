@@ -31,9 +31,9 @@ PosOperacionalSender ──▶ búsqueda de duplicado (XML-RPC) ──▶ create
 4. **Fechas y horarios** (hora de Colombia en la pantalla): **Entrada** (por defecto el inicio de la reserva,
    `reservado_at`) y **Salida** (por defecto ahora). Ambas obligatorias; **Salida > Entrada** y como
    máximo **24 horas** entre las dos.
-5. **Planilla de servicios**, obligatoria: 📷 cámara dentro de la Mini App (`getUserMedia`; Telegram en Android ignora
-   `capture` y abre la galería, así que `abrirCamara` / `capturarFoto` abren la cámara trasera y, sin permiso o soporte,
-   se cae al `<input capture>`) o 🖼️ galería o PDF. Las fotos se reducen en el teléfono (lado máximo 1 800 px) y se
+5. **Planilla de servicios**, obligatoria: «📄 Abrir App para escanear» (hoja con la lista de apps de escaneo: Drive, Adobe Scan y
+   CamScanner en Android; Archivos, Notas, Adobe Scan y CamScanner en iOS; el conductor elige y se recuerda la última; antes de salir se guarda un borrador de 2 h que se restaura al volver, ver
+   `docs/GUIA_NUEVOS_BOTS.md` § 5c) y luego 🖼️ galería o PDF. Las fotos se reducen en el teléfono (lado máximo 1 800 px) y se
    vuelven a codificar como **JPG**, y el servidor las **convierte a PDF** (Odoo solo recibe PDF, regla 2026-11-26);
    un PDF pasa tal cual. Máximo **3 MB**.
 6. **Observaciones**, opcionales (máximo 1 000 caracteres).
@@ -179,5 +179,5 @@ Pendientes para confirmar con Odoo:
       `odoo_name` queda vacío; no afecta).
 - [ ] Que una restricción de Odoo sobre `km_start` (p. ej. frente al `odometer_post` del vehículo) no rechace el
       KM inicial editado por el conductor: un rechazo deja el registro `fallido` con el motivo de Odoo.
-- [ ] Prueba de punta a punta en qa2 y desde un móvil (crea un `pos.operacional` real): foto de cámara y de galería,
+- [ ] Prueba de punta a punta en qa2 y desde un móvil (crea un `pos.operacional` real): escaneo con Drive/Archivos y regreso a Telegram, foto de galería,
       PDF, sin reserva vigente y sin señal.

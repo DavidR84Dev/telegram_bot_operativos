@@ -9,6 +9,7 @@ from . import ticket_state
 if TYPE_CHECKING:
     from .ast_trabajo.service import AstOutcome, AvisoJefeAst
     from .combustible.service import CombustibleOutcome
+    from .correcciones.service import CorreccionOutcome
     from .gastos_operativos.service import GastosOutcome
     from .pos_operacional.service import PosOperacionalOutcome
     from .preop.reservas import Liberacion
@@ -245,16 +246,16 @@ POS_RECORDATORIO_FINALIZAR = "Cuando termines tu jornada toca 🔴 <b>Finalizar<
 
 def pos_operacional_recibido(placa: str | None) -> str:
     """Confirmación al recibir el formulario (aún no está en Odoo)."""
-    return ("🧾 <b>Pos-operacional recibido</b>" + (f" ({escape(placa)})" if placa else "") + "\n\n"
+    return ("🧾 <b>Post-operacional recibido</b>" + (f" ({escape(placa)})" if placa else "") + "\n\n"
             "Se está registrando en Odoo; te avisaré el resultado.\n"
             "Enviarlo <b>no libera</b> tu vehículo. " + POS_RECORDATORIO_FINALIZAR)
 
 
 def pos_operacional_result(outcome: PosOperacionalOutcome) -> str:
-    """Resultado final del pos-operacional: registrado en Odoo con su id, o fallido con el motivo."""
+    """Resultado final del Post-operacional: registrado en Odoo con su id, o fallido con el motivo."""
     if outcome.status.value == "enviado":
         return (
-            "🧾 <b>Pos-operacional registrado en Odoo</b>\n\n"
+            "🧾 <b>Post-operacional registrado en Odoo</b>\n\n"
             + (f"🚌 Vehículo: {escape(outcome.placa)}\n" if outcome.placa else "")
             + f"📄 Registro #{outcome.odoo_id}"
             + (f" ({escape(outcome.odoo_name)})" if outcome.odoo_name else "") + "\n\n"
@@ -262,11 +263,49 @@ def pos_operacional_result(outcome: PosOperacionalOutcome) -> str:
         )
     motivo = escape((outcome.error or "motivo no disponible")[:400])
     return (
-        "❌ <b>Tu pos-operacional no pudo guardarse en Odoo</b>\n\n"
+        "❌ <b>Tu Post-operacional no pudo guardarse en Odoo</b>\n\n"
         f"Motivo: {motivo}\n\n"
         f"Referencia local: #{outcome.pos_id}. El área de sistemas ya tiene el detalle; "
         "no es necesario diligenciarlo de nuevo."
     )
+
+
+def _nombre_correccion(tipo: str) -> str:
+    return {"gasto": "gasto", "planilla": "planilla no enviada"}.get(tipo, "Post-operacional")
+
+
+def correccion_recibida(tipo: str, referencia: str | None) -> str:
+    """Confirmación al recibir la corrección (aún no está en Odoo)."""
+    titulo = "Carga de planilla recibida" if tipo == "planilla" else f"Corrección de {_nombre_correccion(tipo)} recibida"
+    return (f"🛠️ <b>{titulo}</b>"
+            + (f" ({escape(referencia)})" if referencia else "") + "\n\n"
+            "Se está enviando a Odoo; te avisaré el resultado.")
+
+
+def correccion_result(outcome: CorreccionOutcome) -> str:
+    """Resultado final de una corrección: enviada, descartada (el registro ya no estaba pendiente) o fallida."""
+    que = _nombre_correccion(outcome.tipo)
+    ref = f" ({escape(outcome.referencia)})" if outcome.referencia else ""
+    if outcome.status.value == "enviado":
+        if outcome.tipo == "planilla":
+            return (f"🛠️ <b>Planilla enviada a Odoo</b>{ref}\n\n"
+                    "Quedó registrada como un Post-operacional nuevo para revisión.")
+        return (f"🛠️ <b>Corrección de {que} enviada a Odoo</b>{ref}\n\n"
+                + ("Quedó como una corrección nueva para revisión." if outcome.tipo == "gasto"
+                   else "El Post-operacional quedó corregido y pasó a revisión."))
+    motivo = escape((outcome.error or "motivo no disponible")[:400])
+    if outcome.descartado:
+        return (f"⚠️ <b>Tu corrección de {que} no se aplicó</b>{ref}\n\n"
+                f"Motivo: {motivo}\n\nNo necesitas hacer nada más.")
+    if outcome.tipo == "planilla":
+        return (f"❌ <b>Tu planilla no pudo guardarse en Odoo</b>{ref}\n\n"
+                f"Motivo: {motivo}\n\n"
+                f"Referencia local: #{outcome.correccion_id}. El área de sistemas ya tiene el detalle; "
+                "no es necesario diligenciarla de nuevo.")
+    return (f"❌ <b>Tu corrección de {que} no pudo guardarse en Odoo</b>{ref}\n\n"
+            f"Motivo: {motivo}\n\n"
+            f"Referencia local: #{outcome.correccion_id}. El área de sistemas ya tiene el detalle; "
+            "no es necesario diligenciarla de nuevo.")
 
 
 def _lista_placas(placas: tuple[str, ...]) -> str:

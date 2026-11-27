@@ -625,11 +625,12 @@ def test_pagina_sin_cache_logo_versionado_y_marcas_del_formulario(api):
     assert re.findall(r'src="/static/viacotur-logo\.png\?v=([0-9a-f]{12})"', page.text)
     for marca in ('IDB_NAME = "pos-operacional-offline"', "vaciarBandeja()", 'addEventListener("online"',
                   "Información del personal", "Contrato", "KM inicial", "KM final", "Entrada", "Salida",
-                  "Planilla de servicios", "Observaciones", "Primero el Preoperacional", "sin_reserva_vigente", "getUserMedia", "abrirCamara",
-                  "capturarFoto", "capture", "application/pdf", "%PDF", "normalizarDecimal", "parseNum", "fmtNum",
+                  "Planilla de servicios", "Observaciones", "Primero el Preoperacional", "sin_reserva_vigente", "Abrir App para escanear",
+                  "/static/escanear_documento.js?v=", "application/pdf", "%PDF", "normalizarDecimal", "parseNum", "fmtNum",
                   'inputmode="decimal"', "Finalizar", "/api/pos-operacional"):
         assert marca in page.text
     assert "innerHTML" not in page.text and "toLocaleString" not in page.text
+    assert "capture" not in page.text and "Tomar foto" not in page.text and "getUserMedia" not in page.text
     assert "location" not in page.text.lower()  # no se pide ubicación
 
 

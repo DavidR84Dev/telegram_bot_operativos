@@ -183,7 +183,7 @@ def reservar(session: Session, *, vehiculo: Flota, empleado: Empleado, telegram_
 
 # ─────────────────── reserva vigente: requisito de los formularios de la jornada ───────────────────
 
-# Regla del 2026-11-26: AST, Prueba de Ruta, Combustible, Gastos Operativos y Pos-Operacional solo se usan con
+# Regla del 2026-11-26: AST, Prueba de Ruta, Combustible, Gastos Operativos y Post-operacional solo se usan con
 # una reserva vigente (preoperacional de la jornada). Mismo código HTTP y cabecera ``X-Error-Code`` en todos.
 HTTP_SIN_RESERVA = 409
 CODIGO_SIN_RESERVA = "sin_reserva_vigente"
@@ -193,7 +193,7 @@ MSG_SIN_RESERVA = "Para usar este formulario primero debes registrar el ✅ Preo
 def reserva_vigente(session: Session, telegram_user_id: int, now: datetime | None = None) -> ReservaVehiculo | None:
     """Reserva del conductor: existe, no se liberó con 🔴 Finalizar y no venció (``RESERVA_HORAS``).
 
-    No exige que la fecha sea hoy: un turno nocturno hace su pos-operacional pasada la medianoche.
+    No exige que la fecha sea hoy: un turno nocturno hace su Post-operacional pasada la medianoche.
     """
     liberar_vencidas(session, now)
     return session.scalar(select(ReservaVehiculo).where(ReservaVehiculo.telegram_user_id == telegram_user_id))

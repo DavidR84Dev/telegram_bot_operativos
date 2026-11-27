@@ -59,6 +59,14 @@ def _lista_enteros(valor: str) -> str:
     return ",".join(p.strip() for p in valor.split(","))
 
 
+def _dias_correcciones(valor: str) -> str:
+    from ..correcciones.catalogo import DIAS_MAX_LIMITE, DIAS_MIN_LIMITE
+
+    if not DIAS_MIN_LIMITE <= int(valor) <= DIAS_MAX_LIMITE:
+        raise ParametroError(f"debe estar entre {DIAS_MIN_LIMITE} y {DIAS_MAX_LIMITE} días")
+    return valor
+
+
 def _tipos_gastos(valor: str) -> str:
     from ..gastos_operativos.catalogo import TiposGastoError, parse_tipos, texto_tipos
 
@@ -119,6 +127,9 @@ PARAMETROS: dict[str, Parametro] = {p.clave: p for p in (
     Parametro("GASTOS_OPERATIVOS_TOPES",
               "Tope máximo por gasto y por tipo (COP): Nombre:valor separados por «;»; vacío = sin topes",
               validador=_topes_gastos),
+    Parametro("CORRECCIONES_DIAS_MAXIMOS",
+              "Correcciones Post y Gastos: antigüedad máxima (días, 1 a 365) de los registros que se pueden corregir",
+              validador=_dias_correcciones),
     Parametro("ODOO_API_COMPANY_IDS", "Compañías de Odoo a sincronizar (ids separados por coma)",
               validador=_lista_enteros),
     Parametro("ODOO_API_PAGE_SIZE", "Registros por página en la sincronización con la API de Odoo"),
